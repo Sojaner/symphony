@@ -1,6 +1,6 @@
 {
   "name": "symphony",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Cost-aware multi-model orchestration for complicated projects.",
   "author": {
     "name": "Sojaner"
@@ -13,6 +13,9 @@
     "developerName": "Sojaner",
     "category": "Productivity",
     "capabilities": ["Interactive"],
+    "brandColor": "#4E808C",
+    "logo": "./assets/logo.png",
+    "composerIcon": "./assets/logo.png",
     "defaultPrompt": [
       "With orchestrator <model> at medium effort, use Symphony for this project.",
       "With orchestrator <model> at low effort, route this plan with Symphony."
