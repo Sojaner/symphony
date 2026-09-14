@@ -33,10 +33,19 @@ The declared profile is a request to verify, not evidence. It never satisfies th
 
 1. Determine the model and effort the current task is actually running on, from runtime metadata the host exposes to the agent: system context that names the active model, host status commands, or equivalent. The live model catalog only lists available choices; it does not identify the active orchestrator and cannot satisfy this step. Do not infer or guess.
 2. The gate passes only when the runtime-reported model id and effort exactly match the declared profile, the model supports spawning subagents with model overrides, and the effort is `low` or `medium`.
-3. On any mismatch, stop before all project work. Report both values plainly — "You declared `<declared>`, but this task is running on `<actual>`" — and ask the user to either start a new task with the declared model at `low` or `medium` and re-invoke Symphony, or explicitly accept the actual runtime profile if it is also a valid low-cost orchestrator. State that a skill cannot change the model or effort of its already-running task. Never continue on the wrong model by default.
+3. On any mismatch, stop before all project work. Report both values plainly — "You declared `<declared>`, but this task is running on `<actual>`" — then run the profile questionnaire below. Never continue on the wrong model by default.
 4. When the runtime exposes neither model nor effort, do not proceed on the declaration alone. Ask the user one direct question — "Is this task's model selector currently set to exactly `<id>` at `<effort>`?" — and continue only after an explicit yes. Treat any other answer as a mismatch.
 
-When the profile is missing, unverifiable, unsupported, or uses another effort, stop before project work. Ask the user to start a new task with the cheapest available model that supports subagent model overrides, at `low` or `medium`, then invoke Symphony with the two-line profile above.
+When the profile is missing, invalid, unsupported, or uses another effort, stop before project work and run the profile questionnaire. Do not expect the user to know exact model ids from memory.
+
+### Profile questionnaire
+
+Help the user choose a valid profile instead of refusing outright:
+
+1. Read the live catalog from the host's subagent tool schema — and the host's model selector list where it is exposed — and shortlist two to four orchestrator candidates: the cheapest models that support spawning subagents with model overrides, cheapest first, one line of reasoning each.
+2. Ask the user to pick a model and an effort — `low` for straightforward routing, `medium` for longer or less settled coordination — recommending the cheapest suitable option. Use the host's structured question tool when it exists (AskUserQuestion in Claude Code, the user-input request facility in Codex); otherwise ask as a plain numbered question in chat.
+3. Tell the user to apply the choice in the host — the model and effort selectors (for example `/model` in Claude Code, the task's model picker in Codex) — or to start a new task with that selection, since a skill cannot change the model or effort of its already-running task.
+4. After the user says they applied it, re-run the verification above from step 1. Every pass through the questionnaire ends back at verification; it never leads directly into project work.
 
 ## Bootstrap the conductor
 
