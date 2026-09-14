@@ -58,6 +58,17 @@ Ask once, through the same question facility as the profile questionnaire — an
 
 Do not read project files or spawn workers before the location is confirmed. One explicit confirmation is enough; do not re-ask at later gates.
 
+## Assess the fit
+
+Before bootstrapping the conductor, size the project against the Activate criteria — the conductor is itself overhead, so this assessment is the root's own work:
+
+1. Make a shallow pass only: the request, the plan or requirements the user pointed to, and at most a directory listing or file tree. Do not deep-read the codebase to decide whether to orchestrate.
+2. Estimate the independently dispatchable units and the single-agent effort. State the estimate in two or three lines.
+3. When the project meets the sizing rule (three or more independent units, or well over fifteen minutes of single-agent work), say so in one line and proceed to the conductor.
+4. When it does not, recommend direct execution: report that orchestration overhead would exceed its savings, and ask through the same question facility whether to proceed with Symphony anyway, have this agent do the work directly, or stop. The user's explicit choice is final — including choosing orchestration despite the recommendation.
+
+Skip the questionnaire in step 4 when the user has already acknowledged the overhead and asked for orchestration regardless; note their confirmation and proceed.
+
 ## Bootstrap the conductor
 
 1. Compare the confirmed orchestrator profile with the host's live subagent tool schema — Codex collaboration tools, or the Claude Code agent tool — then inventory available worker models, efforts, and concurrency. Treat the live schema as authoritative; model names in examples or cached documentation may be stale.
