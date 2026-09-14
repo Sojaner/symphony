@@ -1,0 +1,14 @@
+{
+  "name": "symphony",
+  "owner": {
+    "name": "Sojaner"
+  },
+  "plugins": [
+    {
+      "name": "symphony",
+      "source": "./plugins/symphony",
+      "description": "Cost-aware multi-model orchestration for complicated projects.",
+      "category": "productivity"
+    }
+  ]
+}

@@ -22,24 +22,27 @@ Handle a small, sequential task directly. Delegation overhead is real work.
 
 Complete this gate before reading project files, consulting the conductor, spawning workers, or starting project work.
 
-Require confirmation that the user selected the current task's orchestrator model and effort in Codex. A valid profile contains:
+The user selects the current task's orchestrator model and effort in the host (Codex or Claude Code) and declares that choice when invoking Symphony:
 
 ```text
 Orchestrator: <exact model id>
 Effort: <low|medium>
 ```
 
-Accept the profile from explicit runtime metadata or from the user's task-scoped confirmation. The model must support collaboration and subagent model overrides. The effort must be `low` or `medium`.
+The declared profile is a request to verify, not evidence. It never satisfies the gate by itself. Verify it in order:
 
-The live model catalog lists available choices; it does not identify the active orchestrator and cannot satisfy this gate. Do not infer the current model or effort.
+1. Determine the model and effort the current task is actually running on, from runtime metadata the host exposes to the agent: system context that names the active model, host status commands, or equivalent. The live model catalog only lists available choices; it does not identify the active orchestrator and cannot satisfy this step. Do not infer or guess.
+2. The gate passes only when the runtime-reported model id and effort exactly match the declared profile, the model supports spawning subagents with model overrides, and the effort is `low` or `medium`.
+3. On any mismatch, stop before all project work. Report both values plainly — "You declared `<declared>`, but this task is running on `<actual>`" — and ask the user to either start a new task with the declared model at `low` or `medium` and re-invoke Symphony, or explicitly accept the actual runtime profile if it is also a valid low-cost orchestrator. State that a skill cannot change the model or effort of its already-running task. Never continue on the wrong model by default.
+4. When the runtime exposes neither model nor effort, do not proceed on the declaration alone. Ask the user one direct question — "Is this task's model selector currently set to exactly `<id>` at `<effort>`?" — and continue only after an explicit yes. Treat any other answer as a mismatch.
 
-When the profile is missing, unverifiable, unsupported, or uses another effort, stop before project work. Ask the user to start a new Codex task with the cheapest collaboration-capable model suitable for orchestration at `low` or `medium`, then invoke Symphony with the two-line profile above. State that a skill cannot change the model or effort of its already-running task.
+When the profile is missing, unverifiable, unsupported, or uses another effort, stop before project work. Ask the user to start a new task with the cheapest available model that supports subagent model overrides, at `low` or `medium`, then invoke Symphony with the two-line profile above.
 
 ## Bootstrap the conductor
 
-1. Compare the confirmed orchestrator profile with the live collaboration-tool schema, then inventory available worker models, efforts, and concurrency. Treat the live schema as authoritative; model names in examples or cached documentation may be stale.
-2. Read [references/model-routing.md](references/model-routing.md). Refresh its working facts from official OpenAI documentation only when its freshness rule fires. Do not rewrite the installed plugin during a project run.
-3. Spawn `symphony_conductor` with no inherited turns. Prefer the highest-capability available general reasoning model at `high`; on the current catalog that is `gpt-6-astra`. If unavailable, use the strongest listed general model at `high`, or its highest supported effort below `high`.
+1. Compare the confirmed orchestrator profile with the host's live subagent tool schema — Codex collaboration tools, or the Claude Code agent tool — then inventory available worker models, efforts, and concurrency. Treat the live schema as authoritative; model names in examples or cached documentation may be stale.
+2. Read [references/model-routing.md](references/model-routing.md). Refresh its working facts from the official vendor documentation it links only when its freshness rule fires. Do not rewrite the installed plugin during a project run.
+3. Spawn `symphony_conductor` with no inherited turns. Prefer the highest-capability available general reasoning model at `high` — for example `gpt-6-astra` on a current Codex catalog, or the strongest Opus- or Fable-tier model on Claude Code. If unavailable, use the strongest listed general model at `high`, or its highest supported effort below `high`.
 4. Give it only:
    - the project outcome and acceptance criteria;
    - material constraints and known risks;
@@ -58,7 +61,7 @@ evidence: <checks required before integration>
 reconsult_when: <observable triggers>
 ```
 
-Keep its agent id. When it is idle, use a follow-up task for the next consultation instead of spawning another conductor. An idle agent spends no inference tokens.
+Keep its agent id. When it is idle, send the next consultation to the same agent — a follow-up task in Codex, a follow-up message in Claude Code — instead of spawning another conductor. An idle agent spends no inference tokens. If the host cannot resume an idle agent, spawn a fresh conductor with the same bootstrap packet plus a one-paragraph summary of decisions so far.
 
 ## Consult at decision gates
 
@@ -101,12 +104,12 @@ Use a stronger reasoning model for a narrow hard question before spending that m
 6. Ask the conductor to select a focused final reviewer. Address findings or document why they do not apply.
 7. Finish only when the user outcome and acceptance criteria are met.
 
-If collaboration or model overrides are unavailable, keep the same decomposition and evidence discipline but execute sequentially with the current agent. State the limitation once.
+If subagent spawning or model overrides are unavailable, keep the same decomposition and evidence discipline but execute sequentially with the current agent. State the limitation once.
 
 ## Cost discipline
 
 - Default to `low` for deterministic lookup or mechanical work, `medium` for bounded multi-step work, and `high` for genuinely difficult reasoning.
-- Use `xhigh`, `max`, or `ultra` only when the conductor identifies the specific uncertainty that lower effort is unlikely to resolve.
+- Use the host's top effort tiers (`xhigh`, `max`, or `ultra`, where offered) only when the conductor identifies the specific uncertainty that lower effort is unlikely to resolve.
 - Escalate the smallest unit, not the whole project.
 - Stop a worker when its acceptance check is satisfied. Reuse its conclusion; do not make the root solve the same problem again.
 - Prefer diverse review over duplicate implementation.

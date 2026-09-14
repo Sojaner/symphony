@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="plugins/symphony/assets/logo.png" alt="Symphony logo" width="220">
+</p>
+
 # Symphony
 
-Symphony is a Codex plugin for complicated projects. It lets a lightweight root model coordinate stronger specialist models without asking the root model to solve every hard problem itself.
+Symphony is a plugin for Codex and Claude Code aimed at complicated projects. It lets a lightweight root model coordinate stronger specialist models without asking the root model to solve every hard problem itself.
 
 The root agent remains responsible for scope, integration, verification, and communication. Symphony adds a reusable **conductor** subagent that recommends:
 
@@ -26,7 +30,23 @@ Install the plugin:
 codex plugin add symphony@symphony
 ```
 
-Start a new Codex task so its skill catalog includes the plugin, then ask:
+## Install in Claude Code
+
+Add this repository as a plugin marketplace:
+
+```text
+/plugin marketplace add Sojaner/symphony
+```
+
+Install the plugin:
+
+```text
+/plugin install symphony@symphony
+```
+
+## Use
+
+Start a new task so the skill catalog includes the plugin. Select the task's model and effort in the host UI first: use the cheapest available model that supports spawning subagents with model overrides, at `low` effort for straightforward routing or `medium` when the root must coordinate a longer or less settled project. Then ask:
 
 ```text
 Orchestrator: <exact model id>
@@ -35,19 +55,23 @@ Effort: <low|medium>
 Use Symphony to orchestrate this complex project: <your project>
 ```
 
-Before invoking Symphony, select the task's orchestrator model and effort in Codex. Use the cheapest available model that supports collaboration and subagent model overrides; choose `low` for straightforward routing or `medium` when the root must coordinate a longer or less settled project.
+Symphony enforces this as a preflight gate. The declared profile is treated as a request to verify, not as evidence: Symphony checks it against the model and effort the task is actually running on and stops on any mismatch — it will not silently continue on a different model than the one you declared. A skill cannot change the model or effort of its already-running task, so an invalid configuration requires a new task.
 
-Symphony enforces this as a preflight gate. It will not begin project work until the current task's model and `low` or `medium` effort are confirmed. A skill cannot change the model or effort of its already-running task, so an invalid configuration requires a new task.
-
-Symphony reads the live model and reasoning-effort catalog instead of assuming every Codex host offers the same models.
+Symphony reads the live model and reasoning-effort catalog of the current host instead of assuming every host offers the same models.
 
 ## Update
 
-Refresh the marketplace and reinstall the plugin:
+Codex:
 
 ```bash
 codex plugin marketplace upgrade symphony
 codex plugin add symphony@symphony
+```
+
+Claude Code:
+
+```text
+/plugin marketplace update symphony
 ```
 
 Start a new task after updating.
@@ -56,19 +80,24 @@ Start a new task after updating.
 
 After the orchestrator preflight passes, Symphony creates one reusable conductor using the strongest suitable general reasoning model available. The conductor stays idle between decision gates and is consulted again through follow-up tasks. Independent workers can then run in parallel using different models and effort levels.
 
-The bundled [model-routing index](plugins/symphony/skills/symphony/references/model-routing.md) summarizes current routing principles and links to official OpenAI guidance. The live Codex tool schema remains authoritative for model availability and supported effort levels.
+The bundled [model-routing index](plugins/symphony/skills/symphony/references/model-routing.md) summarizes current routing principles and links to official OpenAI and Anthropic guidance. The live subagent tool schema of the current host remains authoritative for model availability and supported effort levels.
 
-Symphony uses Codex's native collaboration tools. It has no MCP server, background service, credentials, or external runtime.
+Symphony uses the host's native subagent tools — Codex collaboration tools or the Claude Code agent tool. It has no MCP server, background service, credentials, or external runtime.
 
 ## Repository layout
 
 ```text
-.agents/plugins/marketplace.json       Git marketplace manifest
-plugins/symphony/.codex-plugin/        Plugin manifest
-plugins/symphony/skills/symphony/      Orchestration skill and routing index
+.agents/plugins/marketplace.json       Codex Git marketplace manifest
+.claude-plugin/marketplace.json        Claude Code marketplace manifest
+plugins/symphony/.codex-plugin/        Codex plugin manifest
+plugins/symphony/.claude-plugin/       Claude Code plugin manifest
+plugins/symphony/assets/               Logo and icon assets
+plugins/symphony/skills/symphony/      Orchestration skill and routing index (shared by both hosts)
 ```
 
 ## References
 
 - [OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model)
 - [OpenAI reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)
+- [Anthropic models overview](https://docs.claude.com/en/docs/about-claude/models/overview)
+- [Claude Code subagents](https://code.claude.com/docs/en/sub-agents)
