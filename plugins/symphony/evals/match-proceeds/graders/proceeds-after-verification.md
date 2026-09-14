@@ -1,17 +1,14 @@
 ---
 type: llm
-target: trace
 criteria: |
-  The declared orchestrator model matches the model the task is running on, and
-  the user's message explicitly confirmed both the model and effort selectors.
-  Score 1 only if the agent verified the declared profile against the runtime
-  model it is actually running on, found them matching, and then moved past the
-  gate into orchestration: reading the routing reference, planning decomposition,
-  or bootstrapping/spawning a conductor subagent (or explaining it will execute
-  sequentially if subagents are unavailable in this environment). A single
-  confirmation question about the project location or acceptance criteria also
-  scores 1, since confirming the project is a required step. Score 0 if the
-  agent refused despite the match, stalled by re-asking for confirmation the user
-  already gave, or skipped verification entirely and never compared the declared
-  profile to the runtime.
+  The declared orchestrator model matches the model the task is running on, the
+  user explicitly confirmed the model and effort selectors and the project
+  location, and the prompt asked the agent to stop before dispatching workers
+  and report its plan. Score 1 only if the final reply shows the gate passed on
+  evidence and orchestration began: the declared profile was verified against
+  the runtime model and found matching, the project scope was treated as
+  confirmed, and a decomposition or routing plan (or conductor consultation) is
+  presented. Score 0 if the agent refused despite the match, never compared the
+  declared profile to the runtime, stalled by re-asking what the user already
+  confirmed, or ignored the stop instruction and implemented the project.
 ---
