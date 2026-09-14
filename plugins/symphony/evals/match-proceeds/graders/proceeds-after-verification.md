@@ -13,5 +13,4 @@ criteria: |
   agent refused despite the match, stalled by re-asking for confirmation the user
   already gave, or skipped verification entirely and never compared the declared
   profile to the runtime.
-focus: Did the gate pass on evidence and orchestration begin?
 ---
