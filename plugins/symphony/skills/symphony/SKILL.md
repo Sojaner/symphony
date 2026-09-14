@@ -1,6 +1,6 @@
 ---
 name: symphony
-description: Orchestrate complicated projects from a user-confirmed low-cost root through a reusable routing consultant and narrowly scoped parallel subagents. Use for multi-domain, high-risk, or multi-part work where model and reasoning-effort choices materially affect cost, speed, or quality; skip ordinary tasks one agent can finish directly.
+description: Orchestrate complicated projects from a user-confirmed low-cost root through a reusable routing consultant and narrowly scoped parallel subagents. Use for multi-domain, high-risk, or multi-part work where model and reasoning-effort choices materially affect cost, speed, or quality; skip ordinary tasks one agent can finish directly. When the user explicitly asks for Symphony or orchestration, invoke this skill immediately and before asking any clarifying question — Symphony runs its own preflight verification and questionnaires.
 ---
 
 # Symphony
