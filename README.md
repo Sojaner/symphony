@@ -93,6 +93,16 @@ The bundled [model-routing index](plugins/symphony/skills/symphony/references/mo
 
 Symphony uses the host's native subagent tools — Codex collaboration tools or the Claude Code agent tool. It has no MCP server, background service, credentials, or external runtime.
 
+## Testing
+
+The plugin ships an eval suite for Claude Code's `claude plugin eval`. It pins the preflight gate: one case proves Symphony refuses when the declared orchestrator cannot match the runtime model, another proves it proceeds when the profile matches. Run it locally with:
+
+```bash
+claude plugin eval ./plugins/symphony --model claude-haiku-4-5-20251001
+```
+
+The `--model` value must match the orchestrator declared in `plugins/symphony/evals/match-proceeds/prompt.md`. CI runs the same suite on every push and pull request (`.github/workflows/plugin-eval.yml`; requires an `ANTHROPIC_API_KEY` repository secret).
+
 ## Repository layout
 
 ```text
@@ -101,6 +111,7 @@ Symphony uses the host's native subagent tools — Codex collaboration tools or 
 plugins/symphony/.codex-plugin/        Codex plugin manifest
 plugins/symphony/.claude-plugin/       Claude Code plugin manifest
 plugins/symphony/assets/               Logo and icon assets
+plugins/symphony/evals/                Plugin eval suite for the preflight gate
 plugins/symphony/skills/symphony/      Orchestration skill and routing index (shared by both hosts)
 ```
 

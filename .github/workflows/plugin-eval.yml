@@ -1,0 +1,46 @@
+name: Plugin evals
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Claude Code
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Validate plugin manifest
+        run: claude plugin validate ./plugins/symphony
+
+      # The model must stay in sync with the declared orchestrator in
+      # plugins/symphony/evals/match-proceeds/prompt.md.
+      - name: Run plugin evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude plugin eval ./plugins/symphony \
+            --model claude-haiku-4-5-20251001 \
+            --threshold 0.9 \
+            --json eval-results.json \
+            --report eval-report.html \
+            --no-publish
+          # The gated early-access command prints a notice and exits 0 without
+          # running anything; require real results so CI cannot pass vacuously.
+          test -s eval-results.json || { echo "plugin eval produced no results (early access not enabled?)"; exit 1; }
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-eval-results
+          path: |
+            eval-results.json
+            eval-report.html
+            plugins/symphony/evals/results/
