@@ -1,5 +1,6 @@
 ---
 type: llm
+target: trace
 criteria: |
   The declared orchestrator model matches the model the task is running on, and
   the user's message explicitly confirmed both the model and effort selectors.
