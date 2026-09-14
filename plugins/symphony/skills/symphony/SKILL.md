@@ -26,15 +26,20 @@ The user selects the current task's orchestrator model and effort in the host (C
 
 ```text
 Orchestrator: <exact model id>
-Effort: <low|medium>
+Effort: <medium|high>
 ```
+
+Low effort is not accepted for the orchestrator: the gate, the fit assessment, and integration are judgment work, and a root running at low effort demonstrably skips them. Workers may still run at `low`.
 
 The declared profile is a request to verify, not evidence. It never satisfies the gate by itself. Verify it in order:
 
 1. Determine the model and effort the current task is actually running on, from runtime metadata the host exposes to the agent: system context that names the active model, host status commands, or equivalent. The live model catalog only lists available choices; it does not identify the active orchestrator and cannot satisfy this step. Do not infer or guess.
-2. The gate passes only when the runtime-reported model id and effort exactly match the declared profile, the model supports spawning subagents with model overrides, and the effort is `low` or `medium`.
+2. The gate passes only when the runtime-reported model id and effort exactly match the declared profile, the model supports spawning subagents with model overrides, and the effort is `medium` or `high`.
 3. On any mismatch, stop before all project work. Report both values plainly — "You declared `<declared>`, but this task is running on `<actual>`" — then run the profile questionnaire below. Never continue on the wrong model by default.
-4. When the runtime exposes neither model nor effort, do not proceed on the declaration alone. Ask the user one direct question — "Is this task's model selector currently set to exactly `<id>` at `<effort>`?" — and continue only after an explicit yes. Treat any other answer as a mismatch.
+4. When the runtime exposes neither model nor effort, do not proceed on the declaration alone. Ask the user one direct question that quotes the exact ids — "Is this task's model selector currently set to exactly `<id>` at `<effort>`?" — and continue only after an explicit yes. The question must name one exact model id and one effort, ask nothing else, and never be bundled with other confirmations; a vague question ("a Symphony-capable model at a suitable effort?") or a compound one is not verification. Treat any answer other than an explicit yes as a mismatch.
+5. While verifying, read the live catalog and identify the cheapest suitable orchestrator. When the verified profile is a different model or effort than that recommendation, name the recommendation and ask one question to confirm the current selection is intentional before proceeding.
+
+Re-run this verification from step 1 whenever the project resumes: a new session, a restored checkpoint, a compacted conversation, or a handoff. A profile remembered from earlier turns, a checkpoint, or phrasing like "previously selected" is never evidence.
 
 When the profile is missing, invalid, unsupported, or uses another effort, stop before project work and run the profile questionnaire. Do not expect the user to know exact model ids from memory.
 
@@ -43,7 +48,7 @@ When the profile is missing, invalid, unsupported, or uses another effort, stop 
 Help the user choose a valid profile instead of refusing outright:
 
 1. Read the live catalog from the host's subagent tool schema — and the host's model selector list where it is exposed — and shortlist two to four orchestrator candidates: the cheapest models that support spawning subagents with model overrides, cheapest first, one line of reasoning each.
-2. Ask the user to pick a model and an effort — `low` for straightforward routing, `medium` for longer or less settled coordination — recommending the cheapest suitable option. Use the host's structured question tool when it exists (AskUserQuestion in Claude Code, the user-input request facility in Codex); otherwise ask as a plain numbered question in chat.
+2. Ask the user to pick a model and an effort — `medium` for routine coordination, `high` for long or unsettled projects — recommending the cheapest suitable option. Use the host's structured question tool when it exists (AskUserQuestion in Claude Code, the user-input request facility in Codex); otherwise ask as a plain numbered question in chat.
 3. Tell the user to apply the choice in the host — the model and effort selectors (for example `/model` in Claude Code, the task's model picker in Codex) — or to start a new task with that selection, since a skill cannot change the model or effort of its already-running task.
 4. After the user says they applied it, re-run the verification above from step 1. Every pass through the questionnaire ends back at verification; it never leads directly into project work.
 

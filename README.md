@@ -63,11 +63,11 @@ Install the plugin:
 
 ## Use
 
-Start a new task so the skill catalog includes the plugin. Select the task's model and effort in the host UI first: use the cheapest available model that supports spawning subagents with model overrides, at `low` effort for straightforward routing or `medium` when the root must coordinate a longer or less settled project. Then ask:
+Start a new task so the skill catalog includes the plugin. Select the task's model and effort in the host UI first: use the cheapest available model that supports spawning subagents with model overrides, at `medium` effort for routine coordination or `high` for long or unsettled projects. Low effort is not accepted for the orchestrator — verification, fit assessment, and integration are judgment work — though workers may still run at `low`. Then ask:
 
 ```text
 Orchestrator: <exact model id>
-Effort: <low|medium>
+Effort: <medium|high>
 
 Use Symphony to orchestrate this complex project: <your project>
 ```
@@ -76,7 +76,7 @@ You do not need to know the exact model ids: invoke Symphony without the two pro
 
 You also do not need to spell out where the project lives. If you started the agent inside the project, Symphony assumes the current working directory is the project and confirms that assumption — along with the outcome you expect — in the same questionnaire before touching any files.
 
-Symphony enforces this as a preflight gate. The declared profile is treated as a request to verify, not as evidence: Symphony checks it against the model and effort the task is actually running on and stops on any mismatch — it will not silently continue on a different model than the one you declared. A skill cannot change the model or effort of its already-running task, so an invalid configuration requires a new task.
+Symphony enforces this as a preflight gate. The declared profile is treated as a request to verify, not as evidence: Symphony checks it against the model and effort the task is actually running on and stops on any mismatch — it will not silently continue on a different model than the one you declared. The gate re-runs whenever a project resumes (a new session, a restored checkpoint, a handoff): a profile remembered from an earlier session is never evidence. During verification Symphony also compares your selection against the cheapest suitable orchestrator in the live catalog and asks once whether a different choice is intentional. A skill cannot change the model or effort of its already-running task, so an invalid configuration requires a new task.
 
 Symphony reads the live model and reasoning-effort catalog of the current host instead of assuming every host offers the same models.
 

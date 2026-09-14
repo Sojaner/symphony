@@ -1,4 +1,4 @@
 interface:
   display_name: "Symphony"
   short_description: "Give the right task to the right model on complicated projects"
-  default_prompt: "Use $symphony with orchestrator <model> at <low|medium> effort to orchestrate this project."
+  default_prompt: "Use $symphony with orchestrator <model> at <medium|high> effort to orchestrate this project."
