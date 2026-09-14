@@ -7,7 +7,7 @@
     {
       "name": "symphony",
       "source": "./plugins/symphony",
-      "description": "Cost-aware multi-model orchestration for complicated projects.",
+      "description": "Multi-model orchestration that gives the right task to the right model: steadier progress, less overthinking, lower cost.",
       "category": "productivity"
     }
   ]

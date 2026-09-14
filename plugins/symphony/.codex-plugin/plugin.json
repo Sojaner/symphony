@@ -1,15 +1,15 @@
 {
   "name": "symphony",
-  "version": "0.3.0",
-  "description": "Cost-aware multi-model orchestration for complicated projects.",
+  "version": "0.3.1",
+  "description": "Multi-model orchestration that gives the right task to the right model: steadier progress, less overthinking, lower cost.",
   "author": {
     "name": "Sojaner"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Symphony",
-    "shortDescription": "Route complex projects across specialized subagents.",
-    "longDescription": "Symphony lets a lightweight root agent coordinate complicated work through a reusable routing consultant and narrowly scoped reasoning, implementation, and review agents.",
+    "shortDescription": "Give the right task to the right model on complicated projects.",
+    "longDescription": "Symphony runs a project the way a capable administrator does: a lightweight root agent consults an expert conductor about what needs to be done and who should do it, then delegates narrow, verifiable units to the models that fit them. Senior reasoning is spent only on the hard questions; the heavy lifting goes to hardworking workhorse models. Progress stays steadier and more logical, with less overthinking, less overdoing, and lower token cost as a consequence.",
     "developerName": "Sojaner",
     "category": "Productivity",
     "capabilities": ["Interactive"],
