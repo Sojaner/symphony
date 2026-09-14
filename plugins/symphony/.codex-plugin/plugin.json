@@ -1,6 +1,6 @@
 {
   "name": "symphony",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Multi-model orchestration that gives the right task to the right model: steadier progress, less overthinking, lower cost.",
   "author": {
     "name": "Sojaner"
@@ -17,8 +17,8 @@
     "logo": "./assets/logo.png",
     "composerIcon": "./assets/logo.png",
     "defaultPrompt": [
-      "With orchestrator <model> at medium effort, use Symphony for this project.",
-      "With orchestrator <model> at high effort, route this plan with Symphony."
+      "Use Symphony to orchestrate this project.",
+      "Route this plan with Symphony."
     ]
   }
 }

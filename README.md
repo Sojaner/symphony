@@ -63,29 +63,16 @@ Install the plugin:
 
 ## Use
 
-Start a new task so the skill catalog includes the plugin. Select the task's model and effort in the host UI first: use the cheapest available model that supports spawning subagents with model overrides, at `medium` effort for routine coordination or `high` for long or unsettled projects. Low effort is not accepted for the orchestrator — verification, fit assessment, and integration are judgment work — though workers may still run at `low`.
-
-The most reliable start is the explicit command, which forces the full bootstrap (profile verification, project confirmation, fit assessment) before any project work:
+Start a new task on the cheapest available model that supports spawning subagents with model overrides, at `medium` effort for routine coordination or `high` for long or unsettled projects (low effort is not accepted for the orchestrator — verification, fit assessment, and integration are judgment work — though workers may still run at `low`). Then start Symphony:
 
 ```text
 /symphony:start <your project>          (Claude Code)
 $symphony <your project>                (Codex)
 ```
 
-Or ask in plain words with the profile declared:
+That is the whole prompt. You never have to put model ids, efforts, or project paths in it: Symphony verifies the model and effort the task is actually running on, compares them against the cheapest suitable orchestrator in the live catalog, confirms the project location (assuming the current working directory when you started the agent inside the project) and the outcome you expect, and sizes the project — asking questions interactively only where something is unverifiable, unsuitable, or a different choice than recommended.
 
-```text
-Orchestrator: <exact model id>
-Effort: <medium|high>
-
-Use Symphony to orchestrate this complex project: <your project>
-```
-
-You do not need to know the exact model ids: invoke Symphony without the two profile lines (or with a wrong one) and it lists the valid orchestrator choices on your host, asks you to pick a model and effort, and tells you how to apply the selection before any project work starts.
-
-You also do not need to spell out where the project lives. If you started the agent inside the project, Symphony assumes the current working directory is the project and confirms that assumption — along with the outcome you expect — in the same questionnaire before touching any files.
-
-Symphony enforces this as a preflight gate. The declared profile is treated as a request to verify, not as evidence: Symphony checks it against the model and effort the task is actually running on and stops on any mismatch — it will not silently continue on a different model than the one you declared. The gate re-runs whenever a project resumes (a new session, a restored checkpoint, a handoff): a profile remembered from an earlier session is never evidence. During verification Symphony also compares your selection against the cheapest suitable orchestrator in the live catalog and asks once whether a different choice is intentional. A skill cannot change the model or effort of its already-running task, so an invalid configuration requires a new task.
+The preflight gate behind this never trusts words over the runtime: an optional `Orchestrator:`/`Effort:` declaration in the prompt is still verified against the actual task and any mismatch stops project work. The gate re-runs whenever a project resumes (a new session, a restored checkpoint, a handoff) — a profile remembered from an earlier session is never evidence. A skill cannot change the model or effort of its already-running task, so an unsuitable configuration means Symphony helps you pick a model and start a new task.
 
 Symphony reads the live model and reasoning-effort catalog of the current host instead of assuming every host offers the same models.
 

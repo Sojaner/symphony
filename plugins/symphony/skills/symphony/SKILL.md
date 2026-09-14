@@ -1,6 +1,6 @@
 ---
 name: symphony
-description: Orchestrate complicated projects from a user-confirmed low-cost root through a reusable routing consultant and narrowly scoped parallel subagents. Use for multi-domain, high-risk, or multi-part work where model and reasoning-effort choices materially affect cost, speed, or quality; skip ordinary tasks one agent can finish directly. When the user explicitly asks for Symphony or orchestration, invoke this skill immediately and before asking any clarifying question — Symphony runs its own preflight verification and questionnaires.
+description: Orchestrate complicated projects from a runtime-verified low-cost root through a reusable routing consultant and narrowly scoped parallel subagents. Use for multi-domain, high-risk, or multi-part work where model and reasoning-effort choices materially affect cost, speed, or quality; skip ordinary tasks one agent can finish directly. When the user explicitly asks for Symphony or orchestration, invoke this skill immediately and before asking any clarifying question — Symphony runs its own preflight verification and questionnaires.
 ---
 
 # Symphony
@@ -18,30 +18,21 @@ Use Symphony when the work has at least one of these properties:
 
 Handle a small, sequential task directly. Delegation overhead is real work: bootstrapping the conductor and dispatching workers costs minutes of latency before any project work starts. As a sizing rule, orchestrate only when the project decomposes into three or more independently dispatchable units, or a single agent would need well over fifteen minutes of work — below that, the token savings cannot repay the coordination time, and one capable agent finishes faster at similar quality.
 
-## Require the orchestrator profile
+## Verify the orchestrator
 
 Complete this gate before reading project files, consulting the conductor, spawning workers, or starting project work.
 
-The user selects the current task's orchestrator model and effort in the host (Codex or Claude Code) and declares that choice when invoking Symphony:
-
-```text
-Orchestrator: <exact model id>
-Effort: <medium|high>
-```
-
-Low effort is not accepted for the orchestrator: the gate, the fit assessment, and integration are judgment work, and a root running at low effort demonstrably skips them. Workers may still run at `low`.
-
-The declared profile is a request to verify, not evidence. It never satisfies the gate by itself. Verify it in order:
+The user does not need to declare any model id, effort, or profile in the prompt. Symphony gathers and verifies the orchestrator itself and interacts with the user only for what it cannot determine:
 
 1. Determine the model and effort the current task is actually running on, from runtime metadata the host exposes to the agent: system context that names the active model, host status commands, or equivalent. The live model catalog only lists available choices; it does not identify the active orchestrator and cannot satisfy this step. Do not infer or guess.
-2. The gate passes only when the runtime-reported model id and effort exactly match the declared profile, the model supports spawning subagents with model overrides, and the effort is `medium` or `high`.
-3. On any mismatch, stop before all project work. Report both values plainly — "You declared `<declared>`, but this task is running on `<actual>`" — then run the profile questionnaire below. Never continue on the wrong model by default.
-4. When the runtime exposes neither model nor effort, do not proceed on the declaration alone. Ask the user one direct question that quotes the exact ids — "Is this task's model selector currently set to exactly `<id>` at `<effort>`?" — and continue only after an explicit yes. The question must name one exact model id and one effort, ask nothing else, and never be bundled with other confirmations; a vague question ("a Symphony-capable model at a suitable effort?") or a compound one is not verification. Treat any answer other than an explicit yes as a mismatch.
-5. While verifying, read the live catalog and identify the cheapest suitable orchestrator. When the verified profile is a different model or effort than that recommendation, name the recommendation and ask one question to confirm the current selection is intentional before proceeding.
+2. Read the live catalog and identify the cheapest suitable orchestrator: a model that supports spawning subagents with model overrides, at `medium` or `high` effort. Low effort is not accepted for the orchestrator — the gate, the fit assessment, and integration are judgment work, and a root running at low effort demonstrably skips them. Workers may still run at `low`.
+3. When the runtime profile is verified and suitable, state it in one line — "Orchestrator verified: `<id>` at `<effort>`" — and continue. When it is suitable but a different model or effort than the cheapest suitable recommendation, name the recommendation and ask one question to confirm the current selection is intentional.
+4. When the runtime profile is unsuitable — low effort, or no subagent support — stop before project work and run the profile questionnaire below.
+5. When the runtime exposes neither model nor effort, ask the user to read the host's model selector and report it, through the structured question tool, offering the catalog's suitable candidates as options. Their explicit answer is the verified profile: a suitable answer passes, an unsuitable one goes to the questionnaire. The question must be about the selector's actual current value, ask nothing else, and never be bundled with other confirmations; a vague question ("a Symphony-capable model at a suitable effort?") or a compound one is not verification. Never proceed on a guess.
+
+A declared profile in the invocation (`Orchestrator: <id>` / `Effort: <medium|high>`) remains supported but is a request to verify, never evidence. Verify it against the runtime exactly; on any mismatch, stop before all project work, report both values plainly — "You declared `<declared>`, but this task is running on `<actual>`" — and run the profile questionnaire. Never continue on the wrong model by default.
 
 Re-run this verification from step 1 whenever the project resumes: a new session, a restored checkpoint, a compacted conversation, or a handoff. A profile remembered from earlier turns, a checkpoint, or phrasing like "previously selected" is never evidence.
-
-When the profile is missing, invalid, unsupported, or uses another effort, stop before project work and run the profile questionnaire. Do not expect the user to know exact model ids from memory.
 
 ### Profile questionnaire
 
