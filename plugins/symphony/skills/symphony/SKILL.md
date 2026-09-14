@@ -134,12 +134,13 @@ Use a stronger reasoning model for a narrow hard question before spending that m
 
 1. Ask the conductor for a decomposition, routes, waves, and evidence.
 2. Dispatch the first independent wave within the live concurrency limit. Dispatch independent units as parallel workers; routing every unit to one worker serializes the project and forfeits the speed of orchestration.
-3. Wait for every dispatched worker to return before proceeding or concluding. Never end the root turn while any worker is outstanding — an unfinished wave is unfinished project work, and "waiting for completion" is not a final state.
-4. Inspect worker artifacts and results rather than trusting summaries alone.
-5. Reconsult only at the gates above, passing deltas instead of replaying the project.
-6. Integrate the smallest coherent change and run the checks named in the accepted route yourself — a worker's claim of success is not evidence.
-7. Ask the conductor to select a focused final reviewer. Address findings or document why they do not apply.
-8. Finish only when the user outcome and acceptance criteria are met and the root has verified them in this session.
+3. Wait for every dispatched worker to return before proceeding or concluding. Never end the root turn while any worker is outstanding — an unfinished wave is unfinished project work, and "waiting for completion" is not a final state. Use the host's blocking wait or result-retrieval tools rather than idling until the turn dies.
+4. Keep a wave ledger the moment more than one worker exists: worker id, unit, dispatch time, status, written where it survives the turn (a scratch file, or restated in the conversation at each dispatch). The host may still suspend the root during a long wait or deliver a worker's return while it sleeps; on every resume — a worker notification, a user message, a restored or compacted session — reconcile the ledger first and collect every returned result before any new decision. A suspended wave is resumed from the ledger, never abandoned; if a worker's status cannot be determined after a wake, query it or redispatch its unit rather than assuming it finished.
+5. Inspect worker artifacts and results rather than trusting summaries alone.
+6. Reconsult only at the gates above, passing deltas instead of replaying the project.
+7. Integrate the smallest coherent change and run the checks named in the accepted route yourself — a worker's claim of success is not evidence.
+8. Ask the conductor to select a focused final reviewer. Address findings or document why they do not apply.
+9. Finish only when the user outcome and acceptance criteria are met and the root has verified them in this session.
 
 If subagent spawning or model overrides are unavailable, keep the same decomposition and evidence discipline but execute sequentially with the current agent. State the limitation once.
 

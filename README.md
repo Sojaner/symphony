@@ -63,7 +63,16 @@ Install the plugin:
 
 ## Use
 
-Start a new task so the skill catalog includes the plugin. Select the task's model and effort in the host UI first: use the cheapest available model that supports spawning subagents with model overrides, at `medium` effort for routine coordination or `high` for long or unsettled projects. Low effort is not accepted for the orchestrator — verification, fit assessment, and integration are judgment work — though workers may still run at `low`. Then ask:
+Start a new task so the skill catalog includes the plugin. Select the task's model and effort in the host UI first: use the cheapest available model that supports spawning subagents with model overrides, at `medium` effort for routine coordination or `high` for long or unsettled projects. Low effort is not accepted for the orchestrator — verification, fit assessment, and integration are judgment work — though workers may still run at `low`.
+
+The most reliable start is the explicit command, which forces the full bootstrap (profile verification, project confirmation, fit assessment) before any project work:
+
+```text
+/symphony:start <your project>          (Claude Code)
+$symphony <your project>                (Codex)
+```
+
+Or ask in plain words with the profile declared:
 
 ```text
 Orchestrator: <exact model id>
