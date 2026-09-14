@@ -66,6 +66,8 @@ Use Symphony to orchestrate this complex project: <your project>
 
 You do not need to know the exact model ids: invoke Symphony without the two profile lines (or with a wrong one) and it lists the valid orchestrator choices on your host, asks you to pick a model and effort, and tells you how to apply the selection before any project work starts.
 
+You also do not need to spell out where the project lives. If you started the agent inside the project, Symphony assumes the current working directory is the project and confirms that assumption — along with the outcome you expect — in the same questionnaire before touching any files.
+
 Symphony enforces this as a preflight gate. The declared profile is treated as a request to verify, not as evidence: Symphony checks it against the model and effort the task is actually running on and stops on any mismatch — it will not silently continue on a different model than the one you declared. A skill cannot change the model or effort of its already-running task, so an invalid configuration requires a new task.
 
 Symphony reads the live model and reasoning-effort catalog of the current host instead of assuming every host offers the same models.

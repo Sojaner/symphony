@@ -47,6 +47,17 @@ Help the user choose a valid profile instead of refusing outright:
 3. Tell the user to apply the choice in the host — the model and effort selectors (for example `/model` in Claude Code, the task's model picker in Codex) — or to start a new task with that selection, since a skill cannot change the model or effort of its already-running task.
 4. After the user says they applied it, re-run the verification above from step 1. Every pass through the questionnaire ends back at verification; it never leads directly into project work.
 
+## Confirm the project
+
+The user has often already started the agent inside the project. When the invocation does not name a location, assume the current working directory is the project — but confirm that assumption before acting on it; never treat it as settled silently.
+
+Ask once, through the same question facility as the profile questionnaire — and in the same round when both are still open:
+
+- the project location: the current working directory, another path or repository, or a greenfield project with no existing code yet;
+- the outcome and acceptance criteria, when the invocation left them unclear.
+
+Do not read project files or spawn workers before the location is confirmed. One explicit confirmation is enough; do not re-ask at later gates.
+
 ## Bootstrap the conductor
 
 1. Compare the confirmed orchestrator profile with the host's live subagent tool schema — Codex collaboration tools, or the Claude Code agent tool — then inventory available worker models, efforts, and concurrency. Treat the live schema as authoritative; model names in examples or cached documentation may be stale.
