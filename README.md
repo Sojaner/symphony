@@ -29,10 +29,17 @@ codex plugin add symphony@symphony
 Start a new Codex task so its skill catalog includes the plugin, then ask:
 
 ```text
+Orchestrator: <exact model id>
+Effort: <low|medium>
+
 Use Symphony to orchestrate this complex project: <your project>
 ```
 
-Symphony requires Codex collaboration tools with subagent support. It reads the live model and reasoning-effort catalog instead of assuming every Codex host offers the same models.
+Before invoking Symphony, select the task's orchestrator model and effort in Codex. Use the cheapest available model that supports collaboration and subagent model overrides; choose `low` for straightforward routing or `medium` when the root must coordinate a longer or less settled project.
+
+Symphony enforces this as a preflight gate. It will not begin project work until the current task's model and `low` or `medium` effort are confirmed. A skill cannot change the model or effort of its already-running task, so an invalid configuration requires a new task.
+
+Symphony reads the live model and reasoning-effort catalog instead of assuming every Codex host offers the same models.
 
 ## Update
 
@@ -47,7 +54,7 @@ Start a new task after updating.
 
 ## How routing works
 
-For each complex project, Symphony creates one reusable conductor using the strongest suitable general reasoning model available. The conductor stays idle between decision gates and is consulted again through follow-up tasks. Independent workers can then run in parallel using different models and effort levels.
+After the orchestrator preflight passes, Symphony creates one reusable conductor using the strongest suitable general reasoning model available. The conductor stays idle between decision gates and is consulted again through follow-up tasks. Independent workers can then run in parallel using different models and effort levels.
 
 The bundled [model-routing index](plugins/symphony/skills/symphony/references/model-routing.md) summarizes current routing principles and links to official OpenAI guidance. The live Codex tool schema remains authoritative for model availability and supported effort levels.
 

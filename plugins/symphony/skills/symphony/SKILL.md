@@ -1,6 +1,6 @@
 ---
 name: symphony
-description: Orchestrate complicated projects through a reusable routing consultant and narrowly scoped parallel subagents. Use for multi-domain, high-risk, or multi-part work where model and reasoning-effort choices materially affect cost, speed, or quality; skip ordinary tasks one agent can finish directly.
+description: Orchestrate complicated projects from a user-confirmed low-cost root through a reusable routing consultant and narrowly scoped parallel subagents. Use for multi-domain, high-risk, or multi-part work where model and reasoning-effort choices materially affect cost, speed, or quality; skip ordinary tasks one agent can finish directly.
 ---
 
 # Symphony
@@ -18,9 +18,26 @@ Use Symphony when the work has at least one of these properties:
 
 Handle a small, sequential task directly. Delegation overhead is real work.
 
+## Require the orchestrator profile
+
+Complete this gate before reading project files, consulting the conductor, spawning workers, or starting project work.
+
+Require confirmation that the user selected the current task's orchestrator model and effort in Codex. A valid profile contains:
+
+```text
+Orchestrator: <exact model id>
+Effort: <low|medium>
+```
+
+Accept the profile from explicit runtime metadata or from the user's task-scoped confirmation. The model must support collaboration and subagent model overrides. The effort must be `low` or `medium`.
+
+The live model catalog lists available choices; it does not identify the active orchestrator and cannot satisfy this gate. Do not infer the current model or effort.
+
+When the profile is missing, unverifiable, unsupported, or uses another effort, stop before project work. Ask the user to start a new Codex task with the cheapest collaboration-capable model suitable for orchestration at `low` or `medium`, then invoke Symphony with the two-line profile above. State that a skill cannot change the model or effort of its already-running task.
+
 ## Bootstrap the conductor
 
-1. Inspect the live collaboration-tool schema for available models, efforts, and concurrency. Treat it as authoritative; model names in examples or cached documentation may be stale.
+1. Compare the confirmed orchestrator profile with the live collaboration-tool schema, then inventory available worker models, efforts, and concurrency. Treat the live schema as authoritative; model names in examples or cached documentation may be stale.
 2. Read [references/model-routing.md](references/model-routing.md). Refresh its working facts from official OpenAI documentation only when its freshness rule fires. Do not rewrite the installed plugin during a project run.
 3. Spawn `symphony_conductor` with no inherited turns. Prefer the highest-capability available general reasoning model at `high`; on the current catalog that is `gpt-6-astra`. If unavailable, use the strongest listed general model at `high`, or its highest supported effort below `high`.
 4. Give it only:

@@ -1,6 +1,6 @@
 {
   "name": "symphony",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cost-aware multi-model orchestration for complicated projects.",
   "author": {
     "name": "Sojaner"
@@ -14,8 +14,8 @@
     "category": "Productivity",
     "capabilities": ["Interactive"],
     "defaultPrompt": [
-      "Use Symphony to orchestrate this complex project.",
-      "Route this plan to the right models and efforts."
+      "With orchestrator <model> at medium effort, use Symphony for this project.",
+      "With orchestrator <model> at low effort, route this plan with Symphony."
     ]
   }
 }

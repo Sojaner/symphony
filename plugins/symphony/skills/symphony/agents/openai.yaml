@@ -1,4 +1,4 @@
 interface:
   display_name: "Symphony"
   short_description: "Route complex projects across specialized subagents"
-  default_prompt: "Orchestrate this complex project with Symphony."
+  default_prompt: "Use $symphony with orchestrator <model> at <low|medium> effort to orchestrate this project."
