@@ -25,6 +25,12 @@ Sending each task to the model that fits it changes how the whole project behave
 - **Steadier progress.** The project advances through explicit decision gates and independently verifiable units. Long runs stay on course logically instead of drifting, because replanning happens at the gates rather than mid-task.
 - **Right economics as a consequence.** Expensive reasoning is spent on the smallest unresolved question, while the heavy lifting goes to hardworking workhorse models whose longer runs justify their time. The token savings fall out of correct delegation, not corner-cutting.
 
+## When Symphony makes sense
+
+Orchestration is not free: bootstrapping the conductor, dispatching workers, and integrating their results add minutes of latency before and between project work. In a head-to-head benchmark on a deliberately small five-part task (about two minutes for a single strong agent), Symphony on a cheap low-effort root delivered the same quality at roughly 35% lower token cost — but took over six times as long. On small tasks, time is the dominant cost and a single capable agent wins.
+
+Use Symphony when the project decomposes into **three or more independently dispatchable units**, or a single agent would need **well over fifteen minutes** of work — multi-domain changes, several verification surfaces, or long execution paths. There the coordination overhead is paid once while the savings compound: independent units run in parallel on cheap models, expensive reasoning is bought only for the few decisions that need it, and progress stays steady instead of drifting. Below that size, Symphony's own skill tells the agent to skip orchestration and work directly.
+
 ## Install in Codex
 
 Add this repository as a Git marketplace:

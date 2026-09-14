@@ -16,7 +16,7 @@ Use Symphony when the work has at least one of these properties:
 - multiple specialties, repositories, or verification surfaces;
 - a long execution path where routing decisions materially affect cost or quality.
 
-Handle a small, sequential task directly. Delegation overhead is real work.
+Handle a small, sequential task directly. Delegation overhead is real work: bootstrapping the conductor and dispatching workers costs minutes of latency before any project work starts. As a sizing rule, orchestrate only when the project decomposes into three or more independently dispatchable units, or a single agent would need well over fifteen minutes of work — below that, the token savings cannot repay the coordination time, and one capable agent finishes faster at similar quality.
 
 ## Require the orchestrator profile
 
@@ -117,12 +117,13 @@ Use a stronger reasoning model for a narrow hard question before spending that m
 ## Run the project
 
 1. Ask the conductor for a decomposition, routes, waves, and evidence.
-2. Dispatch the first independent wave within the live concurrency limit.
-3. Inspect worker artifacts and results rather than trusting summaries alone.
-4. Reconsult only at the gates above, passing deltas instead of replaying the project.
-5. Integrate the smallest coherent change and run the checks named in the accepted route.
-6. Ask the conductor to select a focused final reviewer. Address findings or document why they do not apply.
-7. Finish only when the user outcome and acceptance criteria are met.
+2. Dispatch the first independent wave within the live concurrency limit. Dispatch independent units as parallel workers; routing every unit to one worker serializes the project and forfeits the speed of orchestration.
+3. Wait for every dispatched worker to return before proceeding or concluding. Never end the root turn while any worker is outstanding — an unfinished wave is unfinished project work, and "waiting for completion" is not a final state.
+4. Inspect worker artifacts and results rather than trusting summaries alone.
+5. Reconsult only at the gates above, passing deltas instead of replaying the project.
+6. Integrate the smallest coherent change and run the checks named in the accepted route yourself — a worker's claim of success is not evidence.
+7. Ask the conductor to select a focused final reviewer. Address findings or document why they do not apply.
+8. Finish only when the user outcome and acceptance criteria are met and the root has verified them in this session.
 
 If subagent spawning or model overrides are unavailable, keep the same decomposition and evidence discipline but execute sequentially with the current agent. State the limitation once.
 
