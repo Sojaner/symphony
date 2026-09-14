@@ -46,3 +46,25 @@ jobs:
             eval-results.json
             eval-report.html
             plugins/symphony/evals/results/
+
+  release:
+    needs: eval
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release on version change
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('plugins/symphony/.claude-plugin/plugin.json'))['version'])")
+          codex_version=$(python3 -c "import json; print(json.load(open('plugins/symphony/.codex-plugin/plugin.json'))['version'])")
+          [ "$version" = "$codex_version" ] || { echo "::error::Manifest versions differ: .claude-plugin $version vs .codex-plugin $codex_version"; exit 1; }
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release v$version already exists; nothing to do."
+          else
+            gh release create "v$version" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "v$version" --generate-notes
+          fi
