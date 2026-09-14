@@ -25,7 +25,9 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          test -n "$ANTHROPIC_API_KEY" || { echo "::error::ANTHROPIC_API_KEY repository secret is not set"; exit 1; }
           claude plugin eval ./plugins/symphony \
+            --trust-plugin \
             --model claude-haiku-4-5-20251001 \
             --threshold 0.9 \
             --json eval-results.json \
