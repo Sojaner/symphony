@@ -1,0 +1,95 @@
+---
+name: symphony
+description: Orchestrate complicated projects through a reusable routing consultant and narrowly scoped parallel subagents. Use for multi-domain, high-risk, or multi-part work where model and reasoning-effort choices materially affect cost, speed, or quality; skip ordinary tasks one agent can finish directly.
+---
+
+# Symphony
+
+Make a cheap root agent an effective project controller. The root owns scope, integration, verification, and the user relationship. Subagents own bounded reasoning or implementation units. A reusable **conductor** advises on decomposition, model choice, effort, scheduling, and review; it never becomes the project owner.
+
+## Activate
+
+Use Symphony when the work has at least one of these properties:
+
+- several independent implementation units;
+- architecture or reasoning whose mistakes would propagate widely;
+- multiple specialties, repositories, or verification surfaces;
+- a long execution path where routing decisions materially affect cost or quality.
+
+Handle a small, sequential task directly. Delegation overhead is real work.
+
+## Bootstrap the conductor
+
+1. Inspect the live collaboration-tool schema for available models, efforts, and concurrency. Treat it as authoritative; model names in examples or cached documentation may be stale.
+2. Read [references/model-routing.md](references/model-routing.md). Refresh its working facts from official OpenAI documentation only when its freshness rule fires. Do not rewrite the installed plugin during a project run.
+3. Spawn `symphony_conductor` with no inherited turns. Prefer the highest-capability available general reasoning model at `high`; on the current catalog that is `gpt-6-astra`. If unavailable, use the strongest listed general model at `high`, or its highest supported effort below `high`.
+4. Give it only:
+   - the project outcome and acceptance criteria;
+   - material constraints and known risks;
+   - the exact live model/effort catalog and concurrency limit;
+   - the absolute path to `references/model-routing.md`;
+   - the decision currently needed.
+
+The conductor returns this compact record:
+
+```text
+decision: <route or next step>
+assignments: <unit -> model / effort>
+schedule: <parallel waves and dependencies>
+why: <one sentence per assignment>
+evidence: <checks required before integration>
+reconsult_when: <observable triggers>
+```
+
+Keep its agent id. When it is idle, use a follow-up task for the next consultation instead of spawning another conductor. An idle agent spends no inference tokens.
+
+## Consult at decision gates
+
+Consult the conductor for every material orchestration decision:
+
+- initial decomposition and the first worker wave;
+- each model/effort assignment or reassignment;
+- parallel versus serial scheduling when dependencies are uncertain;
+- replanning after a failed, conflicting, or surprising result;
+- reviewer selection and whether the evidence is sufficient to finish.
+
+Bundle related choices into one consultation. Local tool calls, obvious next commands, and implementation details within an approved unit are not orchestration decisions.
+
+The root may reject advice that conflicts with user instructions, live constraints, repository evidence, or safety boundaries. Record the replacement decision in one sentence and continue.
+
+## Dispatch bounded work
+
+Give every worker a packet with:
+
+```text
+objective: one independently verifiable result
+ownership: exact files, modules, or research question
+context: only facts and paths needed for this unit
+constraints: interfaces and decisions it must preserve
+done: observable acceptance checks
+return: conclusions, changed files, checks run, blockers
+```
+
+Use full history only when the unit genuinely depends on it. Prefer a narrow recent-turn fork or no fork plus the packet. Parallelize units only when their writes and decisions do not overlap. The root resolves integration and runs authoritative checks; workers do not commit, publish, or broaden scope unless the user explicitly requested that action.
+
+Use a stronger reasoning model for a narrow hard question before spending that model on a broad implementation. Use cheaper coding agents for settled units. Select a reviewer different from the primary implementer when the live catalog and capacity allow it.
+
+## Run the project
+
+1. Ask the conductor for a decomposition, routes, waves, and evidence.
+2. Dispatch the first independent wave within the live concurrency limit.
+3. Inspect worker artifacts and results rather than trusting summaries alone.
+4. Reconsult only at the gates above, passing deltas instead of replaying the project.
+5. Integrate the smallest coherent change and run the checks named in the accepted route.
+6. Ask the conductor to select a focused final reviewer. Address findings or document why they do not apply.
+7. Finish only when the user outcome and acceptance criteria are met.
+
+If collaboration or model overrides are unavailable, keep the same decomposition and evidence discipline but execute sequentially with the current agent. State the limitation once.
+
+## Cost discipline
+
+- Default to `low` for deterministic lookup or mechanical work, `medium` for bounded multi-step work, and `high` for genuinely difficult reasoning.
+- Use `xhigh`, `max`, or `ultra` only when the conductor identifies the specific uncertainty that lower effort is unlikely to resolve.
+- Escalate the smallest unit, not the whole project.
+- Stop a worker when its acceptance check is satisfied. Reuse its conclusion; do not make the root solve the same problem again.
+- Prefer diverse review over duplicate implementation.

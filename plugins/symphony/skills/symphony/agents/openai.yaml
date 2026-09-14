@@ -1,0 +1,4 @@
+interface:
+  display_name: "Symphony"
+  short_description: "Route complex projects across specialized subagents"
+  default_prompt: "Orchestrate this complex project with Symphony."

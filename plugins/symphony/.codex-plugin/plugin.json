@@ -1,0 +1,21 @@
+{
+  "name": "symphony",
+  "version": "0.1.0",
+  "description": "Cost-aware multi-model orchestration for complicated projects.",
+  "author": {
+    "name": "Sojaner"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Symphony",
+    "shortDescription": "Route complex projects across specialized subagents.",
+    "longDescription": "Symphony lets a lightweight root agent coordinate complicated work through a reusable routing consultant and narrowly scoped reasoning, implementation, and review agents.",
+    "developerName": "Sojaner",
+    "category": "Productivity",
+    "capabilities": ["Interactive"],
+    "defaultPrompt": [
+      "Use Symphony to orchestrate this complex project.",
+      "Route this plan to the right models and efforts."
+    ]
+  }
+}
