@@ -1535,6 +1535,32 @@ class SymphonyHookTests(unittest.TestCase):
         )
         self.assertFalse(self.state()["active_run"]["assessment_due"])
 
+    def test_ordinary_owner_relay_requires_terminal_registered_lead(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        run = self.state()["active_run"]
+        self.set_current_assessment("medium")
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="continue"), self.data,
+        )
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:medium:medium\n"
+            "SYMPHONY_ASSESSMENT_REASON:Same work remains bounded"
+        )
+
+        result = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=receipt), self.data, stop_wait_seconds=0,
+        )
+
+        self.assertTrue(result.block)
+        self.assertEqual(("medium", 1, True, False), (
+            self.state()["active_run"]["mode"],
+            self.state()["active_run"]["mode_revision"],
+            self.state()["active_run"]["assessment_due"],
+            self.state()["active_run"]["strong_assessment_required"],
+        ))
+
     def test_assess_context_survives_reassessment_helper(self):
         result = self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data,
@@ -2232,6 +2258,11 @@ Completed: symphony_lead — planned
         self.assertIn(
             "The assessor or execution lead performs this grounding; the root only relays its bounded result.",
             routing,
+        )
+        self.assertNotIn("legacy/dry-run marker fallback", skill)
+        self.assertIn(
+            "Dry-run completion remains blocked until explicit persisted dry-run state exists.",
+            skill,
         )
 
     @unittest.skipUnless(shutil.which("node"), "Hosted eval regex checks require Node")

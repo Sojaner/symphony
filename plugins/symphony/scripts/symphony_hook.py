@@ -461,12 +461,11 @@ def _record_assessment_receipt(state, run, message, now, agent_id=None):
     ):
         return False
     mode = mode.lower()
-    if agent_id is None and run.get("strong_assessment_required"):
+    if agent_id is None and _host_reports_child_lifecycle() is not False:
         records = {record["id"]: record for record in _agent_records(run)}
-        assessor = records.get(run.get("assessor_agent_id"))
-        if _host_reports_child_lifecycle() is not False and (
-            not assessor or assessor["status"] != "terminal"
-        ):
+        role = "assessor" if run.get("strong_assessment_required") else "lead"
+        authority = records.get(run.get(f"{role}_agent_id"))
+        if not authority or authority["status"] != "terminal":
             return False
     if (
         not run.get("strong_assessment_required")
