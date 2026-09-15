@@ -14,6 +14,24 @@ jobs:
       - name: Run lifecycle tests
         run: python3 -m unittest discover -s plugins/symphony/tests -v
 
+      - name: Run bounded Codex control smoke when available
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if ! command -v codex >/dev/null 2>&1; then
+            echo "::notice::SKIP Codex smoke: Codex CLI is unavailable"
+          elif [ -z "$OPENAI_API_KEY" ]; then
+            echo "::notice::SKIP Codex smoke: OPENAI_API_KEY is unavailable"
+          else
+            python3 plugins/symphony/scripts/codex_smoke.py \
+              --candidate-marketplace . \
+              --output codex-smoke-artifacts \
+              --name control-help \
+              --prompt /symphony:help \
+              --expect SYMPHONY_CONTROL_HANDLED: \
+              --timeout 120
+          fi
+
       - name: Install Claude Code
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
@@ -49,6 +67,7 @@ jobs:
           path: |
             eval-results.json
             eval-report.html
+            codex-smoke-artifacts/
             plugins/symphony/evals/results/
 
   release:

@@ -7,6 +7,12 @@ description: Route project work through bounded assessment and mode-appropriate 
 
 Use a weak root safely by making it a thin session keeper. A bounded strongest/high assessor sizes the run; a separate execution lead performs the selected mode. Deterministic hooks keep an active-run receipt outside model context and guard normal stopping.
 
+## Assigned child roles take precedence
+
+An agent assigned `symphony_assessor` is already the assessor, even when lifecycle context is injected into its turn. An agent assigned `symphony_lead` is already the lead under the same rule. A child must not run the root bootstrap or require its own spawn tools. The assessor directly performs the bounded read-only assessment in its assignment. The lead directly performs the accepted execution assignment and may delegate only the mode-authorized workers described below.
+
+Assigned children do not apply the root-only Mandatory first gate below; their trusted host assignment and runtime metadata govern their role.
+
 ## Mandatory first gate
 
 Before doing anything else, inspect the user prompt for an explicit `Orchestrator:` or `Effort:` declaration and compare it with trusted runtime metadata. A declaration is never evidence. If either value cannot be verified or differs, reply only with `Orchestrator mismatch`, the declared and actual values, and an instruction to start a correctly configured task. Do not give lifecycle advice, options, project analysis, or spawning guidance.
@@ -48,9 +54,11 @@ SYMPHONY_ASSESSMENT:<run-id>:<project-profile>:<run-mode>
 SYMPHONY_ASSESSMENT_REASON:<single bounded line>
 ```
 
-Bind `<run-id>` to the current run. The current run's root must relay both lines in an owner control response and wait for the Stop hook to persist the accepted assessment before execution, then emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
+Bind `<run-id>` to the current run. The current run's root must relay both lines in an owner control response and wait for the Stop hook to persist the accepted assessment before execution. Immediately end that response after the registration and assessment lines for a synchronous assessor. Never spawn the lead in the same response. After the hook confirms acceptance, emit `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>` and continue.
 
 3. Spawn the separate execution lead selected by the accepted assessment. Emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution` first and give it the assessor result plus the bounded objective, run id, registration and completion receipts. The execution lead owns implementation and authoritative verification. After it is terminal, emit `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
+
+Only after the assessor is terminal and its assessment is accepted may optional memory work begin. Small runs skip optional memory probing. For medium and large runs, the execution lead may dispatch at most one disposable memory-probe worker, and only when trusted host configuration proves a verified host tool-timeout or cancellation path will make that worker terminal inside the stated bound. If that path cannot be verified, skip optional memory. On memory capability failure, timeout, or hang, ensure the memory-probe worker is terminal before continuing, record the fallback to repository documents and source inspection, and complete the project through that fallback. Never add a monitor, daemon, or retrying probe.
 
 The execution lead returns and follows this record:
 
@@ -128,7 +136,7 @@ When Codebase Memory MCP tools are available to the assessor or execution lead, 
 
 ## Extended document memory
 
-Activate this only after the assessor or execution lead verifies usable codebase-memory-mcp tools and a healthy index for the current project. Otherwise do not create `.symphony/memory/`; continue with compact lifecycle recovery.
+Activate this only under the bounded optional-memory rule above, after the execution lead verifies usable codebase-memory-mcp tools and a healthy index for the current project. The assessor may select memory but does not probe it or delegate. Otherwise do not create `.symphony/memory/`; continue with compact lifecycle recovery.
 
 The execution lead is the only writer. It atomically replaces `.symphony/memory/current.md` and appends changed durable facts to `.symphony/memory/history/<run-id>.md` after selecting or changing mode, after a material decision or discovery, before dispatching a worker wave, after integrating a worker wave, after verification changes the known state, and immediately before successful or graceful completion.
 

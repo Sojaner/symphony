@@ -40,7 +40,9 @@ The assessor or execution lead performs this grounding; the root only relays its
 
 ### Document memory
 
-Markdown memory requires verified MCP availability and healthy indexing. Read `current.md` directly; retrieve history with `search_graph` or `search_code`, then inspect exact snippets or use targeted direct reads and run `check_index_coverage` for every memory path used. If memory files are ignored, indexed history is disabled until the user changes that policy.
+Small runs skip optional memory probing. Only after the assessor is terminal and its assessment is accepted may a medium or large execution lead dispatch at most one disposable memory-probe worker. That probe requires trusted configuration proving a verified host tool-timeout or cancellation path will make the worker terminal inside the bound. If that path cannot be verified, skip optional memory. After a missing capability or any failure, timeout, or hang, ensure the memory-probe worker is terminal before continuing and use the fallback to repository documents and source inspection; it never blocks project completion or triggers another probe.
+
+Markdown memory additionally requires healthy indexing. Read `current.md` directly; retrieve history with `search_graph` or `search_code`, then inspect exact snippets or use targeted direct reads and run `check_index_coverage` for every memory path used. If memory files are ignored, indexed history is disabled until the user changes that policy.
 
 ## Missing-capability suggestions
 

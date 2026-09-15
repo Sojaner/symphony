@@ -13,10 +13,18 @@ from unittest import mock
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "symphony_hook.py"
+CODEX_SMOKE_PATH = PLUGIN_ROOT / "scripts" / "codex_smoke.py"
 
 
 def load_hook_module():
     spec = importlib.util.spec_from_file_location("symphony_hook", SCRIPT_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_codex_smoke_module():
+    spec = importlib.util.spec_from_file_location("codex_smoke", CODEX_SMOKE_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -2556,6 +2564,266 @@ class SymphonyHookTests(unittest.TestCase):
                 now=1_000_000 + self.hook.SUGGESTION_COOLDOWN_SECONDS,
             )
         )
+
+
+class MemoryContractTests(unittest.TestCase):
+    def test_optional_memory_probe_is_bounded_and_follows_assessment(self):
+        skill = (PLUGIN_ROOT / "skills" / "symphony" / "SKILL.md").read_text(encoding="utf-8")
+        routing = (
+            PLUGIN_ROOT / "skills" / "symphony" / "references" / "capability-routing.md"
+        ).read_text(encoding="utf-8")
+        contract = skill + "\n" + routing
+
+        for required in (
+            "Small runs skip optional memory probing",
+            "Only after the assessor is terminal and its assessment is accepted",
+            "at most one disposable memory-probe worker",
+            "verified host tool-timeout or cancellation path",
+            "If that path cannot be verified, skip optional memory",
+            "failure, timeout, or hang",
+            "fallback to repository documents and source inspection",
+            "memory-probe worker is terminal before continuing",
+            "An agent assigned `symphony_assessor` is already the assessor",
+            "must not run the root bootstrap or require its own spawn tools",
+            "Assigned children do not apply the root-only Mandatory first gate",
+            "Immediately end that response after the registration and assessment lines",
+            "Never spawn the lead in the same response",
+        ):
+            self.assertIn(required, contract)
+        self.assertLess(
+            skill.index("Assigned child roles take precedence"),
+            skill.index("## Mandatory first gate"),
+        )
+        self.assertLess(
+            skill.index("before spawning exactly one `symphony_assessor`"),
+            skill.index("at most one disposable memory-probe worker"),
+        )
+
+    def test_codex_smoke_harness_exists(self):
+        self.assertTrue(CODEX_SMOKE_PATH.is_file())
+
+
+class CodexSmokeTests(unittest.TestCase):
+    def setUp(self):
+        self.smoke = load_codex_smoke_module()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def require(self, name):
+        self.assertTrue(hasattr(self.smoke, name), f"codex_smoke.{name} is missing")
+        return getattr(self.smoke, name)
+
+    def test_builds_candidate_install_and_exec_commands(self):
+        build_install_commands = self.require("build_install_commands")
+        build_exec_command = self.require("build_exec_command")
+        marketplace = Path("/candidate")
+        repo = Path("/trial/repo")
+
+        self.assertEqual([
+            ["codex", "plugin", "marketplace", "add", "/candidate", "--json"],
+            ["codex", "plugin", "add", "symphony@symphony", "--json"],
+        ], build_install_commands("codex", marketplace))
+        self.assertEqual([
+            "codex", "--ask-for-approval", "never", "--sandbox", "workspace-write",
+            "--cd", "/trial/repo", "exec", "--json", "--ephemeral", "--model",
+            "gpt-5.6-luna", "--config", 'model_reasoning_effort="low"',
+            "/symphony:help",
+        ], build_exec_command(
+            "codex", repo, "/symphony:help", model="gpt-5.6-luna", effort="low",
+        ))
+
+    def test_hard_timeout_terminates_the_process(self):
+        run_process = self.require("run_process")
+
+        completed = run_process(
+            [sys.executable, "-c", "import sys; print(sys.stdin.read())"],
+            env=os.environ.copy(),
+            timeout=1,
+            input_text="probe",
+        )
+        self.assertEqual("probe", completed.stdout.strip())
+
+        with self.assertRaisesRegex(RuntimeError, "timed out"):
+            run_process(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                env=os.environ.copy(),
+                timeout=0.05,
+            )
+
+    def test_jsonl_parsing_and_host_usage_are_preserved(self):
+        parse_jsonl = self.require("parse_jsonl")
+        extract_host_usage = self.require("extract_host_usage")
+        raw = "\n".join((
+            '{"type":"thread.started","thread_id":"thread-1"}',
+            '{"type":"turn.completed","usage":{"input_tokens":11,'
+            '"cached_input_tokens":3,"output_tokens":5}}',
+            "",
+        ))
+
+        events = parse_jsonl(raw)
+
+        self.assertEqual(["thread.started", "turn.completed"], [event["type"] for event in events])
+        self.assertEqual([{
+            "input_tokens": 11, "cached_input_tokens": 3, "output_tokens": 5,
+        }], extract_host_usage(events))
+        with self.assertRaisesRegex(ValueError, "line 2"):
+            parse_jsonl('{"type":"ok"}\nnot-json\n')
+
+    def test_trial_paths_and_environment_are_isolated(self):
+        prepare_trial = self.require("prepare_trial")
+        trial_environment = self.require("trial_environment")
+        root = Path(self.tmp.name) / "trial"
+
+        paths = prepare_trial(root)
+        env = trial_environment(paths, {"PATH": "/bin"})
+
+        self.assertEqual(root / "codex-home", paths.codex_home)
+        self.assertEqual(root / "repo", paths.repo)
+        self.assertEqual(
+            root / "codex-home" / "plugins" / "data" / "symphony-symphony",
+            paths.plugin_data,
+        )
+        self.assertEqual(root / "artifacts", paths.artifacts)
+        self.assertEqual(str(paths.codex_home), env["CODEX_HOME"])
+        self.assertEqual(str(paths.plugin_data), env["PLUGIN_DATA"])
+        self.assertEqual("0", env["SYMPHONY_STOP_WAIT_SECONDS"])
+        self.assertEqual("/bin", env["PATH"])
+        self.assertEqual(4, len({path.resolve() for path in (
+            paths.codex_home, paths.repo, paths.plugin_data, paths.artifacts,
+        )}))
+
+    def test_prepare_trial_accepts_a_fresh_existing_root(self):
+        prepare_trial = self.require("prepare_trial")
+        root = Path(self.tmp.name) / "allocated"
+        root.mkdir()
+
+        paths = prepare_trial(root)
+
+        self.assertEqual(root, paths.root)
+        self.assertTrue(paths.artifacts.is_dir())
+
+    def test_lifecycle_assertions_require_order_and_terminal_state(self):
+        assert_lifecycle = self.require("assert_lifecycle")
+        events = [{
+            "type": "item.completed",
+            "item": {"text": (
+                "Delegating: symphony_assessor — classify — gpt/high — initial\n"
+                "Completed: assessor — terminal — tokens 10 — duration 1s\n"
+                "fallback to repository documents and source inspection\n"
+                "<!-- SYMPHONY_RUN_COMPLETE:abc -->"
+            )},
+        }]
+        state = {"active_run": None, "run_history": [{"id": "abc", "status": "completed"}]}
+
+        assert_lifecycle(events, state, [
+            "Delegating: symphony_assessor", "Completed: assessor",
+            "fallback to repository documents and source inspection",
+            "SYMPHONY_RUN_COMPLETE:abc",
+        ], require_completion=True)
+        with self.assertRaisesRegex(AssertionError, "out of order"):
+            assert_lifecycle(events, state, ["Completed: assessor", "Delegating: symphony_assessor"])
+        with self.assertRaisesRegex(AssertionError, "active_run"):
+            assert_lifecycle(events, {"active_run": {"id": "abc"}}, [], require_completion=True)
+
+    def test_installed_candidate_must_match_source_contents(self):
+        verify_installed_candidate = self.require("verify_installed_candidate")
+        candidate = Path(self.tmp.name) / "candidate"
+        installed = Path(self.tmp.name) / "installed"
+        for root in (candidate, installed):
+            (root / ".codex-plugin").mkdir(parents=True)
+            (root / "scripts").mkdir()
+            (root / ".codex-plugin" / "plugin.json").write_text('{"name":"symphony"}\n')
+            (root / "scripts" / "codex_smoke.py").write_text("candidate\n")
+
+        generated = installed / ".codex-plugin" / "migrated-command-skills" / "help" / "SKILL.md"
+        generated.parent.mkdir(parents=True)
+        generated.write_text("generated by Codex\n")
+        verify_installed_candidate(candidate, installed)
+        (installed / "scripts" / "codex_smoke.py").write_text("stale\n")
+        with self.assertRaisesRegex(RuntimeError, "installed candidate differs"):
+            verify_installed_candidate(candidate, installed)
+
+    def test_hook_trust_edit_contains_only_candidate_hooks(self):
+        candidate_hook_trust_edit = self.require("candidate_hook_trust_edit")
+        response = {"data": [{"hooks": [
+            {"key": "symphony:session", "pluginId": "symphony@symphony",
+             "currentHash": "sha256:candidate", "sourcePath": "/installed/hooks/codex.json"},
+            {"key": "other:stop", "pluginId": "other@account",
+             "currentHash": "sha256:other", "sourcePath": "/other/hooks.json"},
+        ]}]}
+
+        edit = candidate_hook_trust_edit(response, Path("/installed"))
+
+        self.assertEqual({
+            "edits": [{
+                "keyPath": "hooks.state",
+                "value": {"symphony:session": {"trusted_hash": "sha256:candidate"}},
+                "mergeStrategy": "upsert",
+            }],
+            "reloadUserConfig": True,
+        }, edit)
+        with self.assertRaisesRegex(RuntimeError, "outside installed candidate"):
+            candidate_hook_trust_edit({"data": [{"hooks": [{
+                "key": "symphony:stop", "pluginId": "symphony@symphony",
+                "currentHash": "sha256:wrong", "sourcePath": "/other/hooks.json",
+            }]}]}, Path("/installed"))
+
+    def test_hanging_memory_fixture_has_a_host_startup_deadline(self):
+        configure_memory_fixture = self.require("configure_memory_fixture")
+        prepare_trial = self.require("prepare_trial")
+        paths = prepare_trial(Path(self.tmp.name) / "memory-trial")
+        (paths.codex_home / "config.toml").write_text("[plugins]\n", encoding="utf-8")
+
+        configure_memory_fixture(paths, "hanging")
+
+        config = (paths.codex_home / "config.toml").read_text(encoding="utf-8")
+        self.assertIn('[mcp_servers."codebase-memory-mcp"]', config)
+        self.assertIn("startup_timeout_sec = 1", config)
+        self.assertIn("time.sleep(600)", config)
+
+    def test_copied_credentials_are_scrubbed_from_retained_trial_data(self):
+        scrub_trial_auth = self.require("scrub_trial_auth")
+        prepare_trial = self.require("prepare_trial")
+        paths = prepare_trial(Path(self.tmp.name) / "credential-trial")
+        copied_auth = paths.codex_home / "auth.json"
+        copied_auth.write_text('{"token":"secret"}\n', encoding="utf-8")
+
+        scrub_trial_auth(paths)
+
+        self.assertFalse(copied_auth.exists())
+
+    def test_failed_started_trial_capture_includes_state_artifacts_timing_and_usage(self):
+        capture_trial = self.require("capture_trial")
+        prepare_trial = self.require("prepare_trial")
+        paths = prepare_trial(Path(self.tmp.name) / "failed-trial")
+        (paths.plugin_data / "state.json").write_text(
+            '{"active_run":{"id":"run-1"}}\n', encoding="utf-8",
+        )
+        (paths.repo / "partial.txt").write_text("partial\n", encoding="utf-8")
+        raw = '{"type":"turn.completed","usage":{"input_tokens":7}}\n'
+
+        capture_trial(
+            paths,
+            raw,
+            "timed out",
+            elapsed=2.5,
+            outer_elapsed=3.0,
+            command=["codex", "exec"],
+            memory_fixture="hanging",
+            status="failed",
+            error="outer deadline",
+        )
+
+        summary = json.loads((paths.artifacts / "summary.json").read_text(encoding="utf-8"))
+        state = json.loads((paths.artifacts / "state.json").read_text(encoding="utf-8"))
+        artifacts = json.loads(
+            (paths.artifacts / "repo-artifacts.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual("failed", summary["status"])
+        self.assertEqual(3.0, summary["outer_elapsed_seconds"])
+        self.assertEqual([{"input_tokens": 7}], summary["host_usage"])
+        self.assertEqual("run-1", state["state.json"]["active_run"]["id"])
+        self.assertEqual(["partial.txt"], artifacts["files"])
 
 
 class HookDeclarationTests(unittest.TestCase):
