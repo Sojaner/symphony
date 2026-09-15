@@ -36,7 +36,7 @@
 - [ ] Add failing tests proving bootstrap contains no root repository/MCP work, and normal completion fails without an accepted current assessment or with a live registered assessor.
 - [ ] Run those tests and record the expected failures.
 - [ ] Reduce bootstrap to objective/run/profile plus exact delegation, registration, receipt, and wait instructions. Move discovery, capability routing, memory choice, and verification to assessor/lead guidance.
-- [ ] Make root-relayed assessment fallback conditional on absence of child-lifecycle support; require the registered assessor otherwise.
+- [ ] Determine child-lifecycle support from trusted host configuration. Reject unverified owner fallback when it exists, but permit a relay tied to the terminal registered assessor and preserve same-mode lead reassessment when strong assessment is not due.
 - [ ] Add exact `Delegating:`, observed-only `Waiting:`, and `Completed:` contracts.
 - [ ] Run focused and full unit tests; commit.
 
@@ -48,10 +48,10 @@
 - Modify: `plugins/symphony/commands/*.md`
 
 - [ ] Add failing table-driven tests for every command during no-run, starting, active, and stopping states, including `agents --all`, empty enable, invalid assess, and malformed controls.
-- [ ] Add failing tests for explicit dry-run state and cross-session interrupted ownership with and without live agents.
+- [ ] Add failing tests for explicit dry-run state and cross-session interrupted ownership with and without live agents, including `SessionStart → control → Stop`, foreign/previous-owner interrupts, and competing takeovers.
 - [ ] Run the focused tests and record the expected failures.
-- [ ] Add the minimum single-use control receipt, explicit `dry_run`, and atomic interrupted ownership transfer fields/guards.
-- [ ] Verify controls never enter the Stop wait path or resume work, dry-run is the only bypass, and foreign live runs stay inspection-only.
+- [ ] Add the minimum single-use control receipt, explicit `dry_run`, owner-scoped recovery events, and atomic interrupted ownership transfer fields/guards. Transfer consumes interruption eligibility.
+- [ ] Verify controls never enter the Stop wait path or resume work, dry-run is the only bypass, foreign startup is passive, and foreign live runs stay inspection-only.
 - [ ] Run focused and full unit tests; commit.
 
 ### Task 3: Bound optional memory and add the real-Codex harness
@@ -63,10 +63,10 @@
 - Modify: `plugins/symphony/tests/test_symphony_hook.py`
 - Modify: `.github/workflows/plugin-eval.yml`
 
-- [ ] Add failing contract tests: small skips memory; medium/large uses at most one disposable bounded probe; failure/hang falls back; assessor is spawned first.
+- [ ] Add failing contract tests: small skips memory; medium/large probes at most once only with a verified host tool-timeout/cancellation path; otherwise it skips; failure/hang falls back; assessor is spawned first.
 - [ ] Add failing harness tests for command construction, hard timeout, JSONL parsing, isolated paths, and lifecycle assertions without invoking Codex.
 - [ ] Run the focused tests and record the expected failures.
-- [ ] Implement the minimum stdlib harness and skill guidance. Reuse the existing hook state and CLI; do not add a monitor or orchestration framework.
+- [ ] Implement the minimum stdlib harness and skill guidance. Reuse the existing hook state and CLI; do not add a monitor or orchestration framework. The hanging-server trial must observe fallback and successful project completion before its outer deadline.
 - [ ] Add a bounded CI smoke when Codex and credentials are available; otherwise emit an explicit skip while deterministic tests remain required.
 - [ ] Run unit tests, plugin validators, and cheap live control trials; commit.
 
@@ -76,10 +76,10 @@
 - Modify only files implicated by observed failures.
 - Add one regression test per distinct root cause.
 
-- [ ] Run command/state cases first, then three fresh weak Luna/low small trials, recovery/compaction/foreign-session cases, memory absent/failing/hanging, and medium/large delegation cases.
+- [ ] Run command/state cases first, then weak Luna/low small trials, recovery/compaction/foreign-session cases, memory absent/failing/hanging, and medium/large delegation cases.
 - [ ] For each failure: preserve its event/state evidence, diagnose the shared root cause, add a failing regression, implement the smallest fix, and rerun the targeted live case.
 - [ ] Repeat until every finite matrix case is terminal, bounded, observable, and internally consistent.
-- [ ] Run the full matrix once on the final tree and commit any fixes.
+- [ ] On the release candidate, run the weak-root scenario three consecutive fresh times; reset the count after any relevant change. Run the complete final matrix once and commit any fixes.
 
 ### Task 5: Document, review, release, and verify the installed package
 
@@ -92,7 +92,7 @@
 
 - [ ] Add a failing release-contract test for the new controls, ownership, weak-root protocol, memory fallback, live harness, and version `0.16.0`.
 - [ ] Update documentation and both plugin manifests; do not change marketplace versions.
-- [ ] Run the complete unit suite, validators, diff checks, and full live matrix.
+- [ ] Run the complete unit suite, validators, diff checks, and full live matrix. Use a fresh Codex home, repository, and plugin data; install the candidate through a local marketplace, verify its installed contents, and trust only its candidate hooks. An optional CI skip never substitutes for this local release gate, and any started live trial must fail on authentication, installation, timeout, or assertion failure.
 - [ ] Obtain a strongest/high whole-change review; fix and re-review any load-bearing finding.
 - [ ] Push `main`, observe CI and release publication to terminal success, install the published plugin fresh, and run one final weak-root smoke.
 - [ ] Send the configured completion notification only after the installed smoke is green.

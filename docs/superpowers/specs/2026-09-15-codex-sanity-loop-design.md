@@ -25,7 +25,7 @@ The v0.15.0 protocol asks a weak root to load the complete Symphony skill, inven
 
 The root performs only control work: read the injected bootstrap packet, announce and spawn the named agent, register its identity, relay its terminal receipt, and wait while agents remain active. Repository discovery, capability selection, optional MCP use, mode choice, implementation, and verification belong to the assessor or execution lead.
 
-A normal run is terminal only when its current assessment revision has an accepted receipt and, on hosts that report child lifecycle events, the registered assessor has terminated. A root-relayed receipt remains available only for hosts that cannot report child lifecycle events. The existing dry-run path is the sole explicit validation bypass and is recorded as such in run state.
+A normal run is terminal only when its current assessment revision has an accepted receipt. On hosts configured to report child lifecycle events, an initial strong-assessment relay must identify the current registered assessor and that assessor must be terminal; an unverified owner fallback is rejected. Hosts without child lifecycle events retain the documented owner fallback. An ordinary same-mode reassessment may still be relayed by the current execution lead when strong assessment is not due. The existing dry-run path is the sole explicit validation bypass and is recorded as such in run state.
 
 The root uses three visible records:
 
@@ -45,13 +45,13 @@ Completed: <agent id/role> — <status> — tokens <value or not exposed by host
 
 ## Interrupted ownership
 
-An interrupted run transfers ownership to a new session only when no registered agent remains active. The transfer is atomic under the existing state lock and records the prior owner and transfer time. If an agent is still active, the new session is inspection-only and receives recovery guidance. Ordinary active runs never transfer merely because another session sends a prompt.
+Only the owning session may mark its run interrupted or mutate its recovery/reassessment state. A foreign session start is passive. An interrupted run transfers ownership to a new session only when no registered agent remains active. The transfer is atomic under the existing state lock, records the prior owner and transfer time, and consumes the interruption eligibility so neither the old owner nor a competing session can reuse it. If an agent is still active, the new session is inspection-only and receives recovery guidance. Ordinary active runs never transfer merely because another session sends a prompt.
 
 ## Assessment and memory
 
 The bootstrap packet contains the objective, run id, required assessor profile, registration/receipt syntax, and nothing that requires repository or MCP discovery by the root. The assessor decides project profile, run mode, execution lead, capability use, and verification strategy.
 
-Small runs skip document-memory probing. Medium and large runs may ask a disposable worker to probe codebase-memory once with a hard host-side deadline. Missing, failing, or hanging MCP capability produces a bounded fallback to repository documents and source inspection; it does not delay assessor creation or normal completion. No monitor service is added.
+Small runs skip document-memory probing. Medium and large runs may ask a disposable worker to probe codebase-memory once only when trusted host configuration exposes a verified tool timeout or cancellation path that makes the worker terminal within the bound. Otherwise Symphony skips optional memory. Missing, failing, or hanging MCP capability produces a bounded fallback to repository documents and source inspection; the hanging-server trial must prove that fallback and project completion occur before the outer trial deadline. No monitor service is added.
 
 ## Real Codex validation
 
@@ -66,7 +66,7 @@ The finite release matrix covers:
 - missing receipts, stale receipts, wrong modes, active children, and corrupt state;
 - visible delegation/wait/completion records and honest unavailable usage.
 
-Cheap deterministic and control cases run first. The weak-root scenario must pass three consecutive isolated trials. Any failure is fixed with a regression test, then the targeted live case is rerun; the full matrix runs once on the final tree.
+Cheap deterministic and control cases run first. The weak-root scenario must pass three consecutive isolated trials on the release candidate; any relevant later change resets that count. Any failure is fixed with a regression test, then the targeted live case is rerun; the full matrix runs once on the final tree.
 
 ## Release
 
