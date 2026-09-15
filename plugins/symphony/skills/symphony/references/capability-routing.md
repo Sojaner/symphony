@@ -36,7 +36,7 @@ Use this order:
 5. Check index coverage for every cited or operated-on path.
 6. Fall back to targeted source search for literals, configuration, non-code files, or reported coverage gaps.
 
-The root performs this grounding before delegation. Its worker packet includes the project id, index generation/freshness, bounded scope, queries and pagination state, qualified symbols, trace findings, coverage results, source fallback, and unresolved questions. A worker without graph tools must not claim direct MCP evidence.
+The assessor or execution lead performs this grounding; the root only relays its bounded result. A worker packet includes the project id, index generation/freshness, bounded scope, queries and pagination state, qualified symbols, trace findings, coverage results, source fallback, and unresolved questions. A worker without graph tools must not claim direct MCP evidence.
 
 ### Document memory
 

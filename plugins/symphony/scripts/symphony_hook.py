@@ -61,6 +61,10 @@ MEMORY_UNAVAILABLE_RE = re.compile(
     r"(?<![A-Za-z0-9_-])SYMPHONY_MEMORY_UNAVAILABLE:([a-f0-9]+):codebase-memory-mcp(?![A-Za-z0-9_-])",
     re.IGNORECASE,
 )
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+HOOK_DECLARATION_PATH = PLUGIN_ROOT / "hooks" / (
+    "codex.json" if os.environ.get("PLUGIN_DATA") else "hooks.json"
+)
 
 
 def memory_paths(project_root, run_id):
@@ -342,66 +346,54 @@ def _has_accepted_assessment(run):
     )
 
 
+def _host_reports_child_lifecycle():
+    """Read the installed host declaration; prompts and event payloads are not authority."""
+    try:
+        hooks = json.loads(HOOK_DECLARATION_PATH.read_text(encoding="utf-8"))["hooks"]
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(hooks, dict):
+        return None
+    configured = {event for event in ("SubagentStart", "SubagentStop") if event in hooks}
+    if not configured:
+        return False
+    return True if len(configured) == 2 else None
+
+
 def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, now=None):
     action = "Recover" if recovery else "Start"
-    assessment_route = (
-        "Reconcile tracked workers, then visibly delegate a fresh separate mode-appropriate execution "
-        "lead from bounded lifecycle/document memory using the accepted assessment; it performs the "
-        "cheap reassessment before project work. "
+    route = (
+        "Reconcile observed agents, then emit `Delegating: symphony_lead — <bounded objective> — "
+        "<model>/<effort> — accepted-mode reassessment`, spawn a fresh separate mode-appropriate "
+        "execution lead, register it, and wait. "
         if recovery and accepted_recovery else
-        "Visibly delegate one strongest-available general reasoning model at high effort with no "
-        "inherited turns as read-only symphony_assessor. Wait for its authorized assessment receipt, "
-        "then visibly delegate a separate mode-appropriate execution lead: small=capable direct/medium, "
-        "medium=balanced/medium with at most two workers, large=capable coordinator/medium-or-high with "
-        "delegated waves. The assessor must not implement or become the lead. It returns exactly: "
-        "`SYMPHONY_ASSESSMENT:<run-id>:<project-profile>:<run-mode>` and "
-        "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>` using this current run id "
-        f"`{run['id']}`; the current run's root must relay both lines before execution. "
+        "Emit `Delegating: symphony_assessor — <bounded objective> — <model>/<effort> — initial or "
+        "required reassessment`, spawn one strongest-available general reasoning model at high effort "
+        "with no inherited turns as read-only symphony_assessor, register it, and wait. After its "
+        "accepted receipt, emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — "
+        "selected <mode> execution`, spawn a separate mode-appropriate execution lead, register it, "
+        "and wait. The assessor must not implement or become the lead. "
         if run["assessment_due"] else
-        "Reconcile tracked workers, then visibly delegate a fresh separate mode-appropriate execution "
-        "lead from bounded lifecycle/document memory using the accepted assessment. "
+        "Reconcile observed agents, then emit `Delegating: symphony_lead — <bounded objective> — "
+        "<model>/<effort> — selected <mode> execution`, spawn a fresh separate mode-appropriate "
+        "execution lead, register it, and wait. "
     )
-    current = int(time.time() if now is None else now)
-    cooldowns = ", ".join(
-        sorted(
-            capability
-            for capability in state.get("suggestions", {})
-            if not can_suggest(state, capability, current)
-        )
-    ) or "none"
-    agents = ", ".join(run.get("agents", [])) or "none"
-    current_memory, history_memory = memory_paths(state["project_root"], run["id"])
     return (
-        f"{action} Symphony run {run['id']}. Invoke the installed Symphony skill first and "
-        "follow it for this run. You are the thin root/session keeper. "
-        f"Before project work, {assessment_route}The execution lead must select exactly one mode label: "
-        "small, medium, or large; it then owns decisions, integration, and verification. Use one primary workflow skill, "
-        "with Ponytail, Context7, and Codebase Memory only where applicable. Track every spawned "
-        "agent and block on host wait/result tools until it returns. Do not end the run until "
-        "all agents are terminal and the final assistant message contains exactly one mode marker "
-        f"and `<!-- {run['receipt']} -->`. If the user explicitly requests a dry run or forbids "
-        "spawning or writes, obey that constraint: plan without acting and report only the actual "
-        "root profile, planned assessor and separate mode-appropriate lead, one mode, applicable capability routing, mode "
-        "marker, and completion receipt; do not ask a follow-up question. "
-        "Explicit interrupts cannot be prevented; reconcile this run on resume. "
-        f"Run status: {run['status']}; owner session: {run['owner_session_id']}; "
-        f"tracked agents: {agents}; recorded mode: {run.get('mode') or 'unselected'} "
-        f"(revision {run['mode_revision']}, reassessment due={str(run['assessment_due']).lower()}); "
-        f"project profile: {state['assessment']['profile'] or 'automatic'} "
-        f"(revision {state['assessment']['revision']}). "
-        f"Capabilities currently under suggestion cooldown: {cooldowns}. "
-        f"Memory candidates: current={current_memory}; history={history_memory}. "
-        f"Extended memory: enabled={str(run['memory']['enabled']).lower()}; "
-        f"checkpoint_at={run['memory']['checkpoint_at']}. "
-        "Verify codebase-memory-mcp plus a healthy index before creating either file; "
-        "otherwise leave extended memory disabled. "
-        "If active memory becomes unavailable because MCP/index health fails or either memory file "
-        "disappears, report the loss and emit "
-        f"`<!-- SYMPHONY_MEMORY_UNAVAILABLE:{run['id']}:codebase-memory-mcp -->` "
-        "to persist compact lifecycle fallback; retain the last checkpoint time and finish with "
-        "the normal mode and completion receipts. While memory is available, a matching fresh "
-        "checkpoint remains required. "
-        f"Objective: {run['objective']}"
+        f"{action} Symphony run. Run id: {run['id']}. "
+        f"Objective: {run['objective']}. Project profile: {state['assessment']['profile'] or 'automatic'} "
+        f"(revision {state['assessment']['revision']}). You are the thin root/session keeper; perform "
+        f"only announce, spawn, register, relay, and wait control work. {route}"
+        "Use these exact visible record forms: `Delegating: <role> — <bounded objective> — "
+        "<model>/<effort> — <reason>`; `Waiting: <role or wave> — <bounded in-progress fact>`; "
+        "`Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration "
+        "<value or not exposed by host>`. `Waiting:` may contain only observed lifecycle state. "
+        f"After the host exposes an id, emit `SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>` or "
+        f"`SYMPHONY_REGISTER:{run['id']}:lead:<agent-id>` as applicable. Relay exactly "
+        f"`SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>` and "
+        "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>` from the terminal assessor or same-mode "
+        "lead. Immediately call the host blocking wait/result operation after a spawn and continue "
+        "until every observed agent is terminal. Finish only with the accepted mode marker and "
+        f"`<!-- {run['receipt']} -->`."
     )
 
 
@@ -468,6 +460,20 @@ def _record_assessment_receipt(state, run, message, now, agent_id=None):
         agent_id is not None and agent_id != run.get("assessor_agent_id")
     ):
         return False
+    mode = mode.lower()
+    if agent_id is None and run.get("strong_assessment_required"):
+        records = {record["id"]: record for record in _agent_records(run)}
+        assessor = records.get(run.get("assessor_agent_id"))
+        if _host_reports_child_lifecycle() is not False and (
+            not assessor or assessor["status"] != "terminal"
+        ):
+            return False
+    if (
+        not run.get("strong_assessment_required")
+        and _has_accepted_assessment(run)
+        and mode != run["mode"]
+    ):
+        return False
     reason = reasons[0].strip()[:500]
     if not reason:
         return False
@@ -480,7 +486,7 @@ def _record_assessment_receipt(state, run, message, now, agent_id=None):
             "reason": reason,
             "assessed_at": int(now),
         })
-    run["mode"] = mode.lower()
+    run["mode"] = mode
     run["mode_revision"] += 1
     run["mode_history"] = (run["mode_history"] + [{
         "mode": run["mode"],
@@ -937,6 +943,13 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             return HookResult(block=True, reason="Symphony completion must come from the owning root and match the accepted assessment mode.")
+        if not _has_accepted_assessment(run) or run["assessment_due"]:
+            if memory_changed or assessment_changed:
+                write_project_state(data_dir, state, now)
+            return HookResult(
+                block=True,
+                reason="Symphony completion requires an accepted current assessment before normal project work can finish.",
+            )
         memory_error = _memory_checkpoint_error(run, project_root, message)
         if memory_error:
             write_project_state(data_dir, state, now)
@@ -946,9 +959,6 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             capability = suggestions[0].lower()
             if can_suggest(state, capability, now):
                 state.setdefault("suggestions", {})[capability] = int(now)
-        if not _has_accepted_assessment(run):
-            # Legacy/dry-run root completion only; active mode changes require assessment receipts.
-            run["mode"] = mode
         _archive_run(state, "completed", now)
         state["active_run"] = None
         state["warning"] = None

@@ -52,11 +52,23 @@ class SymphonyHookTests(unittest.TestCase):
             f"SYMPHONY_REGISTER:{run['id']}:{role}:{agent_id}"
         )), self.data, now=now, stop_wait_seconds=0)
 
+    def set_current_assessment(self, mode="small"):
+        state = self.state()
+        run = state["active_run"]
+        run.update({
+            "mode": mode,
+            "mode_revision": max(1, run["mode_revision"]),
+            "assessment_due": False,
+            "strong_assessment_required": False,
+        })
+        run["mode_history"] = run["mode_history"] or [{"mode": mode}]
+        self.hook.write_project_state(self.data, state)
+
     def test_worker_mode_marker_and_conflicting_completion_cannot_change_accepted_mode(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         run = self.state()["active_run"]
+        self.set_current_assessment("medium")
         receipt = f"SYMPHONY_ASSESSMENT:{run['id']}:large:medium\nSYMPHONY_ASSESSMENT_REASON:Bounded task"
-        self.hook.handle_event(self.event("Stop", last_assistant_message=receipt), self.data, stop_wait_seconds=0)
         self.hook.handle_event(self.event("SubagentStart", agent_id="worker"), self.data)
         self.hook.handle_event(self.event("SubagentStop", agent_id="worker", last_assistant_message=(
             "SYMPHONY_MODE:large\n" + receipt.replace(":large:medium", ":large:large")
@@ -219,6 +231,7 @@ class SymphonyHookTests(unittest.TestCase):
                         self.data, now=1_001,
                     )
                     self.assertEqual(1_001, self.state()["active_run"]["memory"]["checkpoint_at"])
+                self.set_current_assessment()
                 result = self.hook.handle_event(
                     self.event("Stop", last_assistant_message=(
                         f"SYMPHONY_MODE:small\n{run['receipt']}\n" + (marker if checkpoint_event else "")
@@ -379,6 +392,7 @@ class SymphonyHookTests(unittest.TestCase):
             self.data, now=1_001,
         )
         self.hook.handle_event(self.event("SubagentStop", agent_id="worker-1"), self.data, now=1_002)
+        self.set_current_assessment()
         result = self.hook.handle_event(
             self.event("Stop", last_assistant_message=f"SYMPHONY_MODE:small\n{run['receipt']}"),
             self.data, now=1_003, stop_wait_seconds=0,
@@ -911,7 +925,7 @@ class SymphonyHookTests(unittest.TestCase):
                     self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data,
                 )
 
-    def test_new_run_exposes_memory_candidates_without_creating_documents(self):
+    def test_new_run_keeps_memory_candidates_out_of_thin_root_bootstrap(self):
         result = self.hook.handle_event(
             self.event(
                 "UserPromptSubmit",
@@ -930,8 +944,8 @@ class SymphonyHookTests(unittest.TestCase):
             },
             run["memory"],
         )
-        self.assertIn(str(self.project / run["memory"]["current"]), result.context)
-        self.assertIn("codebase-memory-mcp", result.context)
+        self.assertNotIn(str(self.project / run["memory"]["current"]), result.context)
+        self.assertNotIn("codebase-memory-mcp", result.context)
         self.assertFalse((self.project / ".symphony").exists())
 
     def test_memory_marker_activates_only_for_the_current_run(self):
@@ -971,6 +985,7 @@ class SymphonyHookTests(unittest.TestCase):
         memory = self.state()["active_run"]["memory"]
         self.assertTrue(memory["enabled"])
         self.assertEqual(1_002, memory["checkpoint_at"])
+        self.set_current_assessment()
 
         result = self.hook.handle_event(
             self.event(
@@ -1005,10 +1020,10 @@ class SymphonyHookTests(unittest.TestCase):
                     )), self.data, now=1_234,
                 )
                 recovery = self.hook.handle_event(self.event("SessionStart", source="compact"), self.data)
-                self.assertIn("enabled=true", recovery.context)
-                self.assertIn("checkpoint_at=1234", recovery.context)
+                self.assertNotIn("enabled=true", recovery.context)
+                self.assertNotIn("checkpoint_at=1234", recovery.context)
                 marker = f"SYMPHONY_MEMORY_UNAVAILABLE:{run['id']}:codebase-memory-mcp"
-                self.assertIn(marker, recovery.context)
+                self.assertNotIn(marker, recovery.context)
                 if missing in ("current", "history"):
                     (self.project / run["memory"][missing]).unlink()
                 result = self.hook.handle_event(
@@ -1019,8 +1034,9 @@ class SymphonyHookTests(unittest.TestCase):
                 self.assertFalse(memory["enabled"])
                 self.assertEqual(1_234, memory["checkpoint_at"])
                 recovery = self.hook.handle_event(self.event("SessionStart", source="resume"), self.data)
-                self.assertIn("enabled=false", recovery.context)
-                self.assertIn("checkpoint_at=1234", recovery.context)
+                self.assertNotIn("enabled=false", recovery.context)
+                self.assertNotIn("checkpoint_at=1234", recovery.context)
+                self.set_current_assessment()
                 completed = self.hook.handle_event(
                     self.event("Stop", last_assistant_message=f"SYMPHONY_MODE:small\n{run['receipt']}"),
                     self.data, stop_wait_seconds=0,
@@ -1039,6 +1055,7 @@ class SymphonyHookTests(unittest.TestCase):
         self.hook.handle_event(
             self.event("Stop", last_assistant_message=checkpoint), self.data, now=1_234, stop_wait_seconds=0,
         )
+        self.set_current_assessment()
         unavailable = f"SYMPHONY_MEMORY_UNAVAILABLE:{run['id']}:codebase-memory-mcp"
         other_id = "a" * 16 if run["id"] != "a" * 16 else "b" * 16
         for marker in ("", f"NOT_{unavailable}", f"{unavailable}-other", unavailable.replace(run["id"], other_id)):
@@ -1111,6 +1128,7 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertTrue(blocked.block)
         self.assertIn("background tasks", blocked.reason)
         self.assertTrue(self.state()["active_run"]["memory"]["enabled"])
+        self.set_current_assessment()
 
         final = self.hook.handle_event(
             self.event("Stop", last_assistant_message=f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"),
@@ -1151,6 +1169,7 @@ class SymphonyHookTests(unittest.TestCase):
             self.data,
             now=1_003,
         )
+        self.set_current_assessment()
         final = self.hook.handle_event(
             self.event("Stop", last_assistant_message=f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"),
             self.data,
@@ -1168,6 +1187,7 @@ class SymphonyHookTests(unittest.TestCase):
         )
         run = self.state()["active_run"]
         marker = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+        self.set_current_assessment()
 
         result = self.hook.handle_event(
             self.event(
@@ -1195,6 +1215,7 @@ class SymphonyHookTests(unittest.TestCase):
         current.parent.mkdir(parents=True)
         current.write_text("# Symphony Current Memory\n\n## Run\nactive\n", encoding="utf-8")
         marker = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+        self.set_current_assessment()
 
         result = self.hook.handle_event(
             self.event(
@@ -1222,6 +1243,7 @@ class SymphonyHookTests(unittest.TestCase):
         current.write_text("# Symphony Current Memory\n", encoding="utf-8")
         os.utime(current, (1, 1))
         marker = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+        self.set_current_assessment()
 
         result = self.hook.handle_event(
             self.event(
@@ -1293,7 +1315,7 @@ class SymphonyHookTests(unittest.TestCase):
         run = self.state()["active_run"]
         self.assertIsNotNone(run)
         self.assertEqual("session-1", run["owner_session_id"])
-        self.assertIn("Invoke the installed Symphony skill first", result.context)
+        self.assertIn("thin root/session keeper", result.context)
         self.assertIn("read-only symphony_assessor", result.context)
         self.assertIn("separate mode-appropriate execution lead", result.context)
         self.assertIn(run["receipt"], result.context)
@@ -1311,6 +1333,104 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertFalse(state["enabled"])
         self.assertIsNotNone(state["active_run"])
         self.assertIn("fix the parser", result.context)
+
+    def test_bootstrap_limits_root_to_exact_lifecycle_relay_contract(self):
+        result = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start fix the parser"), self.data,
+        )
+
+        state = self.state()
+        run = state["active_run"]
+        for required in (
+            f"Run id: {run['id']}",
+            "Objective: fix the parser",
+            "Project profile: automatic",
+            "Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>",
+            "Waiting: <role or wave> — <bounded in-progress fact>",
+            "Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>",
+            f"SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>",
+            f"SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>",
+            run["receipt"],
+        ):
+            self.assertIn(required, result.context)
+        for forbidden in (
+            "repository", "worktree", "capability", "codebase-memory", "MCP", "Memory",
+            "verification", "Verify", "skills and tools", "current.md", "history.md",
+        ):
+            self.assertNotIn(forbidden, result.context)
+
+    def test_normal_completion_requires_an_accepted_current_assessment(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        run = self.state()["active_run"]
+
+        missing = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                f"<!-- SYMPHONY_MODE:small -->\n{run['receipt']}"
+            )), self.data, stop_wait_seconds=0,
+        )
+
+        self.assertTrue(missing.block)
+        self.assertIn("accepted current assessment", missing.reason)
+        self.assertIsNotNone(self.state()["active_run"])
+
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
+            "SYMPHONY_ASSESSMENT_REASON:Bounded task"
+        )
+        self.start_role("assessor", "assessor")
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data,
+        )
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="continue"), self.data,
+        )
+        stale = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                f"<!-- SYMPHONY_MODE:small -->\n{run['receipt']}"
+            )), self.data, stop_wait_seconds=0,
+        )
+
+        self.assertTrue(stale.block)
+        self.assertIn("accepted current assessment", stale.reason)
+        self.assertIsNotNone(self.state()["active_run"])
+
+    def test_strong_owner_relay_requires_terminal_registered_assessor(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        run = self.state()["active_run"]
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:medium:medium\n"
+            "SYMPHONY_ASSESSMENT_REASON:Bounded task"
+        )
+        self.start_role("assessor", "assessor")
+
+        blocked = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=receipt), self.data, stop_wait_seconds=0,
+        )
+
+        self.assertTrue(blocked.block)
+        self.assertEqual((0, True, True), (
+            self.state()["active_run"]["mode_revision"],
+            self.state()["active_run"]["assessment_due"],
+            self.state()["active_run"]["strong_assessment_required"],
+        ))
+
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor"), self.data,
+        )
+        relayed = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=receipt), self.data, stop_wait_seconds=0,
+        )
+        self.assertTrue(relayed.block)
+        self.assertIn("Symphony accepted assessment", relayed.reason)
+        self.assertEqual((1, False, False), (
+            self.state()["active_run"]["mode_revision"],
+            self.state()["active_run"]["assessment_due"],
+            self.state()["active_run"]["strong_assessment_required"],
+        ))
 
     def test_duplicate_session_recovers_existing_run(self):
         self.hook.handle_event(
@@ -1398,8 +1518,19 @@ class SymphonyHookTests(unittest.TestCase):
         )
         self.assertTrue(self.state()["active_run"]["assessment_due"])
 
+        changed = receipt.replace(":medium:medium", ":medium:large")
         self.hook.handle_event(
-            self.event("Stop", last_assistant_message=receipt), self.data, now=1_002,
+            self.event("Stop", last_assistant_message=changed), self.data, now=1_002,
+            stop_wait_seconds=0,
+        )
+        self.assertEqual(("medium", True, False), (
+            self.state()["active_run"]["mode"],
+            self.state()["active_run"]["assessment_due"],
+            self.state()["active_run"]["strong_assessment_required"],
+        ))
+
+        self.hook.handle_event(
+            self.event("Stop", last_assistant_message=receipt), self.data, now=1_003,
             stop_wait_seconds=0,
         )
         self.assertFalse(self.state()["active_run"]["assessment_due"])
@@ -1525,6 +1656,7 @@ class SymphonyHookTests(unittest.TestCase):
             self.data,
         )
         self.assertIsNone(self.state()["active_run"]["mode"])
+        self.set_current_assessment("medium")
         missing_receipt = self.hook.handle_event(
             self.event("Stop", last_assistant_message="done", stop_hook_active=True),
             self.data,
@@ -1811,6 +1943,9 @@ class SymphonyHookTests(unittest.TestCase):
             self.assertFalse(self.hook._record_assessment_receipt(state, run, message, 1_003, agent_id))
             self.assertEqual(before, json.dumps(state, sort_keys=True))
 
+        no_lifecycle = Path(self.tmp.name) / "hooks-without-children.json"
+        no_lifecycle.write_text(json.dumps({"hooks": {"Stop": []}}), encoding="utf-8")
+        self.hook.HOOK_DECLARATION_PATH = no_lifecycle
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:assess small"), self.data, now=1_004,
         )
@@ -1932,6 +2067,9 @@ class SymphonyHookTests(unittest.TestCase):
                     state["active_run"]["assessment_due"],
                 ))
 
+        no_lifecycle = Path(self.tmp.name) / "hooks-without-children.json"
+        no_lifecycle.write_text(json.dumps({"hooks": {"Stop": []}}), encoding="utf-8")
+        self.hook.HOOK_DECLARATION_PATH = no_lifecycle
         self.hook.handle_event(
             self.event("UserPromptSubmit", session_id="known-owner", prompt="/symphony:start task"),
             self.data, now=1_010,
@@ -1983,6 +2121,7 @@ class SymphonyHookTests(unittest.TestCase):
             now=1_000_000,
         )
         run = self.state()["active_run"]
+        self.set_current_assessment()
 
         self.hook.handle_event(
             self.event(
@@ -2025,7 +2164,9 @@ class HookDeclarationTests(unittest.TestCase):
             "ordinary reassessment due",
             "strong assessment required",
             "Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>",
+            "Waiting: <role or wave> — <bounded in-progress fact>",
             "Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>",
+            "`Waiting:` may report only observed lifecycle state",
             "fresh execution lead from bounded lifecycle/document memory",
         )
         for text in required:
@@ -2076,6 +2217,22 @@ Completed: symphony_lead — planned
             passing.replace("bounded read-only assessment", "read-only assessment then implement the task"),
         ):
             self.assertIsNone(re.search(pattern, report), report)
+
+    def test_assessor_and_lead_own_discovery_routing_memory_and_verification(self):
+        skill = (PLUGIN_ROOT / "skills" / "symphony" / "SKILL.md").read_text(encoding="utf-8")
+        routing = (PLUGIN_ROOT / "skills" / "symphony" / "references" / "capability-routing.md").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "The root does not inspect the project, inventory capabilities, choose document memory, or run verification.",
+            "The assessor owns initial discovery, capability routing, memory choice, and the verification strategy.",
+            "The execution lead owns implementation and authoritative verification.",
+        ):
+            self.assertIn(required, skill)
+        self.assertIn(
+            "The assessor or execution lead performs this grounding; the root only relays its bounded result.",
+            routing,
+        )
 
     @unittest.skipUnless(shutil.which("node"), "Hosted eval regex checks require Node")
     def test_eval_graders_compile_in_host_javascript_runtime(self):
@@ -2168,7 +2325,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             ".symphony/memory/current.md",
             ".symphony/memory/history/<run-id>.md",
             "SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp",
-            "The strong lead is the only writer",
+            "The execution lead is the only writer",
             "## Objective and acceptance criteria",
             "## Verification evidence",
             "check_index_coverage",

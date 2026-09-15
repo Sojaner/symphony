@@ -36,22 +36,10 @@ End only that inspection response with the exact injected `SYMPHONY_AGENTS_INSPE
 
 ## Bootstrap assessment, then execution
 
-The root may use any model or effort. Before project work, it must:
+The root may use any model or effort. The root does not inspect the project, inventory capabilities, choose document memory, or run verification. It reads the injected objective, run id, project profile, and required assessor profile, then performs only the announced spawn, registration, receipt relay, and blocking wait steps.
 
-1. Read the live subagent model, effort, and concurrency catalog. Never infer availability from cached examples.
-2. Determine the root's actual model and effort from injected runtime context or trusted session metadata. Reuse the declaration check already completed above; never replace runtime evidence with the declaration.
-3. Inventory the effective skills and tools available to the root. Read [references/capability-routing.md](references/capability-routing.md).
-4. Emit `Delegating: symphony_assessor — <bounded objective> — <model>/<effort> — initial or required reassessment` before spawning exactly one `symphony_assessor` with no inherited turns, using the strongest available general reasoning model at `high`. If `high` is unavailable, use that model's highest available effort. If no stronger child can be spawned, fail closed and explain which capability is missing; do not pretend a weak root is protected.
-5. Give the assessor:
-   - objective and acceptance criteria;
-   - absolute project root and current worktree state;
-   - actual root model and effort;
-   - exact live child model/effort catalog and concurrency limit;
-   - effective skill and tool catalog;
-   - repository instructions;
-   - run id, lifecycle status, tracked agents, and the exact assessment receipt format;
-   - current-memory path and relevant indexed history findings;
-   - the absolute paths to `references/model-routing.md` and `references/capability-routing.md`.
+1. Emit `Delegating: symphony_assessor — <bounded objective> — <model>/<effort> — initial or required reassessment` before spawning exactly one `symphony_assessor` with no inherited turns, using the injected strongest-available general reasoning model profile at `high`. If `high` is unavailable, use that model's highest available effort. If no stronger child can be spawned, fail closed and explain which capability is missing; do not pretend a weak root is protected.
+2. Give the assessor the injected objective, acceptance criteria, run id, project profile, lifecycle status, exact assessment receipt format, and the absolute paths to `references/model-routing.md` and `references/capability-routing.md`. The assessor owns initial discovery, capability routing, memory choice, and the verification strategy. It reads the current worktree, repository instructions, and its effective skill/tool catalog itself.
 
 The assessor is read-only: it must not implement, edit, delegate, or become the execution lead. It returns exactly one concise assessment result: project profile, run mode, bounded reason, execution-lead model/effort, assignments, and verification strategy, followed by exactly these two lines:
 
@@ -62,7 +50,7 @@ SYMPHONY_ASSESSMENT_REASON:<single bounded line>
 
 Bind `<run-id>` to the current run. The current run's root must relay both lines in an owner control response and wait for the Stop hook to persist the accepted assessment before execution, then emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
 
-6. Select a separate execution lead from the accepted mode. Emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution` before spawning it with no inherited turns. Give the lead the assessor result plus the same bounded execution packet, including checkpoint responsibility and completion receipt. After it is terminal, emit `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
+3. Spawn the separate execution lead selected by the accepted assessment. Emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution` first and give it the assessor result plus the bounded objective, run id, registration and completion receipts. The execution lead owns implementation and authoritative verification. After it is terminal, emit `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
 
 The execution lead returns and follows this record:
 
@@ -94,13 +82,13 @@ SYMPHONY_REGISTER:<run-id>:assessor:<agent-id>
 SYMPHONY_REGISTER:<run-id>:lead:<agent-id>
 ```
 
-Emit only the applicable line for that agent. Registration requires a host-observed id belonging uniquely to the current run; it cannot replace an active role holder or give one agent both roles. For a synchronous Agent call, register after it returns and relay the assessor's assessment lines in the same control response. For a background call, register after launch; register the assessor before its completion if its SubagentStop should authorize the receipt directly. A root relay covers completion before registration. The hook blocks the control response from ending the run, persists valid registration/assessment, and continues the same run; omit the run-completion receipt from these control responses. This is the exception to waiting before a root response while agents are active: registration hands control back to the hook, then the root immediately resumes waiting.
+Emit only the applicable line for that agent. Registration requires a host-observed id belonging uniquely to the current run; it cannot replace an active role holder or give one agent both roles. For a synchronous Agent call, register after it returns and relay the assessor's assessment lines in the same control response. For a background call, register after launch; register the assessor before its completion if its SubagentStop should authorize the receipt directly. On a host whose trusted hook declaration includes child lifecycle events, an initial strong-assessment root relay is accepted only when it identifies the current registered assessor and that assessor is terminal. The hook blocks the control response from ending the run, persists valid registration/assessment, and continues the same run; omit the run-completion receipt from these control responses. This is the exception to waiting before a root response while agents are active: registration hands control back to the hook, then the root immediately resumes waiting.
 
 If the host exposes no child lifecycle events, role registration is unavailable; the root keeps the host ids for reconciliation and relays assessment receipts through the owning-root Stop path. Never claim the persistent ledger registered an unobserved id. A fresh `/symphony:assess` invalidates the prior assessor authorization; reconcile it and register the new assessor. Replayed terminal completions never reassess the run.
 
 ## Delegation visibility
 
-Before every assessor, lead, worker, or reviewer spawn, the root emits `Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>`. After each completion, it emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`. These commentary records complement the persistent agent ledger; never invent usage that the host did not expose.
+Before every assessor, lead, worker, or reviewer spawn, its dispatcher emits `Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>`. While blocked on active agents, it may emit `Waiting: <role or wave> — <bounded in-progress fact>`. `Waiting:` may report only observed lifecycle state; never speculate about checks, blockers, or results. After each completion, it emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`. These commentary records complement the persistent agent ledger; never invent usage that the host did not expose.
 
 ## Ordinary reassessment
 
@@ -128,7 +116,7 @@ If evidence changes, the lead may reclassify the active run and records why. Mod
 
 Explicit user skill requests and repository instructions win. Select at most one primary workflow owner for each unit. Superpowers, Compound Engineering, and Matt Pocock workflows overlap; do not stack their planning or delivery ceremonies on one unit. Ponytail may add a simplicity constraint. Context7 and Codebase Memory are evidence tools, not workflow owners.
 
-Name every selected skill in the root or worker assignment so the host's native skill rules load it. A worker must begin its result with:
+The assessor selects capabilities and the execution lead names every selected skill in its own or a worker assignment so the host's native skill rules load it. A worker must begin its result with:
 
 ```text
 capabilities: available=<used names>; missing=<requested names or none>
@@ -136,13 +124,13 @@ capabilities: available=<used names>; missing=<requested names or none>
 
 If a selected capability is not exposed to that worker, use a documented fallback or reassign the unit. Never infer child access from root access.
 
-When Codebase Memory MCP tools are available, use them before filesystem search for structural discovery. Check index status, query the graph, inspect exact snippets, and check coverage for material paths. Before delegation, the parent passes project id, graph generation, qualified symbols, relevant traces, coverage gaps, and source fallbacks. A child without MCP access works from that packet and never claims MCP access.
+When Codebase Memory MCP tools are available to the assessor or execution lead, use them before filesystem search for structural discovery. Check index status, query the graph, inspect exact snippets, and check coverage for material paths. Before worker delegation, the execution lead passes project id, graph generation, qualified symbols, relevant traces, coverage gaps, and source fallbacks. A child without MCP access works from that packet and never claims MCP access.
 
 ## Extended document memory
 
-Activate this only after the root or strong lead verifies usable codebase-memory-mcp tools and a healthy index for the current project. Otherwise do not create `.symphony/memory/`; continue with compact lifecycle recovery.
+Activate this only after the assessor or execution lead verifies usable codebase-memory-mcp tools and a healthy index for the current project. Otherwise do not create `.symphony/memory/`; continue with compact lifecycle recovery.
 
-The strong lead is the only writer for a strongest/high route; otherwise the execution lead is the only writer. It atomically replaces `.symphony/memory/current.md` and appends changed durable facts to `.symphony/memory/history/<run-id>.md` after selecting or changing mode, after a material decision or discovery, before dispatching a worker wave, after integrating a worker wave, after verification changes the known state, and immediately before successful or graceful completion.
+The execution lead is the only writer. It atomically replaces `.symphony/memory/current.md` and appends changed durable facts to `.symphony/memory/history/<run-id>.md` after selecting or changing mode, after a material decision or discovery, before dispatching a worker wave, after integrating a worker wave, after verification changes the known state, and immediately before successful or graceful completion.
 
 `current.md` is compact and bounded. It contains, in order: Run; Objective and acceptance criteria; Invariants and constraints; Decisions and rationale; Important discoveries; Completed work; Pending work; Verification evidence; Risks and blockers; Retrieval index.
 
@@ -182,19 +170,18 @@ done: observable acceptance checks
 return: capability receipt, conclusions, changed files, checks, blockers
 ```
 
-Track every worker id. After dispatch, immediately call the host's blocking wait/result operation in the same root turn. Keep waiting until every worker is terminal. A commentary update, promise to check later, or final response while a worker is active abandons the run.
+The execution lead tracks every worker id. After dispatch, it immediately calls the host's blocking wait/result operation in the same turn. It keeps waiting until every worker is terminal. A commentary update, promise to check later, or final response while a worker is active abandons the run.
 
-Inspect artifacts and run authoritative checks in the lead or root session. Worker success claims are not verification.
+Inspect artifacts and run authoritative checks in the execution lead. Worker success claims are not verification.
 
 ## Recover after resume or compaction
 
 Lifecycle context identifying an existing run triggers recovery, not a cold duplicate:
 
-1. Re-verify the actual root profile and live catalogs.
-2. Reconcile every tracked agent id and collect terminal results.
-3. Inspect current worktree changes and the saved objective.
-4. Bypass the assessor when accepted evidence has a valid mode and `mode_revision > 0` and strong assessment required is false; ordinary reassessment due still starts a fresh mode-appropriate execution lead from bounded lifecycle/document memory for cheap reassessment. A legacy mode alone is not accepted evidence. Otherwise require a new assessor for initial/explicit assessment, a proposed mode change, or unresolved high-risk decision.
-5. Preserve the prior mode as a hint and change it only when current evidence warrants reclassification.
+1. Reconcile every tracked agent id and collect terminal results.
+2. Start a fresh execution lead from bounded lifecycle/document memory; it inspects current worktree changes and the saved objective.
+3. Bypass the assessor when accepted evidence has a valid mode and `mode_revision > 0` and strong assessment required is false; ordinary reassessment due still starts a fresh mode-appropriate execution lead from bounded lifecycle/document memory for cheap reassessment. A legacy mode alone is not accepted evidence. Otherwise require a new assessor for initial/explicit assessment, a proposed mode change, or unresolved high-risk decision.
+4. Preserve the prior mode as a hint and change it only when current evidence warrants reclassification.
 
 An explicit interrupt may bypass Stop hooks. The run record is the recovery source; never assume an interrupted worker completed.
 
@@ -205,9 +192,8 @@ For graceful stop, dispatch no new work, interrupt tracked agents, wait for them
 For successful completion:
 
 1. Ensure all tracked agents are terminal.
-2. Inspect and integrate their artifacts.
-3. Run the accepted verification in the current session.
-4. Report at most one missing capability whose absence materially affected this run and whose cooldown permits it. When reporting one, include `<!-- SYMPHONY_SUGGESTED:<capability-id> -->`.
-5. Include `<!-- SYMPHONY_RUN_COMPLETE:<run-id> -->` in the root-final response using the exact injected receipt for every successful run. When extended memory is active, also relay the lead's exact `<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->` marker in that response. The Stop hook clears the run only when the required receipt and checkpoint match.
+2. Require the execution lead's integrated artifacts and authoritative verification result.
+3. Report at most one missing capability whose absence materially affected this run and whose cooldown permits it. When reporting one, include `<!-- SYMPHONY_SUGGESTED:<capability-id> -->`.
+4. Include `<!-- SYMPHONY_RUN_COMPLETE:<run-id> -->` in the root-final response using the exact injected receipt for every successful run. When extended memory is active, also relay the lead's exact `<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->` marker in that response. The Stop hook clears the run only when the required receipt and checkpoint match.
 
 Do not promise that Symphony can prevent user interrupts or host-enforced Stop overrides. The guarantee is recovery plus normal-Stop protection while hooks remain trusted and Python 3 is available.
