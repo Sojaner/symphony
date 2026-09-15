@@ -6,6 +6,18 @@ This file is a compact bootstrap cache for the conductor. The host's live subage
 
 ## Stable routing rules
 
+## Symphony assessment and execution
+
+| Stage | Route |
+|---|---|
+| Assessment | strongest available general reasoning model, `high`, one read-only `symphony_assessor` with no inherited turns; it returns exactly one concise result and never implements. |
+| Small execution | capable direct executor, `medium`; no workers merely to justify Symphony. |
+| Medium execution | balanced agentic lead, `medium`; at most two workers concurrently. |
+| Large execution | capable coordinator, `medium` or `high` by risk; dependency-aware delegated waves. |
+| Narrow hard decision or high-risk final review | strongest general reasoning model, `high`. |
+
+Assessment is not execution: wait for its authorized receipt, then start the separate mode-appropriate lead. On resume or compaction, start a fresh lead from bounded lifecycle/document memory after reconciling workers.
+
 | Work | Starting route | Raise effort when |
 |---|---|---|
 | Orchestration consultation | strongest general reasoning model, `high` | the decision is hard to reverse or spans several uncertain systems |

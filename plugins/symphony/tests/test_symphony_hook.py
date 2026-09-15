@@ -951,7 +951,8 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIsNotNone(run)
         self.assertEqual("session-1", run["owner_session_id"])
         self.assertIn("Invoke the installed Symphony skill first", result.context)
-        self.assertIn("strong execution lead", result.context)
+        self.assertIn("read-only symphony_assessor", result.context)
+        self.assertIn("separate mode-appropriate execution lead", result.context)
         self.assertIn(run["receipt"], result.context)
 
     def test_start_is_one_off_and_does_not_enable_project(self):
@@ -987,6 +988,10 @@ class SymphonyHookTests(unittest.TestCase):
             self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
             self.data,
         )
+        state = self.state()
+        state["active_run"]["mode"] = "medium"
+        state["active_run"]["assessment_due"] = False
+        self.hook.write_project_state(self.data, state)
 
         for source in ("resume", "compact"):
             result = self.hook.handle_event(
@@ -994,6 +999,7 @@ class SymphonyHookTests(unittest.TestCase):
                 self.data,
             )
             self.assertIn("Recover Symphony run", result.context)
+            self.assertIn("fresh separate mode-appropriate execution lead", result.context)
 
     def test_subagent_lifecycle_blocks_stop_until_receipt(self):
         self.hook.handle_event(
@@ -1178,7 +1184,8 @@ class SymphonyHookTests(unittest.TestCase):
             ),
             self.data,
         )
-        self.assertIn("strong execution lead", started.context)
+        self.assertIn("read-only symphony_assessor", started.context)
+        self.assertIn("separate mode-appropriate execution lead", started.context)
         self.assertIsNotNone(self.state()["active_run"])
 
     def test_assessment_state_normalizes_legacy_runs(self):
@@ -1516,6 +1523,39 @@ class SymphonyHookTests(unittest.TestCase):
 
 
 class HookDeclarationTests(unittest.TestCase):
+    def test_skill_separates_assessment_execution_and_exposes_delegations(self):
+        skill = (PLUGIN_ROOT / "skills" / "symphony" / "SKILL.md").read_text(encoding="utf-8")
+        required = (
+            "symphony_assessor",
+            "exactly one concise assessment result",
+            "must not implement",
+            "separate execution lead",
+            "Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>",
+            "Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>",
+            "fresh execution lead from bounded lifecycle/document memory",
+        )
+        for text in required:
+            self.assertIn(text, skill)
+        self.assertNotIn(
+            "Spawn exactly one `symphony_lead` with no inherited turns, using the strongest available "
+            "general reasoning model at `high`.", skill,
+        )
+
+        prompt = (PLUGIN_ROOT / "evals" / "match-proceeds" / "prompt.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (
+            "medium-shaped",
+            "must not implement",
+            "Delegating: symphony_assessor",
+            "Completed: symphony_assessor",
+            "Delegating: symphony_lead",
+            "Completed: symphony_lead",
+        ):
+            self.assertIn(text, prompt)
+        grader = (PLUGIN_ROOT / "evals" / "match-proceeds" / "graders" / "delegation-visibility.md")
+        self.assertIn("Delegating:", grader.read_text(encoding="utf-8"))
+
     def test_documentation_and_manifests_describe_memory_release(self):
         readme = (PLUGIN_ROOT.parents[1] / "README.md").read_text(encoding="utf-8")
         help_text = (PLUGIN_ROOT / "commands" / "help.md").read_text(encoding="utf-8")

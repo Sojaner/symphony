@@ -318,6 +318,20 @@ def _new_run(payload, objective, now, project_root):
 
 def _bootstrap_context(run, state, *, recovery=False, now=None):
     action = "Recover" if recovery else "Start"
+    assessment_route = (
+        "Reconcile tracked workers, then visibly delegate a fresh separate mode-appropriate execution "
+        "lead from bounded lifecycle/document memory using the accepted assessment; it performs the "
+        "cheap reassessment before project work. "
+        if recovery and run.get("mode") else
+        "Visibly delegate one strongest-available general reasoning model at high effort with no "
+        "inherited turns as read-only symphony_assessor. Wait for its authorized assessment receipt, "
+        "then visibly delegate a separate mode-appropriate execution lead: small=capable direct/medium, "
+        "medium=balanced/medium with at most two workers, large=capable coordinator/medium-or-high with "
+        "delegated waves. The assessor must not implement or become the lead. "
+        if run["assessment_due"] else
+        "Reconcile tracked workers, then visibly delegate a fresh separate mode-appropriate execution "
+        "lead from bounded lifecycle/document memory using the accepted assessment. "
+    )
     current = int(time.time() if now is None else now)
     cooldowns = ", ".join(
         sorted(
@@ -331,12 +345,8 @@ def _bootstrap_context(run, state, *, recovery=False, now=None):
     return (
         f"{action} Symphony run {run['id']}. Invoke the installed Symphony skill first and "
         "follow it for this run. You are the thin root/session keeper. "
-        "Before project work, spawn one strongest-available general reasoning model at high "
-        "effort with no inherited turns as the strong execution lead. Give it the objective, "
-        "actual root model/effort, live model and concurrency catalog, effective skills and "
-        "tools, repository instructions, current worktree state, and this run record. The lead "
-        "must select exactly one mode label: small, medium, or large; it "
-        "then owns decisions, integration, and verification. Use one primary workflow skill, "
+        f"Before project work, {assessment_route}The execution lead must select exactly one mode label: "
+        "small, medium, or large; it then owns decisions, integration, and verification. Use one primary workflow skill, "
         "with Ponytail, Context7, and Codebase Memory only where applicable. Track every spawned "
         "agent and block on host wait/result tools until it returns. Do not end the run until "
         "all agents are terminal and the final assistant message contains exactly one mode marker "
@@ -786,7 +796,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 result = HookResult(
                     context=(
                         "Symphony is enabled for this project. The first non-control project prompt "
-                        "will start a new guarded run with a strong execution lead."
+                        "will start a new guarded run with bounded assessment and a separate execution lead."
                     )
                 )
         elif event == "UserPromptSubmit":

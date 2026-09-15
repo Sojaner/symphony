@@ -1,8 +1,8 @@
 ---
 type: regex
-pattern: 'high'
+pattern: 'medium'
 flags: i
 target: last_message
 ---
 
-The planned lead must use high effort.
+The planned execution lead must use medium effort.

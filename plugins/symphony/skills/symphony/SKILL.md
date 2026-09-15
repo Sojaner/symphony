@@ -1,11 +1,11 @@
 ---
 name: symphony
-description: Route project work through a strong execution lead that chooses direct, mixed, or heavily delegated execution. Use when a Symphony lifecycle hook activates a run, the user invokes a Symphony command, or the user explicitly asks for Symphony orchestration. Persistent project enablement survives later sessions until disabled.
+description: Route project work through bounded assessment and mode-appropriate execution. Use when a Symphony lifecycle hook activates a run, the user invokes a Symphony command, or the user explicitly asks for Symphony orchestration. Persistent project enablement survives later sessions until disabled.
 ---
 
 # Symphony
 
-Use a weak root safely by making it a thin session keeper. A strongest-available high-effort subagent becomes the execution lead and owns sizing, decisions, implementation or delegation, integration, and verification. Deterministic hooks keep an active-run receipt outside model context and guard normal stopping.
+Use a weak root safely by making it a thin session keeper. A bounded strongest/high assessor sizes the run; a separate execution lead performs the selected mode. Deterministic hooks keep an active-run receipt outside model context and guard normal stopping.
 
 ## Mandatory first gate
 
@@ -31,26 +31,30 @@ For `/symphony:agents`, the root must use a live host agent-listing tool when ex
 
 End only that inspection response with the exact injected `SYMPHONY_AGENTS_INSPECTED` receipt on its own final line. It is a random, single-use authorization bound to the run, session, and host turn when exposed. The hook stores each session's pending authorization separately from lifecycle state, consumes it on matching Stop, and invalidates it on the next prompt in that same session. Other sessions keep their own authorizations. Never reuse this receipt for later project work or emit a run-completion receipt for inspection.
 
-## Bootstrap the strong execution lead
+## Bootstrap assessment, then execution
 
 The root may use any model or effort. Before project work, it must:
 
 1. Read the live subagent model, effort, and concurrency catalog. Never infer availability from cached examples.
 2. Determine the root's actual model and effort from injected runtime context or trusted session metadata. Reuse the declaration check already completed above; never replace runtime evidence with the declaration.
 3. Inventory the effective skills and tools available to the root. Read [references/capability-routing.md](references/capability-routing.md).
-4. Spawn exactly one `symphony_lead` with no inherited turns, using the strongest available general reasoning model at `high`. If `high` is unavailable, use that model's highest available effort. If no stronger child can be spawned, fail closed and explain which capability is missing; do not pretend a weak root is protected.
-5. Give the lead:
+4. Emit `Delegating: symphony_assessor — <bounded objective> — <model>/<effort> — initial or required reassessment` before spawning exactly one `symphony_assessor` with no inherited turns, using the strongest available general reasoning model at `high`. If `high` is unavailable, use that model's highest available effort. If no stronger child can be spawned, fail closed and explain which capability is missing; do not pretend a weak root is protected.
+5. Give the assessor:
    - objective and acceptance criteria;
    - absolute project root and current worktree state;
    - actual root model and effort;
    - exact live child model/effort catalog and concurrency limit;
    - effective skill and tool catalog;
    - repository instructions;
-   - run id, lifecycle status, tracked agents, and completion receipt;
-   - current-memory path, relevant indexed history findings, and checkpoint responsibility;
+   - run id, lifecycle status, tracked agents, and the exact assessment receipt format;
+   - current-memory path and relevant indexed history findings;
    - the absolute paths to `references/model-routing.md` and `references/capability-routing.md`.
 
-The lead returns and follows this record:
+The assessor is read-only: it must not implement, edit, delegate, or become the execution lead. It returns exactly one concise assessment result: project profile, run mode, bounded reason, execution-lead model/effort, assignments, and verification strategy, followed by the exact two-line `SYMPHONY_ASSESSMENT` receipt. The root waits for and records that receipt, then emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>` before any project work.
+
+6. Select a separate execution lead from the accepted mode. Emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution` before spawning it with no inherited turns. Give the lead the assessor result plus the same bounded execution packet, including checkpoint responsibility and completion receipt. After it is terminal, emit `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
+
+The execution lead returns and follows this record:
 
 ```text
 mode: small | medium | large
@@ -65,9 +69,13 @@ suggestion: <one missing material capability or none>
 
 Include `<!-- SYMPHONY_MODE:<small|medium|large> -->` with that record so lifecycle state can retain the selected mode.
 
-If the user explicitly requests a dry run, do not spawn or write files. Derive the planned lead and mode from the live catalogs, then return only the root profile, planned strongest/high lead, one mode, capability routing, and exact completion receipt; do not ask a follow-up question.
+If the user explicitly requests a dry run, do not spawn or write files. Derive the planned assessor and separate lead from the live catalogs. Report a medium-shaped planned route with `Delegating:` and `Completed:` records for both roles, one mode, capability routing, mode marker, and exact completion receipt; do not ask a follow-up question. These are planned records only, not claims that agents ran.
 
-Keep the lead id. Reuse it for follow-up decisions when the host supports that; otherwise spawn a replacement with the current run record and a compact checkpoint.
+Keep the execution lead id while its context remains bounded. On resume or compaction, reconcile tracked workers first, then start a fresh execution lead from bounded lifecycle/document memory rather than indefinitely resuming context.
+
+## Delegation visibility
+
+Before every assessor, lead, worker, or reviewer spawn, the root emits `Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>`. After each completion, it emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`. These commentary records complement the persistent agent ledger; never invent usage that the host did not expose.
 
 ## Select exactly one mode
 
@@ -75,15 +83,15 @@ Choose after a shallow task and project scan. Do not ask the weak root to choose
 
 ### Small
 
-Use when the task is straightforward, sequential, and likely below fifteen minutes for one capable agent. The strong lead performs the work directly. Do not spawn workers merely to justify Symphony.
+Use when the task is straightforward, sequential, and likely below fifteen minutes for one capable agent. Use a capable direct executor at `medium`. Do not spawn workers merely to justify Symphony.
 
 ### Medium
 
-Use when the task mixes fast local work with one or more independent or specialized units. The lead performs quick and integration-sensitive work, delegating only units whose independence or specialist value repays dispatch overhead.
+Use when the task mixes fast local work with one or more independent or specialized units. Use a balanced agentic execution lead at `medium`; it performs quick and integration-sensitive work and runs at most two workers concurrently.
 
 ### Large
 
-Use when there are at least three independently dispatchable units, multiple domains or verification surfaces, or a long/high-risk execution path. The lead decomposes work into dependency-aware waves, delegates in parallel within the live limit, and integrates every result.
+Use when there are at least three independently dispatchable units, multiple domains or verification surfaces, or a long/high-risk execution path. Use a capable coordinator at `medium` or `high` based on risk; it decomposes work into dependency-aware waves and integrates every result. Reserve strongest/high for narrow hard decisions, architecture, irreversible choices, and high-risk final review.
 
 If evidence changes, the lead may reclassify the active run and records why. Mode is per run, never permanent project configuration.
 
@@ -105,7 +113,7 @@ When Codebase Memory MCP tools are available, use them before filesystem search 
 
 Activate this only after the root or strong lead verifies usable codebase-memory-mcp tools and a healthy index for the current project. Otherwise do not create `.symphony/memory/`; continue with compact lifecycle recovery.
 
-The strong lead is the only writer. It atomically replaces `.symphony/memory/current.md` and appends changed durable facts to `.symphony/memory/history/<run-id>.md` after selecting or changing mode, after a material decision or discovery, before dispatching a worker wave, after integrating a worker wave, after verification changes the known state, and immediately before successful or graceful completion.
+The strong lead is the only writer for a strongest/high route; otherwise the execution lead is the only writer. It atomically replaces `.symphony/memory/current.md` and appends changed durable facts to `.symphony/memory/history/<run-id>.md` after selecting or changing mode, after a material decision or discovery, before dispatching a worker wave, after integrating a worker wave, after verification changes the known state, and immediately before successful or graceful completion.
 
 `current.md` is compact and bounded. It contains, in order: Run; Objective and acceptance criteria; Invariants and constraints; Decisions and rationale; Important discoveries; Completed work; Pending work; Verification evidence; Risks and blockers; Retrieval index.
 
@@ -156,7 +164,7 @@ Lifecycle context identifying an existing run triggers recovery, not a cold dupl
 1. Re-verify the actual root profile and live catalogs.
 2. Reconcile every tracked agent id and collect terminal results.
 3. Inspect current worktree changes and the saved objective.
-4. Reuse the lead if reachable; otherwise start one strongest/high replacement with the recovery packet.
+4. Start a fresh mode-appropriate execution lead from bounded lifecycle/document memory; require a new assessor only when assessment is due for an initial/explicit, proposed mode change, or unresolved high-risk decision.
 5. Preserve the prior mode as a hint and change it only when current evidence warrants reclassification.
 
 An explicit interrupt may bypass Stop hooks. The run record is the recovery source; never assume an interrupted worker completed.
