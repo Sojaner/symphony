@@ -73,6 +73,37 @@ class SymphonyHookTests(unittest.TestCase):
         run["mode_history"] = run["mode_history"] or [{"mode": mode}]
         self.hook.write_project_state(self.data, state)
 
+    def test_spawn_boundary_requires_persisted_assessment_before_execution(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        spawn = self.event("PreToolUse", tool_name="spawn_agent")
+        self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="assessor"), self.data)
+        run = self.state()["active_run"]
+        receipt = f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\nSYMPHONY_ASSESSMENT_REASON:One unit"
+        self.hook.handle_event(self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data)
+        before = self.state()
+        blocked = self.hook.handle_event(spawn, self.data)
+        self.assertTrue(blocked.block)
+        self.assertIn(f"SYMPHONY_REGISTER:{run['id']}:assessor:assessor", blocked.reason)
+        self.assertEqual(before, self.state())
+        self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            f"SYMPHONY_REGISTER:{run['id']}:assessor:assessor\n" + receipt
+        )), self.data, stop_wait_seconds=0)
+        self.assertEqual(1, self.state()["active_run"]["mode_revision"])
+        self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="worker", session_id="lead"), self.data)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="worker", session_id="lead"), self.data)
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data)
+        self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="fresh", agent_type="symphony_assessor"), self.data)
+        self.assertTrue(self.hook.handle_event(spawn, self.data).block)
+        self.assertFalse(self.hook.handle_event(
+            self.event("PreToolUse", tool_name="spawn_agent", session_id="child"), self.data,
+        ).block)
+        self.assertFalse(self.hook.handle_event(
+            self.event("PreToolUse", tool_name="Bash"), self.data,
+        ).block)
+
     def test_worker_mode_marker_and_conflicting_completion_cannot_change_accepted_mode(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         run = self.state()["active_run"]
@@ -283,6 +314,7 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertEqual([], run["agents"])
         self.assertEqual({
             "id": "worker-1", "status": "terminal", "role": "test-writer",
+            "parent_session_id": "session-1",
             "model": "gpt-6-astra", "effort": "high", "started_at": 1_001, "stopped_at": 1_002,
         }, run["agent_records"]["worker-1"])
         self.assertNotIn("private", json.dumps(self.state()))
@@ -2613,6 +2645,22 @@ class CodexSmokeTests(unittest.TestCase):
         self.assertTrue(hasattr(self.smoke, name), f"codex_smoke.{name} is missing")
         return getattr(self.smoke, name)
 
+    def test_app_server_response_in_same_pipe_read_as_initialize_does_not_timeout(self):
+        server = Path(self.tmp.name) / "server"
+        server.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys, time\n"
+            "for _ in range(3): sys.stdin.readline()\n"
+            "os.write(1, b'{\"id\":1,\"result\":{}}\\n{\"id\":2,\"result\":{\"ok\":true}}\\n')\n"
+            "time.sleep(5)\n",
+            encoding="utf-8",
+        )
+        server.chmod(0o700)
+        response, _ = self.smoke._app_server_request(
+            str(server), os.environ.copy(), self.tmp.name, "hooks/list", {}, 0.5,
+        )
+        self.assertEqual({"ok": True}, response)
+
     def test_builds_candidate_install_and_exec_commands(self):
         build_install_commands = self.require("build_install_commands")
         build_exec_command = self.require("build_exec_command")
@@ -3227,6 +3275,8 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
 
             self.assertEqual("SubagentStart", started["hookSpecificOutput"]["hookEventName"])
             self.assertIn("capability receipt", started["hookSpecificOutput"]["additionalContext"])
+            self.assertIn("inherited root bootstrap does not apply", started["hookSpecificOutput"]["additionalContext"])
+            self.assertIn("does not need spawn or wait tools", started["hookSpecificOutput"]["additionalContext"])
             self.assertIsNone(stopped)
             state = load_hook_module().read_project_state(data, str(project))
             self.assertEqual("terminal", state["active_run"]["agent_records"]["worker-1"]["status"])

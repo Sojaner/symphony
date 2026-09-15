@@ -218,26 +218,29 @@ def _app_server_request(codex, env, cwd, method, params, timeout):
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         start_new_session=True,
     )
     response = None
-    output = []
+    output = b""
+    pending = b""
     deadline = time.monotonic() + timeout
     try:
-        process.stdin.write("".join(json.dumps(message) + "\n" for message in messages))
+        process.stdin.write("".join(json.dumps(message) + "\n" for message in messages).encode())
         process.stdin.flush()
         while response is None:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
-                raise ProcessTimeout(command, timeout, "".join(output), "")
-            line = process.stdout.readline()
-            if not line:
+                raise ProcessTimeout(command, timeout, output.decode(), "")
+            chunk = os.read(process.stdout.fileno(), 65536)
+            if not chunk:
                 raise RuntimeError(f"Codex app-server exited before responding to {method}")
-            output.append(line)
-            item = parse_jsonl(line)[0]
-            if item.get("id") == 2:
-                response = item
+            output += chunk
+            pending += chunk
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                item = parse_jsonl(line.decode())[0]
+                if item.get("id") == 2:
+                    response = item
     finally:
         if process.poll() is None:
             if os.name == "posix":
@@ -252,7 +255,9 @@ def _app_server_request(codex, env, cwd, method, params, timeout):
             else:
                 process.kill()
             process.wait()
-    stderr = process.stderr.read()
+        stderr = process.stderr.read().decode()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            stream.close()
     if response is None:
         raise RuntimeError(f"Codex app-server returned no response for {method}")
     if "error" in response:

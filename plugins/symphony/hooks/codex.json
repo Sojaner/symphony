@@ -1,6 +1,18 @@
 {
   "description": "Persistent Symphony lifecycle and recovery guard for Codex.",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent|spawn_agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [

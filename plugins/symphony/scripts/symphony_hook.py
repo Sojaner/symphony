@@ -552,6 +552,7 @@ def _register_roles(state, run, message):
             run["strong_assessment_required"] = True
         run[key] = agent_id
         records[agent_id]["role"] = f"symphony_{role}"
+        records[agent_id]["registered_role"] = role
         changed = True
     if changed:
         run["agent_records"] = records
@@ -569,6 +570,7 @@ def _has_active_non_lead_agent(run):
 def _agent_record(payload, started_at=None):
     return {
         "id": payload["agent_id"],
+        "parent_session_id": payload.get("session_id"),
         "status": "active",
         "role": payload.get("agent_type") or "not exposed by host",
         "model": payload.get("model") or "not exposed by host",
@@ -646,6 +648,8 @@ def _agent_records(run):
         usage = _clean_usage(value.get("usage"))
         if usage:
             record["usage"] = usage
+        if value.get("registered_role") in {"assessor", "lead"}:
+            record["registered_role"] = value["registered_role"]
         records[record["id"]] = record
     agents = run.get("agents")
     for agent_id in agents if isinstance(agents, list) else []:
@@ -1119,7 +1123,23 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         state = read_project_state(data_dir, project_root, read_only=read_only)
         original_state = json.dumps(state, sort_keys=True)
         result = HookResult()
-        if event == "SessionStart":
+        if event == "PreToolUse" and payload.get("tool_name") in {"Agent", "spawn_agent"}:
+            run = state.get("active_run")
+            if run and _owns_run(run, payload.get("session_id")) and run["strong_assessment_required"]:
+                pending = [record["id"] for record in _agent_records(run)
+                           if record.get("parent_session_id") in {None, run["owner_session_id"]}
+                           and (not record.get("registered_role") or record["id"] == run.get("assessor_agent_id"))]
+                if pending:
+                    result = HookResult(block=True, reason=(
+                        "Symphony requires the assessment handoff before another spawn. "
+                        "Wait for the assessor to become terminal, then end this root response in the final channel with "
+                        f"`SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>` (observed ids: {', '.join(pending)}), "
+                        "and its exact SYMPHONY_ASSESSMENT and SYMPHONY_ASSESSMENT_REASON lines. "
+                        "Do not call another spawn or include run completion. The Stop hook will persist "
+                        "the assessment and return control for execution. "
+                        + " ".join(f"SYMPHONY_REGISTER:{run['id']}:assessor:{agent_id}" for agent_id in pending)
+                    ))
+        elif event == "SessionStart":
             run = state.get("active_run")
             if run:
                 if _owns_run(run, payload.get("session_id")):
@@ -1173,8 +1193,12 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 run["status"] = "active"
                 result = HookResult(
                     context=(
-                        f"You are part of Symphony run {run['id']}. Follow the explicitly assigned "
-                        "skills and return a capability receipt, changed files, checks, and blockers."
+                        f"You are an assigned child in Symphony run {run['id']}; inherited root bootstrap does not apply. "
+                        "Perform your assigned role directly. A symphony_assessor is read-only and does not need spawn or wait tools: "
+                        "inspect the repository and return its assessment, never delegate another assessor or lead. "
+                        "A symphony_lead executes and verifies its assignment. Follow explicitly assigned skills; "
+                        "return the requested receipts, capability receipt, changed files, checks, and blockers. "
+                        "Assessment project-profile and run-mode fields must each be small, medium, or large."
                     )
                 )
         elif event == "SubagentStop":
