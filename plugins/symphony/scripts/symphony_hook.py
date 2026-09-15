@@ -52,7 +52,11 @@ REGISTRATION_RE = re.compile(
     r"^SYMPHONY_REGISTER:([a-f0-9]{16}):(assessor|lead):([A-Za-z0-9_-]{1,128})[ \t]*$",
     re.MULTILINE,
 )
-INSPECTION_RE = re.compile(r"(?:^|\n)<!-- SYMPHONY_AGENTS_INSPECTED:([a-f0-9]{32}) -->\s*\Z")
+CONTROL_RECEIPT_RE = re.compile(r"(?:^|\n)<!-- SYMPHONY_CONTROL_HANDLED:([a-f0-9]{32}) -->\s*\Z")
+RAW_CONTROL_PREFIX_RE = re.compile(r"\A/symphony:", re.IGNORECASE)
+MARKER_CONTROL_PREFIX_RE = re.compile(
+    r"^[ \t]*(?:<!--[ \t]*)?SYMPHONY_CONTROL\b", re.IGNORECASE | re.MULTILINE,
+)
 MEMORY_CHECKPOINT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])SYMPHONY_MEMORY_CHECKPOINT:([a-f0-9]+):codebase-memory-mcp(?![A-Za-z0-9_-])",
     re.IGNORECASE,
@@ -187,10 +191,22 @@ def _normalize_assessment_state(state):
     run.setdefault("mode_history", [])
     run.setdefault("assessor_agent_id", None)
     run.setdefault("strong_assessment_required", not _has_accepted_assessment(run))
+    run.setdefault("dry_run", False)
+    run.setdefault("interrupted_at", None)
+    run.setdefault("interruption_recovery_eligible", run["interrupted_at"] is not None)
+    run.setdefault("previous_owner_session_id", None)
+    run.setdefault("ownership_transferred_at", None)
     if (
         type(run["mode_revision"]) is not int or run["mode_revision"] < 0
         or type(run["assessment_due"]) is not bool
         or type(run["strong_assessment_required"]) is not bool
+        or type(run["dry_run"]) is not bool
+        or type(run["interruption_recovery_eligible"]) is not bool
+        or (run["interrupted_at"] is not None and type(run["interrupted_at"]) is not int)
+        or (run["previous_owner_session_id"] is not None
+            and not isinstance(run["previous_owner_session_id"], str))
+        or (run["ownership_transferred_at"] is not None
+            and type(run["ownership_transferred_at"]) is not int)
         or not isinstance(run["mode_history"], list)
         or (run["assessor_agent_id"] is not None and not isinstance(run["assessor_agent_id"], str))
     ):
@@ -310,12 +326,17 @@ def can_suggest(state, capability, now=None):
     return previous is None or current - int(previous) >= SUGGESTION_COOLDOWN_SECONDS
 
 
-def _new_run(payload, objective, now, project_root):
+def _new_run(payload, objective, now, project_root, *, dry_run=False):
     run_id = secrets.token_hex(8)
     current, history = memory_paths(project_root, run_id)
     return {
         "id": run_id,
         "owner_session_id": payload.get("session_id", "unknown"),
+        "previous_owner_session_id": None,
+        "ownership_transferred_at": None,
+        "interrupted_at": None,
+        "interruption_recovery_eligible": False,
+        "dry_run": dry_run,
         "status": "starting",
         "mode": None,
         "mode_revision": 0,
@@ -362,6 +383,16 @@ def _host_reports_child_lifecycle():
 
 def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, now=None):
     action = "Recover" if recovery else "Start"
+    if run["dry_run"]:
+        return (
+            f"{action} Symphony dry run. Run id: {run['id']}. Objective: {run['objective']}. "
+            f"Project profile: {state['assessment']['profile'] or 'automatic'} "
+            f"(revision {state['assessment']['revision']}). Dry run: true. "
+            "Do not spawn agents or write project files. Report only planned `Delegating:` and "
+            "`Completed:` records for a separate strongest/high assessor and mode-appropriate "
+            "execution lead, exactly one planned mode marker, and "
+            f"`<!-- {run['receipt']} -->`."
+        )
     route = (
         "Reconcile observed agents, then emit `Delegating: symphony_lead — <bounded objective> — "
         "<model>/<effort> — accepted-mode reassessment`, spawn a fresh separate mode-appropriate "
@@ -711,9 +742,84 @@ def _parse_prompt(prompt):
     return control, _marker_argument(prompt, "TASK"), _marker_argument(prompt, "ARGS")
 
 
+def _looks_like_control(prompt):
+    stripped = (prompt or "").strip()
+    return bool(RAW_CONTROL_PREFIX_RE.match(stripped) or MARKER_CONTROL_PREFIX_RE.search(stripped))
+
+
+def _dry_run_task(control, task):
+    if control != "start" or not task.startswith("--dry-run"):
+        return False, task
+    suffix = task[len("--dry-run"):]
+    if suffix and not suffix[0].isspace():
+        return False, task
+    return True, suffix.strip()
+
+
+def _active_agent_ids(run):
+    observed = run.get("agents", [])
+    observed = observed if isinstance(observed, list) else []
+    return sorted({
+        record["id"] for record in _agent_records(run) if record["status"] == "active"
+    } | {agent_id for agent_id in observed if isinstance(agent_id, str)})
+
+
+def _foreign_run_context(run):
+    agents = _active_agent_ids(run)
+    suffix = f" Active registered agents: {', '.join(agents)}." if agents else ""
+    return (
+        f"This run is owned by session {run.get('owner_session_id')}; this session is inspection-only."
+        + suffix
+    )
+
+
+def _known_session_id(value):
+    return isinstance(value, str) and bool(value) and value.lower() != "unknown"
+
+
+def _owns_run(run, session_id):
+    return _known_session_id(session_id) and session_id == run.get("owner_session_id")
+
+
+def _transfer_interrupted_run(run, session_id, now):
+    if (
+        not run.get("interruption_recovery_eligible")
+        or _active_agent_ids(run)
+        or not _known_session_id(session_id)
+    ):
+        return False
+    run["previous_owner_session_id"] = run.get("owner_session_id")
+    run["owner_session_id"] = session_id
+    run["ownership_transferred_at"] = int(now)
+    run["interruption_recovery_eligible"] = False
+    return True
+
+
+def _is_terminal_control(prompt, control, task):
+    return _looks_like_control(prompt) and not (
+        control in {"start", "enable"} and bool(task)
+    )
+
+
+def _invalid_control_args(control, args):
+    value = args.strip()
+    return (
+        control in {"help", "status", "disable"} and bool(value)
+        or control == "agents" and value not in {"", "--all"}
+        or control == "stop" and value not in {"", "--force"}
+    )
+
+
 def _handle_prompt(payload, state, now):
     prompt = payload.get("prompt") or ""
     control, task, args = _parse_prompt(prompt)
+    dry_run, task = _dry_run_task(control, task)
+
+    if (
+        control is None and _looks_like_control(prompt)
+        or _invalid_control_args(control, args)
+    ):
+        return HookResult(context="Invalid Symphony control. Use /symphony:help for valid commands.")
 
     if control == "help":
         return HookResult()
@@ -721,6 +827,12 @@ def _handle_prompt(payload, state, now):
         return HookResult(context=_status_context(state))
     if control == "agents":
         return HookResult(context=_agents_context(state, include_history="--all" in args.split()))
+    run = state.get("active_run")
+    foreign_run = run and not _owns_run(run, payload.get("session_id"))
+    project_request = control is None or control in {"start", "enable"} and bool(task)
+    if foreign_run:
+        if not project_request or not _transfer_interrupted_run(run, payload.get("session_id"), now):
+            return HookResult(context=_foreign_run_context(run))
     if control == "assess":
         profile = args.strip().lower()
         if profile not in {"", "small", "medium", "large", "auto"}:
@@ -789,19 +901,17 @@ def _handle_prompt(payload, state, now):
 
     run = state.get("active_run")
     if run:
-        if run.get("owner_session_id") != payload.get("session_id"):
-            return HookResult(
-                context="Recovery required. " + _bootstrap_context(
-                    run, state, recovery=True,
-                    accepted_recovery=(
-                        _has_accepted_assessment(run) and not run["strong_assessment_required"]
-                    ), now=now,
-                )
-            )
         if control is None:
             run["assessment_due"] = True
         if run.get("status") == "stopping":
             return HookResult(context="This Symphony run is stopping; reconcile tracked agents before continuing.")
+        if foreign_run:
+            return HookResult(context=_bootstrap_context(
+                run, state, recovery=True,
+                accepted_recovery=(
+                    _has_accepted_assessment(run) and not run["strong_assessment_required"]
+                ), now=now,
+            ))
         if run["strong_assessment_required"]:
             return HookResult(context=_bootstrap_context(run, state, now=now))
         if run["assessment_due"]:
@@ -810,15 +920,17 @@ def _handle_prompt(payload, state, now):
 
     if start_requested or (state.get("enabled") and control is None):
         objective = task if start_requested else prompt
-        state["active_run"] = _new_run(payload, objective, now, state["project_root"])
+        state["active_run"] = _new_run(
+            payload, objective, now, state["project_root"], dry_run=dry_run,
+        )
         return HookResult(context=_bootstrap_context(state["active_run"], state, now=now))
 
     return HookResult()
 
 
 def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
-    inspection = INSPECTION_RE.search(payload.get("last_assistant_message") or "")
-    if inspection:
+    control_receipt = CONTROL_RECEIPT_RE.search(payload.get("last_assistant_message") or "")
+    if control_receipt:
         with project_lock(data_dir, project_root):
             pending_path = inspection_path(data_dir, project_root, payload.get("session_id"))
             try:
@@ -828,7 +940,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             state = read_project_state(data_dir, project_root, read_only=True)
             if (
                 isinstance(pending, dict)
-                and pending.get("nonce") == inspection.group(1)
+                and pending.get("nonce") == control_receipt.group(1)
                 and pending.get("run_id") == (state.get("active_run") or {}).get("id")
                 and pending.get("session_id") == payload.get("session_id")
                 and (pending.get("turn_id") is None or pending["turn_id"] == payload.get("turn_id"))
@@ -840,6 +952,11 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
         return HookResult(block=True, reason="Symphony state is corrupt; use /symphony:stop --force to recover.")
     if not initial_state.get("active_run"):
         return HookResult()
+    initial_run = initial_state["active_run"]
+    owner_session_id = initial_run.get("owner_session_id")
+    session_id = payload.get("session_id")
+    if _known_session_id(owner_session_id) and not _owns_run(initial_run, session_id):
+        return HookResult(block=True, reason=_foreign_run_context(initial_run))
     background_tasks = [
         task
         for task in payload.get("background_tasks", [])
@@ -942,7 +1059,9 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             return HookResult(block=True, reason="Symphony completion must come from the owning root and match the accepted assessment mode.")
-        if not _has_accepted_assessment(run) or run["assessment_due"]:
+        if not run["dry_run"] and (
+            not _has_accepted_assessment(run) or run["assessment_due"]
+        ):
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             return HookResult(
@@ -958,6 +1077,8 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             capability = suggestions[0].lower()
             if can_suggest(state, capability, now):
                 state.setdefault("suggestions", {})[capability] = int(now)
+        if run["dry_run"]:
+            run["mode"] = mode
         _archive_run(state, "completed", now)
         state["active_run"] = None
         state["warning"] = None
@@ -975,8 +1096,23 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
             wait = int(os.environ.get("SYMPHONY_STOP_WAIT_SECONDS", "55"))
         return _handle_stop(payload, Path(data_dir), project_root, current, wait)
 
-    control = _parse_prompt(payload.get("prompt") or "")[0] if event == "UserPromptSubmit" else None
-    read_only = control in {"agents", "status"}
+    prompt = payload.get("prompt") or ""
+    control, task, args = _parse_prompt(prompt) if event == "UserPromptSubmit" else (None, "", "")
+    _, terminal_task = _dry_run_task(control, task)
+    terminal_control = event == "UserPromptSubmit" and _is_terminal_control(
+        prompt, control, terminal_task,
+    )
+    invalid_control = (
+        control is None and _looks_like_control(prompt)
+        or _invalid_control_args(control, args)
+        or control == "assess" and args.strip().lower()
+        not in {"", "small", "medium", "large", "auto"}
+    )
+    read_only = (
+        control in {"agents", "status", "help"}
+        or invalid_control
+        or control == "start" and not terminal_task
+    )
     with project_lock(data_dir, project_root):
         state = read_project_state(data_dir, project_root, read_only=read_only)
         original_state = json.dumps(state, sort_keys=True)
@@ -984,13 +1120,16 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         if event == "SessionStart":
             run = state.get("active_run")
             if run:
-                accepted_recovery = (
-                    _has_accepted_assessment(run) and not run["strong_assessment_required"]
-                )
-                run["assessment_due"] = True
-                result = HookResult(context=_bootstrap_context(
-                    run, state, recovery=True, accepted_recovery=accepted_recovery, now=current,
-                ))
+                if _owns_run(run, payload.get("session_id")):
+                    accepted_recovery = (
+                        _has_accepted_assessment(run) and not run["strong_assessment_required"]
+                    )
+                    run["assessment_due"] = True
+                    result = HookResult(context=_bootstrap_context(
+                        run, state, recovery=True, accepted_recovery=accepted_recovery, now=current,
+                    ))
+                else:
+                    result = HookResult(context=_foreign_run_context(run))
             elif state.get("enabled"):
                 result = HookResult(
                     context=(
@@ -1002,7 +1141,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
             pending_path = inspection_path(data_dir, project_root, payload.get("session_id"))
             pending_path.unlink(missing_ok=True)
             result = _handle_prompt(payload, state, current)
-            if read_only:
+            if terminal_control:
                 nonce = secrets.token_hex(16)
                 _atomic_write(pending_path, {
                     "nonce": nonce,
@@ -1010,10 +1149,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     "session_id": payload.get("session_id"),
                     "turn_id": payload.get("turn_id"),
                 })
-                result.context += (
-                    "\nEnd only this inspection response with the following single-use receipt; "
+                result.context = (result.context + "\n" if result.context else "") + (
+                    "End this control response with the following single-use receipt; "
                     "do not reuse it for later project work or report run completion:\n"
-                    f"<!-- SYMPHONY_AGENTS_INSPECTED:{nonce} -->"
+                    f"<!-- SYMPHONY_CONTROL_HANDLED:{nonce} -->"
                 )
         elif event == "SubagentStart":
             run = state.get("active_run")
@@ -1095,9 +1234,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     run["agent_records"] = records if run is active else list(records.values())
         elif event == "Interrupt":
             run = state.get("active_run")
-            if run:
+            if run and _owns_run(run, payload.get("session_id")):
                 run["last_event"] = event
                 run["interrupted_at"] = current
+                run["interruption_recovery_eligible"] = True
                 run["assessment_due"] = True
         if json.dumps(state, sort_keys=True) != original_state:
             write_project_state(data_dir, state, current)

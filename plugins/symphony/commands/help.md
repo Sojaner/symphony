@@ -8,7 +8,7 @@ description: Show Symphony usage without enabling or starting it
 
 - `/symphony:enable [task]` — enable Symphony for this working tree and optionally start a task.
 - `/symphony:disable` — disable future automatic activation and gracefully stop an active run.
-- `/symphony:start <task>` — start one guarded run without changing project enablement.
+- `/symphony:start [--dry-run] <task>` — start one guarded run without changing project enablement; `--dry-run` validates only the planned routing and writes no project files.
 - `/symphony:assess [small|medium|large|auto]` — request reassessment or set a persistent project profile; `/symphony:assess large` is suitable for this repository's long-running shape, and `auto` reverses the override.
 - `/symphony:status` — show project and active-run state without changing it.
 - `/symphony:agents [--all]` — list active-run subagents, including terminal agents; `--all` includes retained historical runs. Missing model or effort is `not exposed by host`.
@@ -33,3 +33,5 @@ Extended memory requires a strong-lead verification of `codebase-memory-mcp`, he
 Manually ignoring `.symphony/memory/` disables indexed history until the ignore policy changes.
 
 If active memory loses MCP/index health or either required file, the lead reports that loss with the run-bound `SYMPHONY_MEMORY_UNAVAILABLE:<run-id>:codebase-memory-mcp` receipt. This disables extended memory while retaining the last checkpoint time, so the run can finish normally from compact lifecycle recovery. Available memory still requires a fresh final checkpoint.
+
+End with the exact injected `SYMPHONY_CONTROL_HANDLED` receipt on its own final line. Do not resume an active run or emit a run-completion receipt for help.

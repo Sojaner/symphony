@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -354,6 +355,161 @@ class SymphonyHookTests(unittest.TestCase):
             self.assertFalse(self.state()["enabled"])
             self.assertIsNone(self.state()["active_run"])
 
+    def test_every_terminal_control_gets_a_single_use_stop_receipt_in_every_run_state(self):
+        controls = {
+            "help": "/symphony:help",
+            "status": "/symphony:status",
+            "agents": "/symphony:agents",
+            "agents-all": "/symphony:agents --all",
+            "enable-empty": "/symphony:enable",
+            "disable": "/symphony:disable",
+            "stop": "/symphony:stop",
+            "force-stop": "/symphony:stop --force",
+            "start-empty": "/symphony:start",
+            "assess": "/symphony:assess",
+            "assess-profile": "/symphony:assess large",
+            "assess-auto": "/symphony:assess auto",
+            "assess-invalid": "/symphony:assess gigantic",
+            "malformed-raw": "/symphony:not-a-command",
+            "malformed-marker": "SYMPHONY_CONTROL: not-a-command\nSYMPHONY_TASK: ignored",
+        }
+        for state_name in ("no-run", "starting", "active", "stopping"):
+            for control_name, prompt in controls.items():
+                with self.subTest(state=state_name, control=control_name):
+                    data = Path(self.tmp.name) / f"control-{state_name}-{control_name}"
+                    data.mkdir()
+                    if state_name != "no-run":
+                        self.hook.handle_event(
+                            self.event("UserPromptSubmit", prompt="/symphony:start task"), data,
+                        )
+                        if state_name == "active":
+                            self.hook.handle_event(
+                                self.event("SubagentStart", agent_id="worker"), data,
+                            )
+                        elif state_name == "stopping":
+                            state = self.hook.read_project_state(data, str(self.project))
+                            state["active_run"]["status"] = "stopping"
+                            self.hook.write_project_state(data, state)
+
+                    response = self.hook.handle_event(
+                        self.event("UserPromptSubmit", turn_id="control-turn", prompt=prompt), data,
+                    )
+                    receipt = response.context.splitlines()[-1]
+                    self.assertRegex(
+                        receipt, r"^<!-- SYMPHONY_CONTROL_HANDLED:[a-f0-9]{32} -->$",
+                    )
+                    after_control = self.hook.read_project_state(data, str(self.project))
+                    hook_time = mock.Mock(wraps=self.hook.time)
+                    hook_time.sleep.side_effect = AssertionError("control entered Stop wait")
+                    with mock.patch.object(self.hook, "time", hook_time):
+                        stopped = self.hook.handle_event(
+                            self.event(
+                                "Stop", turn_id="control-turn", last_assistant_message=receipt,
+                            ),
+                            data, stop_wait_seconds=55,
+                        )
+                    self.assertFalse(stopped.block)
+                    self.assertEqual(
+                        after_control, self.hook.read_project_state(data, str(self.project)),
+                    )
+
+    def test_control_receipt_is_consumed_and_next_prompt_invalidates_it(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        first = self.hook.handle_event(
+            self.event("UserPromptSubmit", turn_id="first", prompt="/symphony:status"), self.data,
+        ).context.splitlines()[-1]
+        accepted = self.hook.handle_event(
+            self.event("Stop", turn_id="first", last_assistant_message=first),
+            self.data, stop_wait_seconds=0,
+        )
+        replayed = self.hook.handle_event(
+            self.event("Stop", turn_id="first", last_assistant_message=first),
+            self.data, stop_wait_seconds=0,
+        )
+        self.assertFalse(accepted.block)
+        self.assertTrue(replayed.block)
+
+        second = self.hook.handle_event(
+            self.event("UserPromptSubmit", turn_id="second", prompt="/symphony:help"), self.data,
+        ).context.splitlines()[-1]
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", turn_id="project", prompt="continue"), self.data,
+        )
+        invalidated = self.hook.handle_event(
+            self.event("Stop", turn_id="second", last_assistant_message=second),
+            self.data, stop_wait_seconds=0,
+        )
+        self.assertTrue(invalidated.block)
+
+    def test_malformed_control_arguments_are_terminal_and_side_effect_free(self):
+        prompts = (
+            "/symphony:help extra", "/symphony:status extra", "/symphony:agents --bogus",
+            "/symphony:disable extra", "/symphony:stop --bogus",
+            "SYMPHONY_CONTROL: stop\nSYMPHONY_ARGS: --force extra",
+        )
+        for state_name in ("no-run", "starting", "active", "stopping"):
+            for index, prompt in enumerate(prompts):
+                with self.subTest(state=state_name, prompt=prompt):
+                    data = Path(self.tmp.name) / f"malformed-{state_name}-{index}"
+                    data.mkdir()
+                    if state_name != "no-run":
+                        self.hook.handle_event(
+                            self.event("UserPromptSubmit", prompt="/symphony:start task"), data,
+                        )
+                    if state_name == "active":
+                        self.hook.handle_event(
+                            self.event("SubagentStart", agent_id="worker"), data,
+                        )
+                    elif state_name == "stopping":
+                        state = self.hook.read_project_state(data, str(self.project))
+                        state["active_run"]["status"] = "stopping"
+                        self.hook.write_project_state(data, state)
+                    before = self.hook.read_project_state(data, str(self.project))
+
+                    response = self.hook.handle_event(
+                        self.event("UserPromptSubmit", prompt=prompt), data,
+                    )
+
+                    self.assertIn("Invalid Symphony control", response.context)
+                    self.assertIn("SYMPHONY_CONTROL_HANDLED", response.context)
+                    self.assertEqual(before, self.hook.read_project_state(data, str(self.project)))
+
+    def test_foreign_controls_are_inspection_only_for_a_live_run(self):
+        mutating_controls = (
+            "/symphony:enable", "/symphony:disable", "/symphony:stop",
+            "/symphony:stop --force", "/symphony:assess", "/symphony:assess large",
+            "/symphony:assess auto",
+        )
+        for index, prompt in enumerate(mutating_controls):
+            with self.subTest(prompt=prompt):
+                data = Path(self.tmp.name) / f"foreign-control-{index}"
+                data.mkdir()
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="/symphony:start task"), data,
+                )
+                before = self.hook.read_project_state(data, str(self.project))
+                response = self.hook.handle_event(
+                    self.event(
+                        "UserPromptSubmit", session_id="foreign", turn_id="foreign-control",
+                        prompt=prompt,
+                    ),
+                    data,
+                )
+                self.assertEqual(before, self.hook.read_project_state(data, str(self.project)))
+                self.assertIn("inspection-only", response.context)
+                receipt = response.context.splitlines()[-1]
+                stopped = self.hook.handle_event(
+                    self.event(
+                        "Stop", session_id="foreign", turn_id="foreign-control",
+                        last_assistant_message=receipt,
+                    ),
+                    data, stop_wait_seconds=0,
+                )
+                self.assertFalse(stopped.block)
+                self.assertEqual(before, self.hook.read_project_state(data, str(self.project)))
+
     def test_shipped_command_templates_handle_empty_and_multiline_arguments(self):
         enable = (PLUGIN_ROOT / "commands" / "enable.md").read_text(encoding="utf-8")
         for argument in ("", "$ARGUMENTS", "\n"):
@@ -569,7 +725,7 @@ class SymphonyHookTests(unittest.TestCase):
                     self.data,
                 )
                 run = self.state()["active_run"]
-                receipt = f"<!-- SYMPHONY_AGENTS_INSPECTED:{'a' * 32} -->"
+                receipt = f"<!-- SYMPHONY_CONTROL_HANDLED:{'a' * 32} -->"
                 if attack != "unissued":
                     listing = self.hook.handle_event(
                         self.event("UserPromptSubmit", turn_id="inspection-turn",
@@ -591,11 +747,11 @@ class SymphonyHookTests(unittest.TestCase):
                     pending_path.write_text("{broken", encoding="utf-8")
                 if attack == "old-run":
                     self.hook.handle_event(
-                        self.event("UserPromptSubmit", session_id="session-2", prompt="/symphony:stop --force"),
+                        self.event("UserPromptSubmit", prompt="/symphony:stop --force"),
                         self.data,
                     )
                     self.hook.handle_event(
-                        self.event("UserPromptSubmit", session_id="session-2", prompt="/symphony:start next task"),
+                        self.event("UserPromptSubmit", prompt="/symphony:start next task"),
                         self.data,
                     )
                     run = self.state()["active_run"]
@@ -913,7 +1069,7 @@ class SymphonyHookTests(unittest.TestCase):
                     self.data,
                 )
                 receipt = status.context.splitlines()[-1]
-                self.assertTrue(receipt.startswith("<!-- SYMPHONY_AGENTS_INSPECTED:"))
+                self.assertTrue(receipt.startswith("<!-- SYMPHONY_CONTROL_HANDLED:"))
                 self.assertEqual(before, path.read_bytes())
                 result = self.hook.handle_event(
                     self.event("Stop", turn_id="status-turn", last_assistant_message=receipt),
@@ -1285,7 +1441,8 @@ class SymphonyHookTests(unittest.TestCase):
             self.data,
         )
 
-        self.assertEqual("", help_result.context)
+        self.assertTrue(help_result.context.endswith(" -->"))
+        self.assertIn("SYMPHONY_CONTROL_HANDLED", help_result.context)
         self.assertIn("Active run: none", status_result.context)
         self.assertFalse(state_path.exists())
 
@@ -1444,7 +1601,7 @@ class SymphonyHookTests(unittest.TestCase):
         )
 
         self.assertEqual("session-1", self.state()["active_run"]["owner_session_id"])
-        self.assertIn("Recovery required", result.context)
+        self.assertIn("inspection-only", result.context)
 
     def test_resume_and_compaction_reinject_active_run(self):
         self.hook.handle_event(
@@ -1621,6 +1778,173 @@ class SymphonyHookTests(unittest.TestCase):
         recovery = self.hook.handle_event(self.event("SessionStart", source="resume"), self.data)
         self.assertIn("fresh separate mode-appropriate execution lead", recovery.context)
         self.assertNotIn("read-only symphony_assessor", recovery.context)
+
+    def test_only_explicit_dry_run_bypasses_assessment_completion(self):
+        for index, (prompt, expected_dry_run, objective, completes) in enumerate((
+            ("/symphony:start --dry-run validate routing", True, "validate routing", True),
+            ("SYMPHONY_CONTROL: start\nSYMPHONY_TASK: --dry-run validate markers",
+             True, "validate markers", True),
+            ("/symphony:start validate dry-run behavior", False,
+             "validate dry-run behavior", False),
+        )):
+            with self.subTest(prompt=prompt):
+                data = Path(self.tmp.name) / f"dry-run-{index}"
+                data.mkdir()
+                started = self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt=prompt), data,
+                )
+                run = self.hook.read_project_state(data, str(self.project))["active_run"]
+                self.assertEqual(expected_dry_run, run["dry_run"])
+                self.assertEqual(objective, run["objective"])
+                if expected_dry_run:
+                    self.assertIn("Dry run: true", started.context)
+                    self.assertIn("Do not spawn agents or write project files", started.context)
+                    self.assertNotIn("spawn one", started.context)
+
+                result = self.hook.handle_event(
+                    self.event("Stop", last_assistant_message=(
+                        f"<!-- SYMPHONY_MODE:medium -->\n{run['receipt']}"
+                    )),
+                    data, stop_wait_seconds=0,
+                )
+                self.assertEqual(completes, not result.block)
+                self.assertEqual(
+                    completes,
+                    self.hook.read_project_state(data, str(self.project))["active_run"] is None,
+                )
+
+    def test_dry_run_state_must_be_an_explicit_boolean(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        state = self.state()
+        state["active_run"]["dry_run"] = "true"
+        self.hook.write_project_state(self.data, state)
+
+        self.assertTrue(self.state()["corrupt"])
+
+    def test_interrupted_run_transfers_once_after_passive_foreign_startup_and_control(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+            now=1_000,
+        )
+        self.set_current_assessment("medium")
+        before_start = self.state()
+
+        foreign_start = self.hook.handle_event(
+            self.event("SessionStart", session_id="session-2", source="resume"),
+            self.data, now=1_001,
+        )
+        self.assertEqual(before_start, self.state())
+        self.assertIn("inspection-only", foreign_start.context)
+
+        self.hook.handle_event(
+            self.event("Interrupt", session_id="session-2"), self.data, now=1_002,
+        )
+        self.assertEqual(before_start, self.state())
+
+        self.hook.handle_event(self.event("Interrupt"), self.data, now=1_003)
+        interrupted = self.state()
+        self.assertEqual(1_003, interrupted["active_run"]["interrupted_at"])
+        self.assertTrue(interrupted["active_run"]["interruption_recovery_eligible"])
+
+        control = self.hook.handle_event(
+            self.event(
+                "UserPromptSubmit", session_id="session-2", turn_id="status",
+                prompt="/symphony:status",
+            ),
+            self.data, now=1_004,
+        )
+        after_control = self.state()
+        self.assertEqual("session-1", after_control["active_run"]["owner_session_id"])
+        stopped = self.hook.handle_event(
+            self.event(
+                "Stop", session_id="session-2", turn_id="status",
+                last_assistant_message=control.context.splitlines()[-1],
+            ),
+            self.data, now=1_005, stop_wait_seconds=0,
+        )
+        self.assertFalse(stopped.block)
+        self.assertEqual(after_control, self.state())
+
+        recovered = self.hook.handle_event(
+            self.event("UserPromptSubmit", session_id="session-2", prompt="continue"),
+            self.data, now=1_006,
+        )
+        run = self.state()["active_run"]
+        self.assertEqual("session-2", run["owner_session_id"])
+        self.assertEqual("session-1", run["previous_owner_session_id"])
+        self.assertEqual(1_006, run["ownership_transferred_at"])
+        self.assertFalse(run["interruption_recovery_eligible"])
+        self.assertIn("Recover Symphony run", recovered.context)
+
+        transferred = self.state()
+        self.hook.handle_event(
+            self.event("Interrupt", session_id="session-1"), self.data, now=1_007,
+        )
+        self.assertEqual(transferred, self.state())
+        competitor = self.hook.handle_event(
+            self.event("UserPromptSubmit", session_id="session-3", prompt="continue"),
+            self.data, now=1_008,
+        )
+        self.assertEqual(transferred, self.state())
+        self.assertIn("inspection-only", competitor.context)
+
+    def test_interrupted_run_with_a_live_agent_cannot_transfer_until_agent_is_terminal(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+            now=1_000,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="worker"), self.data, now=1_001,
+        )
+        self.hook.handle_event(self.event("Interrupt"), self.data, now=1_002)
+        interrupted = self.state()
+
+        for event, now in (("SessionStart", 1_003), ("UserPromptSubmit", 1_004)):
+            payload = self.event(event, session_id="session-2", source="resume")
+            if event == "UserPromptSubmit":
+                payload["prompt"] = "continue"
+            response = self.hook.handle_event(payload, self.data, now=now)
+            self.assertEqual(interrupted, self.state())
+            self.assertIn("inspection-only", response.context)
+            self.assertIn("worker", response.context)
+
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="worker"), self.data, now=1_005,
+        )
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", session_id="session-2", prompt="continue"),
+            self.data, now=1_006,
+        )
+        run = self.state()["active_run"]
+        self.assertEqual("session-2", run["owner_session_id"])
+        self.assertFalse(run["interruption_recovery_eligible"])
+
+    def test_unknown_session_identity_cannot_interrupt_or_recover_a_run(self):
+        for index, session_id in enumerate((None, "", "unknown")):
+            with self.subTest(session_id=session_id):
+                data = Path(self.tmp.name) / f"unknown-owner-{index}"
+                data.mkdir()
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="/symphony:start task"), data,
+                )
+                state = self.hook.read_project_state(data, str(self.project))
+                state["active_run"]["owner_session_id"] = session_id
+                self.hook.write_project_state(data, state)
+                before = self.hook.read_project_state(data, str(self.project))
+
+                interrupted = self.hook.handle_event(
+                    self.event("Interrupt", session_id=session_id), data, now=2_000,
+                )
+                recovered = self.hook.handle_event(
+                    self.event("SessionStart", session_id=session_id, source="resume"),
+                    data, now=2_001,
+                )
+
+                self.assertEqual("", interrupted.context)
+                self.assertEqual(before, self.hook.read_project_state(data, str(self.project)))
+                self.assertIn("inspection-only", recovered.context)
 
     def test_malformed_strong_assessment_requirement_is_quarantined(self):
         self.hook.handle_event(
