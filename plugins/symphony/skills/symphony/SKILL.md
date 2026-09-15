@@ -164,6 +164,6 @@ For successful completion:
 2. Inspect and integrate their artifacts.
 3. Run the accepted verification in the current session.
 4. Report at most one missing capability whose absence materially affected this run and whose cooldown permits it. When reporting one, include `<!-- SYMPHONY_SUGGESTED:<capability-id> -->`.
-5. When extended memory is active, relay the lead's exact `<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->` marker in the root-final response alongside `<!-- SYMPHONY_RUN_COMPLETE:<run-id> -->` using the exact injected receipt. The Stop hook clears the run only when the receipt and checkpoint match.
+5. Include `<!-- SYMPHONY_RUN_COMPLETE:<run-id> -->` in the root-final response using the exact injected receipt for every successful run. When extended memory is active, also relay the lead's exact `<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->` marker in that response. The Stop hook clears the run only when the required receipt and checkpoint match.
 
 Do not promise that Symphony can prevent user interrupts or host-enforced Stop overrides. The guarantee is recovery plus normal-Stop protection while hooks remain trusted and Python 3 is available.

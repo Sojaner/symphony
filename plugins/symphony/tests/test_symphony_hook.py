@@ -630,6 +630,8 @@ class HookDeclarationTests(unittest.TestCase):
             "after a material decision or discovery",
             "before dispatching a worker wave",
             "immediately before successful or graceful completion",
+            "for every successful run",
+            "When extended memory is active, also relay",
             "root relays it in the root-final response",
             "`current.md` is compact and bounded",
             "timestamp, run id, mode, reason for the checkpoint, changed facts, decisions, evidence, and next action",
