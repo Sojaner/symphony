@@ -1009,9 +1009,16 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         elif event == "SubagentStart":
             run = state.get("active_run")
             agent_id = payload.get("agent_id")
-            if run and agent_id and not any(record["id"] == agent_id for record in _agent_records(run)):
+            records = {record["id"]: record for record in _agent_records(run)} if run else {}
+            record = records.get(agent_id)
+            if run and agent_id and (record is None or record["status"] == "terminal"):
                 run["agents"] = sorted(set(run.get("agents", [])) | {agent_id})
-                run.setdefault("agent_records", {})[agent_id] = _agent_record(payload, current)
+                if record is None:
+                    record = _agent_record(payload, current)
+                else:
+                    record["status"] = "active"
+                    record["stopped_at"] = None
+                run.setdefault("agent_records", {})[agent_id] = record
                 run["last_event"] = event
                 run["status"] = "active"
                 result = HookResult(

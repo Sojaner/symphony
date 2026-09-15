@@ -79,12 +79,29 @@ class SymphonyHookTests(unittest.TestCase):
         receipt = f"SYMPHONY_ASSESSMENT:{run['id']}:large:medium\nSYMPHONY_ASSESSMENT_REASON:Bounded task"
         self.hook.handle_event(self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data)
         self.assertEqual(1, self.state()["active_run"]["mode_revision"])
+        state = self.state()
+        state["active_run"]["agent_records"]["assessor"]["usage"] = {
+            "final_request_total_tokens": 12,
+            "source": "claude-post-tool-use",
+            "scope": "final-agent-request",
+        }
+        self.hook.write_project_state(self.data, state)
         before = self.state()["assessment"]
         self.hook.handle_event(self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data)
         self.assertEqual(1, self.state()["active_run"]["mode_revision"])
         self.assertEqual(before, self.state()["assessment"])
         self.hook.handle_event(self.event("SubagentStart", agent_id="assessor", agent_type="general-purpose"), self.data)
-        self.assertEqual("terminal", self.state()["active_run"]["agent_records"]["assessor"]["status"])
+        resumed = self.state()["active_run"]
+        self.assertEqual("active", resumed["agent_records"]["assessor"]["status"])
+        self.assertEqual("symphony_assessor", resumed["agent_records"]["assessor"]["role"])
+        self.assertEqual(1_000, resumed["agent_records"]["assessor"]["started_at"])
+        self.assertEqual(12, resumed["agent_records"]["assessor"]["usage"]["final_request_total_tokens"])
+        self.assertIn("assessor", resumed["agents"])
+        blocked = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=resumed["receipt"]),
+            self.data, stop_wait_seconds=0,
+        )
+        self.assertTrue(blocked.block)
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data)
         self.assertIsNone(self.state()["active_run"]["assessor_agent_id"])
         self.hook.handle_event(self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data)
