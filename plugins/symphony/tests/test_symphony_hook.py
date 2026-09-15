@@ -601,8 +601,8 @@ class SymphonyHookTests(unittest.TestCase):
             "final_request_output_tokens": 40,
             "final_request_cache_creation_tokens": 20,
             "final_request_cache_read_tokens": 10,
-            "final_request_duration_ms": 3400,
-            "final_request_tool_use_count": 4,
+            "duration_ms": 3400,
+            "tool_uses": 4,
             "observed_at": 1_002,
             "source": "claude-post-tool-use",
             "scope": "final-agent-request",
@@ -671,8 +671,7 @@ class SymphonyHookTests(unittest.TestCase):
         )
         usage = self.state()["active_run"]["agent_records"]["worker-1"]["usage"]
         self.assertEqual((2, 3, 4), (
-            usage["final_request_total_tokens"], usage["final_request_duration_ms"],
-            usage["final_request_tool_use_count"],
+            usage["final_request_total_tokens"], usage["duration_ms"], usage["tool_uses"],
         ))
 
         state = self.state()
@@ -714,8 +713,8 @@ class SymphonyHookTests(unittest.TestCase):
         for heading in (
             "Final-request total tokens", "Final-request input tokens",
             "Final-request output tokens", "Final-request cache creation tokens",
-            "Final-request cache read tokens", "Final-request duration", "Final-request tool uses",
-            "Usage source/scope",
+            "Final-request cache read tokens", "Run duration", "Run tool uses",
+            "Usage source/token scope",
         ):
             self.assertIn(heading, listing.context)
         self.assertIn("120", listing.context)

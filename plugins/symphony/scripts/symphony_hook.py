@@ -18,16 +18,17 @@ SCHEMA_VERSION = 1
 MEMORY_ROOT = Path(".symphony") / "memory"
 SUGGESTION_COOLDOWN_SECONDS = 30 * 24 * 60 * 60
 MAX_MODE_HISTORY = 20
-USAGE_FIELDS = (
+TOKEN_USAGE_FIELDS = (
     "final_request_total_tokens", "final_request_input_tokens", "final_request_output_tokens",
     "final_request_cache_creation_tokens", "final_request_cache_read_tokens",
-    "final_request_duration_ms", "final_request_tool_use_count",
 )
+RUN_USAGE_FIELDS = ("duration_ms", "tool_uses")
+USAGE_FIELDS = TOKEN_USAGE_FIELDS + RUN_USAGE_FIELDS
 AGENT_TABLE_HEADINGS = (
     "Run", "Id", "Status", "Role", "Model", "Effort", "Final-request total tokens",
     "Final-request input tokens", "Final-request output tokens",
-    "Final-request cache creation tokens", "Final-request cache read tokens",
-    "Final-request duration (ms)", "Final-request tool uses", "Usage source/scope",
+    "Final-request cache creation tokens", "Final-request cache read tokens", "Run duration (ms)",
+    "Run tool uses", "Usage source/token scope",
 )
 RAW_CONTROL_RE = re.compile(
     r"\A/symphony:(enable|disable|start|stop|status|agents|assess|help)(?:\s+([\s\S]*))?\Z",
@@ -534,8 +535,8 @@ def _usage_record(payload, now):
         "final_request_output_tokens": (raw_usage, ("outputTokens", "output_tokens")),
         "final_request_cache_creation_tokens": (raw_usage, ("cacheCreationInputTokens", "cache_creation_input_tokens")),
         "final_request_cache_read_tokens": (raw_usage, ("cacheReadInputTokens", "cache_read_input_tokens")),
-        "final_request_duration_ms": (response, ("totalDurationMs", "total_duration_ms")),
-        "final_request_tool_use_count": (response, ("totalToolUseCount", "total_tool_use_count")),
+        "duration_ms": (response, ("totalDurationMs", "total_duration_ms")),
+        "tool_uses": (response, ("totalToolUseCount", "total_tool_use_count")),
     }
     usage = {}
     for field, (container, names) in locations.items():
