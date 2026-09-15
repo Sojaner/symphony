@@ -1410,6 +1410,48 @@ class SymphonyHookTests(unittest.TestCase):
             state["active_run"]["assessment_due"], state["active_run"]["mode_history"],
         ))
 
+    def test_stop_assessment_relays_require_known_owner_identity(self):
+        for owner_session_id, session_id in ((None, None), ("", ""), ("unknown", "unknown")):
+            with self.subTest(owner_session_id=owner_session_id, session_id=session_id):
+                data = Path(self.tmp.name) / f"data-{owner_session_id!r}"
+                data.mkdir()
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", session_id=owner_session_id, prompt="/symphony:start task"),
+                    data, now=1_000,
+                )
+                run = self.hook.read_project_state(data, str(self.project))["active_run"]
+                receipt = (
+                    f"SYMPHONY_ASSESSMENT:{run['id']}:large:medium\n"
+                    "SYMPHONY_ASSESSMENT_REASON:Unidentified root relay"
+                )
+                self.hook.handle_event(
+                    self.event("Stop", session_id=session_id, last_assistant_message=receipt),
+                    data, now=1_001, stop_wait_seconds=0,
+                )
+                state = self.hook.read_project_state(data, str(self.project))
+                self.assertEqual((None, 0, True), (
+                    state["assessment"]["profile"], state["active_run"]["mode_revision"],
+                    state["active_run"]["assessment_due"],
+                ))
+
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", session_id="known-owner", prompt="/symphony:start task"),
+            self.data, now=1_010,
+        )
+        run = self.state()["active_run"]
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:large:medium\n"
+            "SYMPHONY_ASSESSMENT_REASON:Known owner relay"
+        )
+        self.hook.handle_event(
+            self.event("Stop", session_id="known-owner", last_assistant_message=receipt),
+            self.data, now=1_011, stop_wait_seconds=0,
+        )
+        self.assertEqual(("large", 1, False), (
+            self.state()["assessment"]["profile"], self.state()["active_run"]["mode_revision"],
+            self.state()["active_run"]["assessment_due"],
+        ))
+
     def test_replayed_worker_stop_does_not_retrigger_reassessment(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data, now=1_000,

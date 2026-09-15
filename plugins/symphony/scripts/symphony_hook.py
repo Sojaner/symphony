@@ -683,9 +683,15 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             return HookResult()
         message = payload.get("last_assistant_message") or ""
         memory_changed = _record_memory_receipt(run, message, now)
+        owner_session_id = run.get("owner_session_id")
+        session_id = payload.get("session_id")
+        known_owner = all(
+            isinstance(value, str) and value and value.lower() != "unknown"
+            for value in (owner_session_id, session_id)
+        )
         assessment_changed = (
             _record_assessment_receipt(state, run, message, now)
-            if payload.get("session_id") == run.get("owner_session_id") else False
+            if known_owner and session_id == owner_session_id else False
         )
         if background_tasks:
             if memory_changed or assessment_changed:
