@@ -166,9 +166,11 @@ def _normalize_assessment_state(state):
     run.setdefault("assessment_due", True)
     run.setdefault("mode_history", [])
     run.setdefault("assessor_agent_id", None)
+    run.setdefault("strong_assessment_required", not _has_accepted_assessment(run))
     if (
         type(run["mode_revision"]) is not int or run["mode_revision"] < 0
         or type(run["assessment_due"]) is not bool
+        or type(run["strong_assessment_required"]) is not bool
         or not isinstance(run["mode_history"], list)
         or (run["assessor_agent_id"] is not None and not isinstance(run["assessor_agent_id"], str))
     ):
@@ -298,6 +300,7 @@ def _new_run(payload, objective, now, project_root):
         "mode": None,
         "mode_revision": 0,
         "assessment_due": True,
+        "strong_assessment_required": True,
         "mode_history": [],
         "lead_agent_id": None,
         "assessor_agent_id": None,
@@ -320,7 +323,6 @@ def _has_accepted_assessment(run):
     return (
         run.get("mode") in ("small", "medium", "large")
         and type(run.get("mode_revision")) is int and run["mode_revision"] > 0
-        and run.get("assessment_due") is False
     )
 
 
@@ -461,6 +463,7 @@ def _record_assessment_receipt(state, run, message, now, agent_id=None):
         "assessed_at": int(now),
     }])[-MAX_MODE_HISTORY:]
     run["assessment_due"] = False
+    run["strong_assessment_required"] = False
     return True
 
 
@@ -606,6 +609,7 @@ def _handle_prompt(payload, state, now):
             }
         if state.get("active_run"):
             state["active_run"]["assessment_due"] = True
+            state["active_run"]["strong_assessment_required"] = True
         return HookResult(context=_assessment_context(state))
     if control == "enable":
         state["enabled"] = True
@@ -652,12 +656,19 @@ def _handle_prompt(payload, state, now):
     if run:
         if run.get("owner_session_id") != payload.get("session_id"):
             return HookResult(
-                context="Recovery required. " + _bootstrap_context(run, state, recovery=True, now=now)
+                context="Recovery required. " + _bootstrap_context(
+                    run, state, recovery=True,
+                    accepted_recovery=(
+                        _has_accepted_assessment(run) and not run["strong_assessment_required"]
+                    ), now=now,
+                )
             )
         if control is None:
             run["assessment_due"] = True
         if run.get("status") == "stopping":
             return HookResult(context="This Symphony run is stopping; reconcile tracked agents before continuing.")
+        if run["strong_assessment_required"]:
+            return HookResult(context=_bootstrap_context(run, state, now=now))
         if run["assessment_due"]:
             return HookResult(context=_reassessment_context(run))
         return HookResult(context=f"Continue Symphony run {run['id']}; do not launch a duplicate lead.")
@@ -814,7 +825,9 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         if event == "SessionStart":
             run = state.get("active_run")
             if run:
-                accepted_recovery = _has_accepted_assessment(run)
+                accepted_recovery = (
+                    _has_accepted_assessment(run) and not run["strong_assessment_required"]
+                )
                 run["assessment_due"] = True
                 result = HookResult(context=_bootstrap_context(
                     run, state, recovery=True, accepted_recovery=accepted_recovery, now=current,

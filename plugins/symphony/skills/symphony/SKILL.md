@@ -86,7 +86,7 @@ Before every assessor, lead, worker, or reviewer spawn, the root emits `Delegati
 
 ## Ordinary reassessment
 
-When an owner prompt or final worker wave marks `assessment_due`, the current execution lead cheaply reassesses from current evidence. For unchanged mode it returns the same two-line current-run receipt above; the current run's root must relay it because an execution-lead `SubagentStop` receipt is not authorized. A proposed mode change or unresolved high-risk ambiguity requires a new strong assessor before further execution. Reassessment reuses current evidence; do not repeat a broad repository scan without drift.
+The lifecycle record distinguishes ordinary reassessment due from strong assessment required. Initial runs and explicit `/symphony:assess` require a strong assessor until its authorized receipt clears that requirement. An owner prompt, final worker wave, interrupt, or resume marks ordinary reassessment due only: the current execution lead cheaply reassesses from current evidence, or recovery starts a fresh mode-appropriate lead for that cheap reassessment. For unchanged mode it returns the same two-line current-run receipt above; the current run's root must relay it because an execution-lead `SubagentStop` receipt is not authorized. A proposed mode change or unresolved high-risk ambiguity requires a new strong assessor before further execution. Reassessment reuses current evidence; do not repeat a broad repository scan without drift.
 
 ## Select exactly one mode
 
@@ -175,7 +175,7 @@ Lifecycle context identifying an existing run triggers recovery, not a cold dupl
 1. Re-verify the actual root profile and live catalogs.
 2. Reconcile every tracked agent id and collect terminal results.
 3. Inspect current worktree changes and the saved objective.
-4. Bypass the assessor only when pre-boundary evidence has a valid mode, `mode_revision > 0`, and `assessment_due=false`; then start a fresh mode-appropriate execution lead from bounded lifecycle/document memory. A legacy mode alone is not accepted evidence. Otherwise require a new assessor for initial/explicit assessment, a proposed mode change, or unresolved high-risk decision.
+4. Bypass the assessor when accepted evidence has a valid mode and `mode_revision > 0` and strong assessment required is false; ordinary reassessment due still starts a fresh mode-appropriate execution lead from bounded lifecycle/document memory for cheap reassessment. A legacy mode alone is not accepted evidence. Otherwise require a new assessor for initial/explicit assessment, a proposed mode change, or unresolved high-risk decision.
 5. Preserve the prior mode as a hint and change it only when current evidence warrants reclassification.
 
 An explicit interrupt may bypass Stop hooks. The run record is the recovery source; never assume an interrupted worker completed.

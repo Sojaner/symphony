@@ -993,11 +993,13 @@ class SymphonyHookTests(unittest.TestCase):
         state["active_run"]["mode"] = "medium"
         state["active_run"]["mode_revision"] = 1
         state["active_run"]["assessment_due"] = False
+        state["active_run"]["strong_assessment_required"] = False
         self.hook.write_project_state(self.data, state)
 
         for source in ("resume", "compact"):
             state = self.state()
             state["active_run"]["assessment_due"] = False
+            state["active_run"]["strong_assessment_required"] = False
             self.hook.write_project_state(self.data, state)
             result = self.hook.handle_event(
                 self.event("SessionStart", source=source),
@@ -1018,7 +1020,10 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIn("read-only symphony_assessor", legacy.context)
 
         state = self.state()
-        state["active_run"].update({"mode": "medium", "mode_revision": 1, "assessment_due": False})
+        state["active_run"].update({
+            "mode": "medium", "mode_revision": 1, "assessment_due": False,
+            "strong_assessment_required": False,
+        })
         self.hook.write_project_state(self.data, state)
         accepted = self.hook.handle_event(self.event("SessionStart", source="resume"), self.data)
         self.assertIn("fresh separate mode-appropriate execution lead", accepted.context)
@@ -1066,6 +1071,76 @@ class SymphonyHookTests(unittest.TestCase):
             self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data,
         )
         self.assertIn("Symphony assessment requested", result.context)
+
+    def test_explicit_assessment_stays_strong_until_assessor_receipt(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        run = self.state()["active_run"]
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:medium:medium\n"
+            "SYMPHONY_ASSESSMENT_REASON:Initial evidence is sufficient"
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor-a", agent_type="symphony_assessor"), self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor-a", last_assistant_message=receipt), self.data,
+        )
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data)
+        self.assertEqual((True, True), (
+            self.state()["active_run"]["assessment_due"],
+            self.state()["active_run"]["strong_assessment_required"],
+        ))
+
+        continued = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="continue after explicit reassessment"), self.data,
+        )
+        self.assertIn("read-only symphony_assessor", continued.context)
+        self.assertTrue(self.state()["active_run"]["strong_assessment_required"])
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor-b", agent_type="symphony_assessor"), self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor-b", last_assistant_message=receipt), self.data,
+        )
+        self.assertEqual((False, False), (
+            self.state()["active_run"]["assessment_due"],
+            self.state()["active_run"]["strong_assessment_required"],
+        ))
+
+    def test_accepted_interrupt_and_resume_require_only_ordinary_reassessment(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        run = self.state()["active_run"]
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:medium:medium\n"
+            "SYMPHONY_ASSESSMENT_REASON:Initial evidence is sufficient"
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor", agent_type="symphony_assessor"), self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data,
+        )
+        self.hook.handle_event(self.event("Interrupt"), self.data)
+        self.assertEqual((True, False), (
+            self.state()["active_run"]["assessment_due"],
+            self.state()["active_run"]["strong_assessment_required"],
+        ))
+        recovery = self.hook.handle_event(self.event("SessionStart", source="resume"), self.data)
+        self.assertIn("fresh separate mode-appropriate execution lead", recovery.context)
+        self.assertNotIn("read-only symphony_assessor", recovery.context)
+
+    def test_malformed_strong_assessment_requirement_is_quarantined(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        state = self.state()
+        state["active_run"]["strong_assessment_required"] = "yes"
+        self.hook.write_project_state(self.data, state)
+        self.assertTrue(self.state()["corrupt"])
 
     def test_replacement_lead_updates_wave_exclusion_without_worker_takeover(self):
         self.hook.handle_event(
@@ -1286,7 +1361,7 @@ class SymphonyHookTests(unittest.TestCase):
         )
         state = self.state()
         state.pop("assessment", None)
-        for field in ("mode_revision", "assessment_due", "mode_history"):
+        for field in ("mode_revision", "assessment_due", "strong_assessment_required", "mode_history"):
             state["active_run"].pop(field, None)
         self.hook.write_project_state(self.data, state)
 
@@ -1300,6 +1375,7 @@ class SymphonyHookTests(unittest.TestCase):
         }, state.get("assessment"))
         self.assertEqual(0, state["active_run"].get("mode_revision"))
         self.assertTrue(state["active_run"].get("assessment_due"))
+        self.assertTrue(state["active_run"].get("strong_assessment_required"))
         self.assertEqual([], state["active_run"].get("mode_history"))
 
     def test_assess_commands_persist_clear_and_request_profiles(self):
@@ -1627,6 +1703,8 @@ class HookDeclarationTests(unittest.TestCase):
             "current run's root must relay",
             "current execution lead cheaply reassesses",
             "proposed mode change or unresolved high-risk ambiguity requires a new strong assessor",
+            "ordinary reassessment due",
+            "strong assessment required",
             "Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>",
             "Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>",
             "fresh execution lead from bounded lifecycle/document memory",
