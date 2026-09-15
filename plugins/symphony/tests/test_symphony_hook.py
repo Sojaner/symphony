@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -103,6 +104,45 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertFalse(self.hook.handle_event(
             self.event("PreToolUse", tool_name="Bash"), self.data,
         ).block)
+
+    def test_explicit_reassessment_retires_failed_terminal_assessor_attempts(self):
+        for registered in (False, True):
+            with self.subTest(registered=registered):
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data)
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+                run_id = self.state()["active_run"]["id"]
+                failed_id = f"failed-{registered}"
+                self.hook.handle_event(self.event("SubagentStart", agent_id=failed_id), self.data)
+                if registered:
+                    self.hook.handle_event(self.event("Stop", last_assistant_message=(
+                        f"SYMPHONY_REGISTER:{run_id}:assessor:{failed_id}"
+                    )), self.data, stop_wait_seconds=0)
+                spawn = self.event("PreToolUse", tool_name="spawn_agent")
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data)
+                self.assertTrue(self.hook.handle_event(spawn, self.data).block)
+                self.hook.handle_event(self.event("SubagentStop", agent_id=failed_id), self.data)
+                self.assertTrue(self.hook.handle_event(spawn, self.data).block)
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data)
+                self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+                self.hook.handle_event(self.event("Stop", last_assistant_message=(
+                    f"SYMPHONY_REGISTER:{run_id}:assessor:{failed_id}\n"
+                    f"SYMPHONY_ASSESSMENT:{run_id}:small:small\nSYMPHONY_ASSESSMENT_REASON:Stale attempt"
+                )), self.data, stop_wait_seconds=0)
+                self.assertEqual(0, self.state()["active_run"]["mode_revision"])
+                self.hook.handle_event(self.event("SubagentStart", agent_id=failed_id), self.data)
+                self.hook.handle_event(self.event("SubagentStop", agent_id=failed_id), self.data)
+                self.assertTrue(self.hook.handle_event(spawn, self.data).block)
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data)
+                fresh_id = f"fresh-{registered}"
+                self.hook.handle_event(self.event("SubagentStart", agent_id=fresh_id), self.data)
+                self.assertTrue(self.hook.handle_event(spawn, self.data).block)
+                self.hook.handle_event(self.event("SubagentStop", agent_id=fresh_id), self.data)
+                self.assertTrue(self.hook.handle_event(spawn, self.data).block)
+                self.hook.handle_event(self.event("Stop", last_assistant_message=(
+                    f"SYMPHONY_REGISTER:{run_id}:assessor:{fresh_id}\n"
+                    f"SYMPHONY_ASSESSMENT:{run_id}:small:small\nSYMPHONY_ASSESSMENT_REASON:Fresh assessment"
+                )), self.data, stop_wait_seconds=0)
+                self.assertFalse(self.hook.handle_event(spawn, self.data).block)
 
     def test_worker_mode_marker_and_conflicting_completion_cannot_change_accepted_mode(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
@@ -2660,6 +2700,38 @@ class CodexSmokeTests(unittest.TestCase):
             str(server), os.environ.copy(), self.tmp.name, "hooks/list", {}, 0.5,
         )
         self.assertEqual({"ok": True}, response)
+
+    @unittest.skipUnless(os.name == "posix", "requires a detached descendant")
+    def test_app_server_timeout_does_not_wait_for_descendant_stderr(self):
+        server = Path(self.tmp.name) / "server"
+        descendant_pid = Path(self.tmp.name) / "descendant.pid"
+        server.write_text(
+            f"#!{sys.executable}\n"
+            "import os, signal, sys, time\n"
+            "for _ in range(3): sys.stdin.readline()\n"
+            "if os.fork() == 0:\n"
+            "    os.setsid()\n"
+            f"    open({str(descendant_pid)!r}, 'w').write(str(os.getpid()))\n"
+            "    time.sleep(2)\n"
+            "    os._exit(0)\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "time.sleep(5)\n",
+            encoding="utf-8",
+        )
+        server.chmod(0o700)
+        started = time.monotonic()
+        try:
+            with self.assertRaises(self.smoke.ProcessTimeout):
+                self.smoke._app_server_request(
+                    str(server), os.environ.copy(), self.tmp.name, "hooks/list", {}, 0.1,
+                )
+            self.assertLess(time.monotonic() - started, 0.6)
+        finally:
+            if descendant_pid.exists():
+                try:
+                    os.kill(int(descendant_pid.read_text()), 9)
+                except ProcessLookupError:
+                    pass
 
     def test_builds_candidate_install_and_exec_commands(self):
         build_install_commands = self.require("build_install_commands")

@@ -211,15 +211,20 @@ def _app_server_request(codex, env, cwd, method, params, timeout):
         {"method": method, "id": 2, "params": params},
     )
     command = [codex, "app-server", "--stdio"]
-    process = subprocess.Popen(
-        command,
-        env=env,
-        cwd=cwd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    stderr_file = tempfile.TemporaryFile()
+    try:
+        process = subprocess.Popen(
+            command,
+            env=env,
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+            start_new_session=True,
+        )
+    except BaseException:
+        stderr_file.close()
+        raise
     response = None
     output = b""
     pending = b""
@@ -242,22 +247,25 @@ def _app_server_request(codex, env, cwd, method, params, timeout):
                 if item.get("id") == 2:
                     response = item
     finally:
-        if process.poll() is None:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGTERM)
-            else:
-                process.terminate()
         try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            else:
-                process.kill()
-            process.wait()
-        stderr = process.stderr.read().decode()
-        for stream in (process.stdin, process.stdout, process.stderr):
-            stream.close()
+            if process.poll() is None:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
+            try:
+                process.wait(timeout=min(0.1, _remaining(deadline)))
+            except subprocess.TimeoutExpired:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+                process.wait(timeout=0.1)
+            stderr_file.seek(0)
+            stderr = stderr_file.read(os.fstat(stderr_file.fileno()).st_size).decode(errors="replace")
+        finally:
+            for stream in (process.stdin, process.stdout, stderr_file):
+                stream.close()
     if response is None:
         raise RuntimeError(f"Codex app-server returned no response for {method}")
     if "error" in response:

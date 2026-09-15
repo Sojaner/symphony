@@ -538,6 +538,8 @@ def _register_roles(state, run, message):
     for run_id, role, agent_id in REGISTRATION_RE.findall(message):
         if run_id != run["id"] or agent_id not in records:
             continue
+        if role == "assessor" and records[agent_id].get("assessment_superseded"):
+            continue
         if any(agent_id == record["id"] for past in state["run_history"] for record in _agent_records(past)):
             continue
         key = f"{role}_agent_id"
@@ -650,6 +652,8 @@ def _agent_records(run):
             record["usage"] = usage
         if value.get("registered_role") in {"assessor", "lead"}:
             record["registered_role"] = value["registered_role"]
+        if value.get("assessment_superseded") is True:
+            record["assessment_superseded"] = True
         records[record["id"]] = record
     agents = run.get("agents")
     for agent_id in agents if isinstance(agents, list) else []:
@@ -863,6 +867,9 @@ def _handle_prompt(payload, state, now):
             state["active_run"]["assessment_due"] = True
             state["active_run"]["strong_assessment_required"] = True
             state["active_run"]["assessor_agent_id"] = None
+            for record in state["active_run"].get("agent_records", {}).values():
+                if record["status"] == "terminal":
+                    record["assessment_superseded"] = True
         return HookResult(context=_assessment_context(state))
     if control == "enable":
         state["enabled"] = True
@@ -1128,7 +1135,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
             if run and _owns_run(run, payload.get("session_id")) and run["strong_assessment_required"]:
                 pending = [record["id"] for record in _agent_records(run)
                            if record.get("parent_session_id") in {None, run["owner_session_id"]}
-                           and (not record.get("registered_role") or record["id"] == run.get("assessor_agent_id"))]
+                           and (record["status"] == "active" or (
+                               not record.get("assessment_superseded")
+                               and record.get("registered_role") != "lead"
+                           ))]
                 if pending:
                     result = HookResult(block=True, reason=(
                         "Symphony requires the assessment handoff before another spawn. "
@@ -1188,6 +1198,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 else:
                     record["status"] = "active"
                     record["stopped_at"] = None
+                    record.pop("assessment_superseded", None)
                 run.setdefault("agent_records", {})[agent_id] = record
                 run["last_event"] = event
                 run["status"] = "active"
