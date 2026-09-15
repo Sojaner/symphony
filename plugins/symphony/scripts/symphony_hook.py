@@ -17,14 +17,23 @@ import time
 SCHEMA_VERSION = 1
 MEMORY_ROOT = Path(".symphony") / "memory"
 SUGGESTION_COOLDOWN_SECONDS = 30 * 24 * 60 * 60
-CONTROL_RE = re.compile(r"SYMPHONY_CONTROL:\s*([a-z-]+)", re.IGNORECASE)
-TASK_RE = re.compile(r"SYMPHONY_TASK:\s*([^\n]*)", re.IGNORECASE)
-ARGS_RE = re.compile(r"SYMPHONY_ARGS:\s*([^\n]*)", re.IGNORECASE)
+RAW_CONTROL_RE = re.compile(
+    r"\A/symphony:(enable|disable|start|stop|status|agents|help)(?:\s+([\s\S]*))?\Z",
+    re.IGNORECASE,
+)
+CONTROL_RE = re.compile(
+    r"^[ \t]*(?:<!--[ \t]*)?SYMPHONY_CONTROL:[ \t]*(enable|disable|start|stop|status|agents|help)"
+    r"(?=[ \t]*(?:-->|$))", re.IGNORECASE | re.MULTILINE,
+)
 SUGGESTION_RE = re.compile(r"SYMPHONY_SUGGESTED:([a-z0-9-]+)", re.IGNORECASE)
 MODE_RE = re.compile(r"SYMPHONY_MODE:\s*(small|medium|large)", re.IGNORECASE)
 INSPECTION_RE = re.compile(r"(?:^|\n)<!-- SYMPHONY_AGENTS_INSPECTED:([a-f0-9]{32}) -->\s*\Z")
 MEMORY_CHECKPOINT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])SYMPHONY_MEMORY_CHECKPOINT:([a-f0-9]+):codebase-memory-mcp(?![A-Za-z0-9_-])",
+    re.IGNORECASE,
+)
+MEMORY_UNAVAILABLE_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])SYMPHONY_MEMORY_UNAVAILABLE:([a-f0-9]+):codebase-memory-mcp(?![A-Za-z0-9_-])",
     re.IGNORECASE,
 )
 
@@ -34,7 +43,11 @@ def memory_paths(project_root, run_id):
     return root / MEMORY_ROOT / "current.md", root / MEMORY_ROOT / "history" / f"{run_id}.md"
 
 
-def _record_memory_checkpoint(run, message, now):
+def _record_memory_receipt(run, message, now):
+    unavailable = MEMORY_UNAVAILABLE_RE.findall(message or "")
+    if run["id"].lower() in {value.lower() for value in unavailable}:
+        run["memory"]["enabled"] = False
+        return True
     matches = MEMORY_CHECKPOINT_RE.findall(message or "")
     if run["id"].lower() not in {value.lower() for value in matches}:
         return False
@@ -89,6 +102,11 @@ def project_state_path(data_dir, project_root):
     return Path(data_dir) / "projects" / f"{digest}.json"
 
 
+def inspection_path(data_dir, project_root, session_id):
+    digest = hashlib.sha256(json.dumps(session_id).encode("utf-8")).hexdigest()
+    return project_state_path(data_dir, project_root).with_suffix(f".inspection.{digest}.json")
+
+
 def default_state(project_root):
     return {
         "schema_version": SCHEMA_VERSION,
@@ -138,9 +156,22 @@ def read_project_state(data_dir, project_root, *, read_only=False):
         state.setdefault("warning", None)
         state["run_history"] = _run_history(state)
         if isinstance(state["active_run"], dict):
-            state["active_run"]["agent_records"] = {
-                record["id"]: record for record in _agent_records(state["active_run"])
+            run = state["active_run"]
+            run["agent_records"] = {
+                record["id"]: record for record in _agent_records(run)
             }
+            current, history = memory_paths(state["project_root"], run["id"])
+            memory = run.setdefault("memory", {})
+            if not isinstance(memory, dict):
+                raise ValueError("invalid run memory")
+            memory.setdefault("enabled", False)
+            memory.setdefault("checkpoint_at", None)
+            if not isinstance(memory["enabled"], bool) or (
+                memory["checkpoint_at"] is not None and type(memory["checkpoint_at"]) is not int
+            ):
+                raise ValueError("invalid run memory state")
+            memory["current"] = str(current.relative_to(state["project_root"]))
+            memory["history"] = str(history.relative_to(state["project_root"]))
         return state
     except (OSError, ValueError, json.JSONDecodeError) as error:
         if read_only:
@@ -258,8 +289,16 @@ def _bootstrap_context(run, state, *, recovery=False, now=None):
         f"tracked agents: {agents}; recorded mode: {run.get('mode') or 'unselected'}. "
         f"Capabilities currently under suggestion cooldown: {cooldowns}. "
         f"Memory candidates: current={current_memory}; history={history_memory}. "
+        f"Extended memory: enabled={str(run['memory']['enabled']).lower()}; "
+        f"checkpoint_at={run['memory']['checkpoint_at']}. "
         "Verify codebase-memory-mcp plus a healthy index before creating either file; "
         "otherwise leave extended memory disabled. "
+        "If active memory becomes unavailable because MCP/index health fails or either memory file "
+        "disappears, report the loss and emit "
+        f"`<!-- SYMPHONY_MEMORY_UNAVAILABLE:{run['id']}:codebase-memory-mcp -->` "
+        "to persist compact lifecycle fallback; retain the last checkpoint time and finish with "
+        "the normal mode and completion receipts. While memory is available, a matching fresh "
+        "checkpoint remains required. "
         f"Objective: {run['objective']}"
     )
 
@@ -358,25 +397,36 @@ def _agents_context(state, include_history=False):
     return "\n".join(lines)
 
 
-def _handle_prompt(payload, state, now):
-    prompt = payload.get("prompt") or ""
+def _marker_argument(prompt, name):
+    comment = re.search(rf"<!--[ \t]*SYMPHONY_{name}:[ \t]*([\s\S]*?)-->", prompt, re.IGNORECASE)
+    bare = re.search(
+        rf"^[ \t]*SYMPHONY_{name}:[ \t]*([\s\S]*?)(?=^[ \t]*SYMPHONY_[A-Z_]+:|\Z)",
+        prompt, re.IGNORECASE | re.MULTILINE,
+    ) if not comment else None
+    match = comment or bare
+    value = match.group(1).strip() if match else ""
+    return "" if value == "$ARGUMENTS" else value
+
+
+def _parse_prompt(prompt):
+    raw = RAW_CONTROL_RE.fullmatch(prompt.strip())
+    if raw:
+        return raw.group(1).lower(), (raw.group(2) or "").strip(), (raw.group(2) or "").strip()
     control_match = CONTROL_RE.search(prompt)
     control = control_match.group(1).lower() if control_match else None
-    task_match = TASK_RE.search(prompt)
-    task = task_match.group(1).strip() if task_match else ""
-    if task == "$ARGUMENTS":
-        task = ""
-    args_match = ARGS_RE.search(prompt)
-    args = args_match.group(1).strip() if args_match else ""
-    if args == "$ARGUMENTS":
-        args = ""
+    return control, _marker_argument(prompt, "TASK"), _marker_argument(prompt, "ARGS")
+
+
+def _handle_prompt(payload, state, now):
+    prompt = payload.get("prompt") or ""
+    control, task, args = _parse_prompt(prompt)
 
     if control == "help":
         return HookResult()
     if control == "status":
         return HookResult(context=_status_context(state))
     if control == "agents":
-        return HookResult(context=_agents_context(state, include_history="--all" in args))
+        return HookResult(context=_agents_context(state, include_history="--all" in args.split()))
     if control == "enable":
         state["enabled"] = True
         if not task:
@@ -394,7 +444,7 @@ def _handle_prompt(payload, state, now):
             )
         return HookResult(context="Symphony is disabled for this project.")
     if control == "stop":
-        if "--force" in args:
+        if "--force" in args.split():
             orphaned = list((state.get("active_run") or {}).get("agents", []))
             _archive_run(state, "force-stopped", now)
             state["active_run"] = None
@@ -440,7 +490,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
     inspection = INSPECTION_RE.search(payload.get("last_assistant_message") or "")
     if inspection:
         with project_lock(data_dir, project_root):
-            pending_path = project_state_path(data_dir, project_root).with_suffix(".inspection.json")
+            pending_path = inspection_path(data_dir, project_root, payload.get("session_id"))
             try:
                 pending = json.loads(pending_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -482,9 +532,9 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
         if not run:
             return HookResult()
         message = payload.get("last_assistant_message") or ""
-        memory_activated = _record_memory_checkpoint(run, message, now)
+        memory_changed = _record_memory_receipt(run, message, now)
         if background_tasks:
-            if memory_activated:
+            if memory_changed:
                 write_project_state(data_dir, state, now)
             task_ids = [str(task.get("id") or task.get("task_id") or "unknown") for task in background_tasks]
             return HookResult(
@@ -496,7 +546,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             )
         agents = list(run.get("agents", []))
         if agents:
-            if memory_activated:
+            if memory_changed:
                 write_project_state(data_dir, state, now)
             return HookResult(
                 block=True,
@@ -511,7 +561,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             write_project_state(data_dir, state, now)
             return HookResult()
         if run["receipt"] not in message:
-            if memory_activated:
+            if memory_changed:
                 write_project_state(data_dir, state, now)
             return HookResult(
                 block=True,
@@ -522,7 +572,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             )
         mode = MODE_RE.search(message)
         if not mode:
-            if memory_activated:
+            if memory_changed:
                 write_project_state(data_dir, state, now)
             return HookResult(
                 block=True,
@@ -561,8 +611,8 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
             wait = int(os.environ.get("SYMPHONY_STOP_WAIT_SECONDS", "55"))
         return _handle_stop(payload, Path(data_dir), project_root, current, wait)
 
-    control = CONTROL_RE.search(payload.get("prompt") or "") if event == "UserPromptSubmit" else None
-    read_only = bool(control and control.group(1).lower() == "agents")
+    control = _parse_prompt(payload.get("prompt") or "")[0] if event == "UserPromptSubmit" else None
+    read_only = control == "agents"
     with project_lock(data_dir, project_root):
         state = read_project_state(data_dir, project_root, read_only=read_only)
         original_state = json.dumps(state, sort_keys=True)
@@ -579,7 +629,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     )
                 )
         elif event == "UserPromptSubmit":
-            pending_path = project_state_path(data_dir, project_root).with_suffix(".inspection.json")
+            pending_path = inspection_path(data_dir, project_root, payload.get("session_id"))
             pending_path.unlink(missing_ok=True)
             result = _handle_prompt(payload, state, current)
             if read_only:
@@ -612,28 +662,28 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     )
                 )
         elif event == "SubagentStop":
-            run = state.get("active_run")
             agent_id = payload.get("agent_id")
-            if run and agent_id:
-                run["agents"] = sorted(set(run.get("agents", [])) - {agent_id})
-                record = run.setdefault("agent_records", {}).setdefault(agent_id, _agent_record(payload))
+            active = state.get("active_run")
+            runs = ([active] if active else []) + state["run_history"]
+            owners = [run for run in runs if any(record["id"] == agent_id for record in _agent_records(run))]
+            if agent_id and len(owners) == 1:
+                run = owners[0]
+                records = {record["id"]: record for record in _agent_records(run)}
+                record = records[agent_id]
                 exposed = _agent_record(payload)
                 for field in ("role", "model", "effort"):
                     if isinstance(exposed[field], str) and exposed[field] != "not exposed by host":
                         record[field] = exposed[field]
                 record["status"] = "terminal"
                 record["stopped_at"] = current
-                run["last_event"] = event
-                mode = MODE_RE.search(payload.get("last_assistant_message") or "")
-                if mode:
-                    run["mode"] = mode.group(1).lower()
-                _record_memory_checkpoint(run, payload.get("last_assistant_message"), current)
-                result = HookResult(
-                    context=(
-                        f"Symphony agent {agent_id} is terminal. Collect and inspect its result, "
-                        "update the run ledger, and integrate it before completion."
-                    )
-                )
+                run["agent_records"] = records if run is active else list(records.values())
+                if run is active:
+                    run["agents"] = sorted(set(run.get("agents", [])) - {agent_id})
+                    run["last_event"] = event
+                    mode = MODE_RE.search(payload.get("last_assistant_message") or "")
+                    if mode:
+                        run["mode"] = mode.group(1).lower()
+                    _record_memory_receipt(run, payload.get("last_assistant_message"), current)
         elif event == "Interrupt":
             run = state.get("active_run")
             if run:
@@ -657,7 +707,7 @@ def format_output(payload, result):
     if not result.context:
         return ""
     event = payload.get("hook_event_name")
-    if event in {"SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop"}:
+    if event in {"SessionStart", "UserPromptSubmit", "SubagentStart"}:
         return json.dumps(
             {
                 "hookSpecificOutput": {

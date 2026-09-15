@@ -41,6 +41,59 @@ class SymphonyHookTests(unittest.TestCase):
     def state(self):
         return self.hook.read_project_state(self.data, str(self.project))
 
+    def test_legacy_runs_normalize_memory_before_child_and_final_checkpoints(self):
+        for checkpoint_event in (None, "SubagentStop", "Stop"):
+            with self.subTest(checkpoint_event=checkpoint_event):
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: legacy"),
+                    self.data, now=1_000,
+                )
+                state = self.state()
+                run = state["active_run"]
+                run.pop("memory")
+                run.pop("agent_records")
+                state.pop("run_history")
+                self.hook.write_project_state(self.data, state)
+                memory = self.state()["active_run"]["memory"]
+                self.assertEqual({
+                    "enabled": False, "checkpoint_at": None,
+                    "current": ".symphony/memory/current.md",
+                    "history": f".symphony/memory/history/{run['id']}.md",
+                }, memory)
+                marker = f"<!-- SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp -->"
+                if checkpoint_event:
+                    current = self.project / memory["current"]
+                    current.parent.mkdir(parents=True, exist_ok=True)
+                    current.write_text("# Legacy recovery checkpoint\n", encoding="utf-8")
+                if checkpoint_event == "SubagentStop":
+                    self.hook.handle_event(self.event("SubagentStart", agent_id="legacy-lead"), self.data)
+                    self.hook.handle_event(
+                        self.event("SubagentStop", agent_id="legacy-lead", last_assistant_message=marker),
+                        self.data, now=1_001,
+                    )
+                    self.assertEqual(1_001, self.state()["active_run"]["memory"]["checkpoint_at"])
+                result = self.hook.handle_event(
+                    self.event("Stop", last_assistant_message=(
+                        f"SYMPHONY_MODE:small\n{run['receipt']}\n" + (marker if checkpoint_event else "")
+                    )), self.data, stop_wait_seconds=0,
+                )
+                self.assertFalse(result.block)
+                self.assertIsNone(self.state()["active_run"])
+
+    def test_malformed_memory_state_fails_closed_and_force_stop_recovers(self):
+        for memory in (None, [], {"enabled": "false"}, {"enabled": True, "checkpoint_at": []}):
+            with self.subTest(memory=memory):
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+                state = self.state()
+                state["active_run"]["memory"] = memory
+                self.hook.write_project_state(self.data, state)
+                blocked = self.hook.handle_event(self.event("Stop"), self.data, stop_wait_seconds=0)
+                self.assertTrue(blocked.block)
+                self.assertIn("corrupt", blocked.reason)
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data)
+                self.assertFalse(self.state()["corrupt"])
+                self.assertIsNone(self.state()["active_run"])
+
     def test_terminal_agent_retains_metadata_without_worker_content(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
@@ -64,6 +117,108 @@ class SymphonyHookTests(unittest.TestCase):
             "model": "gpt-6-astra", "effort": "high", "started_at": 1_001, "stopped_at": 1_002,
         }, run["agent_records"]["worker-1"])
         self.assertNotIn("private", json.dumps(self.state()))
+
+    def test_late_child_stop_updates_its_archived_run_without_changing_new_run(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start old task"), self.data)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="old-worker"), self.data)
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data)
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start new task"), self.data)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="new-worker"), self.data)
+        before = self.state()["active_run"]
+        result = self.hook.handle_event(
+            self.event("SubagentStop", agent_id="old-worker", model="gpt-6-astra",
+                       last_assistant_message=(f"SYMPHONY_MODE:large\n{before['receipt']}\n"
+                           f"SYMPHONY_MEMORY_CHECKPOINT:{before['id']}:codebase-memory-mcp")),
+            self.data, now=2_000,
+        )
+        self.assertEqual(before, self.state()["active_run"])
+        self.assertEqual("", self.hook.format_output(self.event("SubagentStop"), result))
+        record = self.state()["run_history"][0]["agent_records"][0]
+        self.assertEqual(("terminal", 2_000, "gpt-6-astra"),
+                         (record["status"], record["stopped_at"], record["model"]))
+        path = self.hook.project_state_path(self.data, str(self.project))
+        unchanged = path.read_bytes()
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="unknown-worker", last_assistant_message="SYMPHONY_MODE:large"),
+            self.data,
+        )
+        self.assertEqual(unchanged, path.read_bytes())
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="new-worker"), self.data)
+        self.assertEqual("terminal", self.state()["run_history"][-1]["agent_records"][0]["status"])
+
+    def test_raw_commands_control_lifecycle_without_becoming_work(self):
+        for command in ("help", "status", "agents", "agents --all", "stop", "disable", "start"):
+            with self.subTest(command=command):
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt=f"/symphony:{command}"), self.data)
+                self.assertIsNone(self.state()["active_run"])
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:enable"), self.data)
+        self.assertTrue(self.state()["enabled"])
+        for command in ("help", "status", "agents", "agents --all", "start"):
+            self.hook.handle_event(self.event("UserPromptSubmit", prompt=f"/symphony:{command}"), self.data)
+            self.assertIsNone(self.state()["active_run"])
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start first line\nsecond line"), self.data,
+        )
+        run = self.state()["active_run"]
+        self.assertEqual("first line\nsecond line", run["objective"])
+        self.hook.handle_event(self.event("SubagentStart", agent_id="raw-worker"), self.data)
+        path = self.hook.project_state_path(self.data, str(self.project))
+        before = path.read_bytes()
+        listing = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:agents"), self.data,
+        )
+        self.assertIn("raw-worker", listing.context)
+        self.assertEqual(before, path.read_bytes())
+        inspected = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=listing.context.splitlines()[-1]),
+            self.data, stop_wait_seconds=0,
+        )
+        self.assertFalse(inspected.block)
+        self.assertEqual(before, path.read_bytes())
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data)
+        self.assertIsNone(self.state()["active_run"])
+        listing = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:agents --all"), self.data,
+        )
+        self.assertIn(run["id"], listing.context)
+        self.assertIn("raw-worker", listing.context)
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:enable next task"), self.data)
+        self.assertEqual("next task", self.state()["active_run"]["objective"])
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:disable"), self.data)
+        self.assertFalse(self.state()["enabled"])
+        self.assertEqual("stopping", self.state()["active_run"]["status"])
+        self.hook.handle_event(self.event("Stop"), self.data, stop_wait_seconds=0)
+        for prompt in ("Discuss /symphony:enable", "/symphony:enable-other", "`/symphony:enable`"):
+            self.hook.handle_event(self.event("UserPromptSubmit", prompt=prompt), self.data)
+            self.assertFalse(self.state()["enabled"])
+            self.assertIsNone(self.state()["active_run"])
+
+    def test_shipped_command_templates_handle_empty_and_multiline_arguments(self):
+        enable = (PLUGIN_ROOT / "commands" / "enable.md").read_text(encoding="utf-8")
+        for argument in ("", "$ARGUMENTS", "\n"):
+            self.hook.handle_event(
+                self.event("UserPromptSubmit", prompt=enable.replace("$ARGUMENTS", argument)), self.data,
+            )
+            self.assertTrue(self.state()["enabled"])
+            self.assertIsNone(self.state()["active_run"])
+        task = "first line\nsecond line\n\nlast line"
+        for command in ("enable", "start"):
+            template = (PLUGIN_ROOT / "commands" / f"{command}.md").read_text(encoding="utf-8")
+            self.hook.handle_event(
+                self.event("UserPromptSubmit", prompt=template.replace("$ARGUMENTS", task)), self.data,
+            )
+            self.assertEqual(task, self.state()["active_run"]["objective"])
+            stop = (PLUGIN_ROOT / "commands" / "stop.md").read_text(encoding="utf-8")
+            self.hook.handle_event(
+                self.event("UserPromptSubmit", prompt=stop.replace("$ARGUMENTS", "\n--force\n")), self.data,
+            )
+            self.assertIsNone(self.state()["active_run"])
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: " + task),
+            self.data,
+        )
+        self.assertEqual(task, self.state()["active_run"]["objective"])
 
     def test_agents_all_includes_completed_runs_without_changing_state(self):
         self.hook.handle_event(
@@ -223,7 +378,7 @@ class SymphonyHookTests(unittest.TestCase):
                     )
                     receipt = listing.context.splitlines()[-1]
                     self.assertNotIn(run["id"], receipt)
-                    pending_path = path.with_suffix(".inspection.json")
+                    pending_path = self.hook.inspection_path(self.data, str(self.project), "session-1")
                     self.assertTrue(pending_path.exists())
                     self.assertEqual({"nonce", "run_id", "session_id", "turn_id"},
                                      set(json.loads(pending_path.read_text(encoding="utf-8"))))
@@ -246,7 +401,7 @@ class SymphonyHookTests(unittest.TestCase):
                     )
 
     def test_inspection_requires_issued_nonce_and_rejects_replay_and_other_identity(self):
-        for attack in ("unissued", "consumed", "ordinary-prompt", "other-session", "other-turn"):
+        for attack in ("unissued", "consumed", "ordinary-prompt", "other-session", "other-turn", "corrupt-pending", "old-run"):
             with self.subTest(attack=attack):
                 self.hook.handle_event(
                     self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
@@ -268,8 +423,21 @@ class SymphonyHookTests(unittest.TestCase):
                     self.assertFalse(first.block)
                 if attack == "ordinary-prompt":
                     self.hook.handle_event(self.event("UserPromptSubmit", prompt="continue work"), self.data)
-                    pending_path = self.hook.project_state_path(self.data, str(self.project)).with_suffix(".inspection.json")
+                    pending_path = self.hook.inspection_path(self.data, str(self.project), "session-1")
                     self.assertFalse(pending_path.exists())
+                if attack == "corrupt-pending":
+                    pending_path = self.hook.inspection_path(self.data, str(self.project), "session-1")
+                    pending_path.write_text("{broken", encoding="utf-8")
+                if attack == "old-run":
+                    self.hook.handle_event(
+                        self.event("UserPromptSubmit", session_id="session-2", prompt="/symphony:stop --force"),
+                        self.data,
+                    )
+                    self.hook.handle_event(
+                        self.event("UserPromptSubmit", session_id="session-2", prompt="/symphony:start next task"),
+                        self.data,
+                    )
+                    run = self.state()["active_run"]
                 result = self.hook.handle_event(
                     self.event("Stop", last_assistant_message=receipt,
                                session_id="session-2" if attack == "other-session" else "session-1",
@@ -282,6 +450,40 @@ class SymphonyHookTests(unittest.TestCase):
                     self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: stop\nSYMPHONY_ARGS: --force"),
                     self.data,
                 )
+
+    def test_inspection_authorizations_are_independent_per_session(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        path = self.hook.project_state_path(self.data, str(self.project))
+        before = path.read_bytes()
+        receipts = {}
+        for session in ("session-A", "session-B"):
+            listing = self.hook.handle_event(
+                self.event("UserPromptSubmit", session_id=session, turn_id="inspect", prompt="/symphony:agents"),
+                self.data,
+            )
+            receipts[session] = listing.context.splitlines()[-1]
+        for session, receipt in receipts.items():
+            result = self.hook.handle_event(
+                self.event("Stop", session_id=session, turn_id="inspect", last_assistant_message=receipt),
+                self.data, stop_wait_seconds=0,
+            )
+            self.assertFalse(result.block)
+        self.assertEqual(before, path.read_bytes())
+        for session in receipts:
+            listing = self.hook.handle_event(
+                self.event("UserPromptSubmit", session_id=session, prompt="/symphony:agents"), self.data,
+            )
+            receipts[session] = listing.context.splitlines()[-1]
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", session_id="session-A", prompt="continue"), self.data,
+        )
+        for session, receipt in receipts.items():
+            result = self.hook.handle_event(
+                self.event("Stop", session_id=session, last_assistant_message=receipt),
+                self.data, stop_wait_seconds=0,
+            )
+            self.assertEqual(session == "session-A", result.block)
+        self.assertEqual(before, path.read_bytes())
 
     def test_malformed_agent_ledgers_allow_listing_and_force_stop(self):
         for malformed in (None, "broken", 42, [None, "bad", {}], {"worker-1": None}):
@@ -396,6 +598,7 @@ class SymphonyHookTests(unittest.TestCase):
             now=1_000,
         )
         run = self.state()["active_run"]
+        self.hook.handle_event(self.event("SubagentStart", agent_id="lead-1"), self.data)
         other_run_id = "a" * 16 if run["id"] != "a" * 16 else "b" * 16
 
         self.hook.handle_event(
@@ -442,6 +645,77 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertTrue(result.block)
         self.assertIn("matching checkpoint receipt", result.reason)
 
+    def test_activated_memory_can_degrade_and_finish_from_compact_recovery(self):
+        for boundary, missing in (("SubagentStop", "mcp"), ("Stop", "index"),
+                                  ("Stop", "current"), ("SubagentStop", "history")):
+            with self.subTest(boundary=boundary, missing=missing):
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+                run = self.state()["active_run"]
+                for field in ("current", "history"):
+                    document = self.project / run["memory"][field]
+                    document.parent.mkdir(parents=True, exist_ok=True)
+                    document.write_text("# Verified checkpoint\n", encoding="utf-8")
+                self.hook.handle_event(self.event("SubagentStart", agent_id=run["id"]), self.data)
+                self.hook.handle_event(
+                    self.event("SubagentStop", agent_id=run["id"], last_assistant_message=(
+                        f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+                    )), self.data, now=1_234,
+                )
+                recovery = self.hook.handle_event(self.event("SessionStart", source="compact"), self.data)
+                self.assertIn("enabled=true", recovery.context)
+                self.assertIn("checkpoint_at=1234", recovery.context)
+                marker = f"SYMPHONY_MEMORY_UNAVAILABLE:{run['id']}:codebase-memory-mcp"
+                self.assertIn(marker, recovery.context)
+                if missing in ("current", "history"):
+                    (self.project / run["memory"][missing]).unlink()
+                result = self.hook.handle_event(
+                    self.event(boundary, agent_id=run["id"], last_assistant_message=f"{missing} unavailable\n<!-- {marker} -->"),
+                    self.data, now=1_235, stop_wait_seconds=0,
+                )
+                memory = self.state()["active_run"]["memory"]
+                self.assertFalse(memory["enabled"])
+                self.assertEqual(1_234, memory["checkpoint_at"])
+                recovery = self.hook.handle_event(self.event("SessionStart", source="resume"), self.data)
+                self.assertIn("enabled=false", recovery.context)
+                self.assertIn("checkpoint_at=1234", recovery.context)
+                completed = self.hook.handle_event(
+                    self.event("Stop", last_assistant_message=f"SYMPHONY_MODE:small\n{run['receipt']}"),
+                    self.data, stop_wait_seconds=0,
+                )
+                self.assertFalse(completed.block)
+                self.assertIsNone(self.state()["active_run"])
+
+    def test_unavailable_memory_receipt_is_run_bound_and_preserves_checkpoint_guard(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        run = self.state()["active_run"]
+        for field in ("current", "history"):
+            document = self.project / run["memory"][field]
+            document.parent.mkdir(parents=True, exist_ok=True)
+            document.write_text("# Verified checkpoint\n", encoding="utf-8")
+        checkpoint = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+        self.hook.handle_event(
+            self.event("Stop", last_assistant_message=checkpoint), self.data, now=1_234, stop_wait_seconds=0,
+        )
+        unavailable = f"SYMPHONY_MEMORY_UNAVAILABLE:{run['id']}:codebase-memory-mcp"
+        other_id = "a" * 16 if run["id"] != "a" * 16 else "b" * 16
+        for marker in ("", f"NOT_{unavailable}", f"{unavailable}-other", unavailable.replace(run["id"], other_id)):
+            result = self.hook.handle_event(
+                self.event("Stop", last_assistant_message=f"SYMPHONY_MODE:small\n{run['receipt']}\n{marker}"),
+                self.data, stop_wait_seconds=0,
+            )
+            self.assertTrue(result.block)
+            self.assertIn("matching checkpoint receipt", result.reason)
+            self.assertTrue(self.state()["active_run"]["memory"]["enabled"])
+            self.assertEqual(1_234, self.state()["active_run"]["memory"]["checkpoint_at"])
+        # An observed loss takes precedence over an earlier checkpoint copied into the same response.
+        result = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                f"SYMPHONY_MODE:small\n{run['receipt']}\n{checkpoint}\n{unavailable}"
+            )), self.data, stop_wait_seconds=0,
+        )
+        self.assertFalse(result.block)
+        self.assertIsNone(self.state()["active_run"])
+
     def test_memory_marker_requires_exact_token_boundaries(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
@@ -449,6 +723,7 @@ class SymphonyHookTests(unittest.TestCase):
             now=1_000,
         )
         run = self.state()["active_run"]
+        self.hook.handle_event(self.event("SubagentStart", agent_id="lead-1"), self.data)
         marker = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
 
         for malformed in (f"NOT_{marker}", f"{marker}-other"):
@@ -1023,7 +1298,7 @@ class HookDeclarationTests(unittest.TestCase):
         )
         self.assertIn("python3 -m unittest discover -s plugins/symphony/tests -v", workflow)
 
-    def test_subagent_outputs_use_structured_hook_context(self):
+    def test_subagent_start_gets_context_and_terminal_stop_emits_no_continuation(self):
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary) / "project"
             data = Path(temporary) / "data"
@@ -1042,14 +1317,14 @@ class HookDeclarationTests(unittest.TestCase):
                     env=env,
                     check=True,
                 )
-                return json.loads(completed.stdout)
+                return json.loads(completed.stdout) if completed.stdout else None
 
             invoke(
                 {
                     "hook_event_name": "UserPromptSubmit",
                     "session_id": "session-1",
                     "cwd": str(project),
-                    "prompt": "SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task",
+                    "prompt": "/symphony:start task",
                 }
             )
             started = invoke(
@@ -1074,8 +1349,10 @@ class HookDeclarationTests(unittest.TestCase):
 
             self.assertEqual("SubagentStart", started["hookSpecificOutput"]["hookEventName"])
             self.assertIn("capability receipt", started["hookSpecificOutput"]["additionalContext"])
-            self.assertEqual("SubagentStop", stopped["hookSpecificOutput"]["hookEventName"])
-            self.assertIn("integrate", stopped["hookSpecificOutput"]["additionalContext"])
+            self.assertIsNone(stopped)
+            state = load_hook_module().read_project_state(data, str(project))
+            self.assertEqual("terminal", state["active_run"]["agent_records"]["worker-1"]["status"])
+            self.assertEqual([], state["active_run"]["agents"])
 
 
 if __name__ == "__main__":

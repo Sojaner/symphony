@@ -94,6 +94,8 @@ on a material checkpoint. The first matching marker activates extended memory fo
 
 Recovery context identifies whether extended memory was active, supplies both paths, and directs the replacement lead to validate the index before trusting historical retrieval.
 
+Recovery also supplies the persisted `enabled` and `checkpoint_at` values. When activated memory loses MCP/index health or either required document, the lead reports the loss with `<!-- SYMPHONY_MEMORY_UNAVAILABLE:<run-id>:codebase-memory-mcp -->`. SubagentStop or Stop records this run-bound transition by disabling memory while preserving the last checkpoint time. The root relays the receipt and can finish normally with mode and completion receipts using compact lifecycle recovery. This explicit transition takes precedence over a checkpoint in the same response; a later verified durable checkpoint can reactivate memory. Missing checkpoints remain blocking while memory is active.
+
 ### Memory is safe and user-controlled
 
 Memory documents must not contain credentials, access tokens, private keys, raw environment values, personal data unnecessary to the task, or full transcripts. Store references to sensitive configuration, never its value.

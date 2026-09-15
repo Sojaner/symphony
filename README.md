@@ -88,6 +88,8 @@ Manually ignoring `.symphony/memory/` disables indexed history until the ignore 
 
 Hooks cannot call MCP. The strong lead activates memory only with its verified capability receipt, and hooks enforce that activation with the documented file and checkpoint-receipt checks.
 
+If an activated run loses MCP/index health or either memory file, the lead reports the loss with its run-bound `SYMPHONY_MEMORY_UNAVAILABLE:<run-id>:codebase-memory-mcp` receipt. Hooks then disable extended memory, retain the last checkpoint time, and allow normal completion from compact lifecycle recovery. While memory remains active, a missing or stale final checkpoint still blocks completion.
+
 ## Lifecycle protection
 
 The hook layer runs before model reasoning and at agent lifecycle events:

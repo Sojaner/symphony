@@ -29,7 +29,7 @@ The user commands are:
 
 For `/symphony:agents`, the root must use a live host agent-listing tool when exposed and prefer its status and metadata over lifecycle observations. Use the persistent ledger as recovery evidence and as fallback for fields the live tool does not expose. Report run id, agent id, status, role, model, and effort; absent role, model, or effort is exactly `not exposed by host`. Never infer those values. Report and return without enabling Symphony, starting a run, spawning a lead, or changing agent status. Retain metadata only, never prompts, transcripts, or worker output. A force-stopped run may still contain agents last observed as active.
 
-End only that inspection response with the exact injected `SYMPHONY_AGENTS_INSPECTED` receipt on its own final line. It is a random, single-use authorization bound to the run, session, and host turn when exposed. The hook stores this pending authorization separately from lifecycle state, consumes it on matching Stop, and invalidates it on the next prompt. Never reuse this receipt for later project work or emit a run-completion receipt for inspection.
+End only that inspection response with the exact injected `SYMPHONY_AGENTS_INSPECTED` receipt on its own final line. It is a random, single-use authorization bound to the run, session, and host turn when exposed. The hook stores each session's pending authorization separately from lifecycle state, consumes it on matching Stop, and invalidates it on the next prompt in that same session. Other sessions keep their own authorizations. Never reuse this receipt for later project work or emit a run-completion receipt for inspection.
 
 ## Bootstrap the strong execution lead
 
@@ -129,6 +129,8 @@ Each history checkpoint records its timestamp, run id, mode, reason for the chec
 On recovery, read `current.md` directly, check index status, query only relevant history sections, run `check_index_coverage` for every memory path used, and fall back to targeted direct reads for stale or uncovered sections. Give workers only relevant invariants, decisions, evidence references, and acceptance criteria.
 
 After a durable checkpoint, the lead emits `<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->`. The root relays it in the root-final response alongside the exact completion receipt. Never write secrets, environment values, unnecessary personal data, transcripts, or copied source bodies.
+
+Recovery context includes persisted `enabled` and `checkpoint_at`. If codebase-memory-mcp becomes unavailable, its index becomes unhealthy, or either required memory file disappears, report the loss and emit `<!-- SYMPHONY_MEMORY_UNAVAILABLE:<run-id>:codebase-memory-mcp -->`. The root relays that run-bound receipt; SubagentStop or Stop disables extended memory while retaining the last checkpoint time. Continue from compact lifecycle state and verified worktree evidence, without inventing lost facts. Normal mode and completion receipts can then finish the run without force-stop. An unavailable receipt takes precedence over a checkpoint in the same response. Reactivate only after renewed capability verification and a fresh durable checkpoint. While memory remains available, a missing or stale final checkpoint still blocks completion.
 
 ## Dispatch and wait
 
