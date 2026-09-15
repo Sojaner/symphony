@@ -30,15 +30,14 @@ jobs:
         run: |
           test -n "$ANTHROPIC_API_KEY" || { echo "::error::ANTHROPIC_API_KEY repository secret is not set"; exit 1; }
           claude plugin eval ./plugins/symphony \
-            --trust-plugin \
             --ablation none \
             --model claude-haiku-4-5-20251001 \
             --threshold 0.9 \
             --json eval-results.json \
             --report eval-report.html \
             --no-publish
-          # The gated early-access command prints a notice and exits 0 without
-          # running anything; require real results so CI cannot pass vacuously.
+          # Require real results even if a gated evaluator exits successfully
+          # without running any cases.
           test -s eval-results.json || { echo "plugin eval produced no results (early access not enabled?)"; exit 1; }
 
       - name: Upload results

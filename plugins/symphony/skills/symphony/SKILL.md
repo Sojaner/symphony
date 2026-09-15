@@ -13,7 +13,7 @@ Before doing anything else, inspect the user prompt for an explicit `Orchestrato
 
 ## Honor lifecycle context
 
-When injected context names a Symphony run, its run id, recovery instruction, and completion receipt are authoritative. Do not create another run or another lead for the same run.
+When injected context names a Symphony run, its run id, recovery instruction, and completion receipt are authoritative. Keep one run and at most one active execution lead. Recovery may replace the lead after reconciling workers and making the prior lead terminal; retain the run id and use bounded lifecycle/document memory for its replacement.
 
 Read-only inspection commands do not require an active run or a lead. For project work invoked without lifecycle context, state once that hook protection is not armed. Recommend `/symphony:start <task>` for a guarded one-off run or `/symphony:enable [task]` for persistent project activation. Continue manually only when the user explicitly accepts the weaker guarantee.
 
@@ -22,7 +22,8 @@ The user commands are:
 - `/symphony:enable [task]`: persistently enable this working tree and optionally start a run;
 - `/symphony:disable`: disable future activation and gracefully stop an active run;
 - `/symphony:start <task>`: start one guarded run without changing project policy;
-- `/symphony:status`: report policy, run state, and partial final-request usage observations without changing either;
+- `/symphony:status`: report project profile/source and assessment revision, run mode/revision and reassessment due, and partial final-request usage observations without changing lifecycle state;
+- `/symphony:assess [small|medium|large|auto]`: request fresh strong assessment, set a persistent manual project profile, or clear the override;
 - `/symphony:agents [--all]`: list all observed subagents in the active run, including terminal agents; `--all` also includes every retained historical run;
 - `/symphony:stop [--force]`: stop this run while preserving enablement; force releases stale protection;
 - `/symphony:help`: show usage without starting a run.
@@ -59,7 +60,7 @@ SYMPHONY_ASSESSMENT:<run-id>:<project-profile>:<run-mode>
 SYMPHONY_ASSESSMENT_REASON:<single bounded line>
 ```
 
-Bind `<run-id>` to the current run. The current run's root must relay both lines and wait for the authorized receipt before execution, then emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
+Bind `<run-id>` to the current run. The current run's root must relay both lines in an owner control response and wait for the Stop hook to persist the accepted assessment before execution, then emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
 
 6. Select a separate execution lead from the accepted mode. Emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution` before spawning it with no inherited turns. Give the lead the assessor result plus the same bounded execution packet, including checkpoint responsibility and completion receipt. After it is terminal, emit `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
 
@@ -76,11 +77,26 @@ verification: <authoritative checks>
 suggestion: <one missing material capability or none>
 ```
 
-Include `<!-- SYMPHONY_MODE:<small|medium|large> -->` with that record so lifecycle state can retain the selected mode.
+Include `<!-- SYMPHONY_MODE:<small|medium|large> -->` with that record to report the accepted mode. Mode markers do not authorize mode changes; a changed mode requires a fresh authorized assessment receipt. Only an owning-root completion without an accepted assessment retains the legacy/dry-run marker fallback.
 
 If the user explicitly requests a dry run, do not spawn or write files. Derive the planned strongest/high assessor and the separate execution lead from the selected mode and live catalog; do not hard-code the execution lead or mode. Report planned `Delegating:` and `Completed:` records for both roles, one mode, capability routing, mode marker, and exact completion receipt; do not ask a follow-up question. These are planned records only, not claims that agents ran.
 
 Keep the execution lead id while its context remains bounded. On resume or compaction, reconcile tracked workers first, then start a fresh execution lead from bounded lifecycle/document memory rather than indefinitely resuming context.
+
+### Register host agent roles
+
+`symphony_assessor` and `symphony_lead` name assignments, not required host agent types. Use a type exposed by the live host, such as Claude `general-purpose` or an installed plugin-scoped agent. The hook never trusts a role name in `agent_type` or worker text as authorization.
+
+After the host returns an agent id, the owning root registers each role with an exact standalone line in its control response:
+
+```text
+SYMPHONY_REGISTER:<run-id>:assessor:<agent-id>
+SYMPHONY_REGISTER:<run-id>:lead:<agent-id>
+```
+
+Emit only the applicable line for that agent. Registration requires a host-observed id belonging uniquely to the current run; it cannot replace an active role holder or give one agent both roles. For a synchronous Agent call, register after it returns and relay the assessor's assessment lines in the same control response. For a background call, register after launch; register the assessor before its completion if its SubagentStop should authorize the receipt directly. A root relay covers completion before registration. The hook blocks the control response from ending the run, persists valid registration/assessment, and continues the same run; omit the run-completion receipt from these control responses. This is the exception to waiting before a root response while agents are active: registration hands control back to the hook, then the root immediately resumes waiting.
+
+If the host exposes no child lifecycle events, role registration is unavailable; the root keeps the host ids for reconciliation and relays assessment receipts through the owning-root Stop path. Never claim the persistent ledger registered an unobserved id. A fresh `/symphony:assess` invalidates the prior assessor authorization; reconcile it and register the new assessor. Replayed terminal completions never reassess the run.
 
 ## Delegation visibility
 

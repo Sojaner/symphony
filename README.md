@@ -185,13 +185,14 @@ Validate the Claude plugin:
 claude plugin validate ./plugins/symphony
 ```
 
-The Claude eval suite verifies that a weak root routes to a strong lead and that an explicit false runtime declaration still stops before project work:
+The Claude eval suite checks planned assessor/medium-lead routing and mismatch refusal. A separate read-only smoke case exercises two real sequential agents and owner-root registration/assessment receipts in the evaluator's isolated workspace:
 
 ```bash
 claude plugin eval ./plugins/symphony \
-  --trust-plugin \
   --model claude-haiku-4-5-20251001
 ```
+
+The hosted evaluator requires early-access enablement. Local lifecycle tests verify the event protocol; dry-run reports do not prove real spawns or receipt acceptance. The read-only smoke has not produced hosted evidence locally because the installed evaluator exits at its early-access gate.
 
 CI runs validation and evals on every push and pull request. A successful push to `main` creates a GitHub release when the manifest version is new.
 

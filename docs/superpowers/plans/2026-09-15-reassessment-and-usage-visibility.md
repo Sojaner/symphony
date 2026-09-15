@@ -291,7 +291,7 @@ Repeat Task 5 commands. Confirm both manifests are `0.15.0`, marketplace manifes
 - [ ] **Step 3: Run hosted evaluation when credentials permit**
 
 ```bash
-claude plugin eval ./plugins/symphony --trust-plugin --model claude-haiku-4-5-20251001
+claude plugin eval ./plugins/symphony --model claude-haiku-4-5-20251001
 ```
 
 Expected: visible bounded assessor, separate medium lead, and passing mismatch refusal.
