@@ -10,6 +10,7 @@ description: Show Symphony usage without enabling or starting it
 - `/symphony:disable` — disable future automatic activation and gracefully stop an active run.
 - `/symphony:start <task>` — start one guarded run without changing project enablement.
 - `/symphony:status` — show project and active-run state without changing it.
+- `/symphony:agents [--all]` — list active-run subagents, including terminal agents; `--all` includes retained historical runs.
 - `/symphony:stop` — gracefully stop the active run while keeping Symphony enabled.
 - `/symphony:stop --force` — release stale protection; a background agent may still be running.
 - `/symphony:help` — show this help without starting a run.

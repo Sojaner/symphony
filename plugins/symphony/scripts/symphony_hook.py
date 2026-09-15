@@ -94,6 +94,7 @@ def default_state(project_root):
         "project_root": resolve_project_root(project_root),
         "enabled": False,
         "active_run": None,
+        "run_history": [],
         "suggestions": {},
         "corrupt": False,
         "warning": None,
@@ -120,7 +121,7 @@ def _atomic_write(path, value):
         raise
 
 
-def read_project_state(data_dir, project_root):
+def read_project_state(data_dir, project_root, *, read_only=False):
     path = project_state_path(data_dir, project_root)
     if not path.exists():
         return default_state(project_root)
@@ -130,11 +131,17 @@ def read_project_state(data_dir, project_root):
             raise ValueError("unsupported state schema")
         state.setdefault("suggestions", {})
         state.setdefault("active_run", None)
+        state.setdefault("run_history", [])
         state.setdefault("enabled", False)
         state.setdefault("corrupt", False)
         state.setdefault("warning", None)
         return state
     except (OSError, ValueError, json.JSONDecodeError) as error:
+        if read_only:
+            state = default_state(project_root)
+            state["corrupt"] = True
+            state["warning"] = f"Could not read Symphony state: {error}"
+            return state
         stamp = f"{int(time.time())}.{os.getpid()}"
         quarantine = path.with_name(f"{path.name}.corrupt.{stamp}")
         try:
@@ -198,6 +205,7 @@ def _new_run(payload, objective, now, project_root):
         "mode": None,
         "lead_agent_id": None,
         "agents": [],
+        "agent_records": {},
         "objective": objective.strip()[:8000],
         "receipt": f"SYMPHONY_RUN_COMPLETE:{run_id}",
         "created_at": int(now),
@@ -262,6 +270,62 @@ def _status_context(state):
     return f"Symphony project enabled: {str(state['enabled']).lower()}. Active run: {run_text}."
 
 
+def _agent_record(payload, started_at=None):
+    return {
+        "id": payload["agent_id"],
+        "status": "active",
+        "role": payload.get("agent_type") or "not exposed by host",
+        "model": payload.get("model") or "not exposed by host",
+        "effort": payload.get("reasoning_effort") or payload.get("effort") or "not exposed by host",
+        "started_at": started_at,
+        "stopped_at": None,
+    }
+
+
+def _agent_records(run):
+    records = dict(run.get("agent_records") or {})
+    for agent_id in run.get("agents", []):
+        records.setdefault(agent_id, _agent_record({"agent_id": agent_id}))
+    return list(records.values())
+
+
+def _archive_run(state, status, now):
+    run = state.get("active_run")
+    if run:
+        state.setdefault("run_history", []).append({
+            "id": run["id"],
+            "objective": run["objective"],
+            "mode": run.get("mode"),
+            "status": status,
+            "created_at": run["created_at"],
+            "completed_at": int(now),
+            "agent_records": _agent_records(run),
+        })
+
+
+def _agents_context(state, include_history=False):
+    if state.get("corrupt"):
+        return f"Symphony agent ledger unavailable: state is corrupt. {state.get('warning') or ''}"
+    run = state.get("active_run")
+    lines = ["Symphony agent ledger (lifecycle observations)."]
+    if not run:
+        lines.append("No active Symphony run.")
+    runs = [(run, _agent_records(run))] if run else []
+    if include_history:
+        runs.extend((past, past.get("agent_records", [])) for past in state.get("run_history", []))
+    for item, records in runs:
+        lines.append(f"Run {item['id']} ({item['status']}):")
+        if not records:
+            lines.append("No observed subagents.")
+            continue
+        lines.extend(["| Run | Id | Status | Role | Model | Effort |", "| --- | --- | --- | --- | --- | --- |"])
+        for record in records:
+            values = [item["id"], record["id"], record["status"]]
+            values.extend(record.get(field) or "not exposed by host" for field in ("role", "model", "effort"))
+            lines.append("| " + " | ".join(str(value).replace("|", "\\|").replace("\n", " ").replace("\r", " ") for value in values) + " |")
+    return "\n".join(lines)
+
+
 def _handle_prompt(payload, state, now):
     prompt = payload.get("prompt") or ""
     control_match = CONTROL_RE.search(prompt)
@@ -279,6 +343,8 @@ def _handle_prompt(payload, state, now):
         return HookResult()
     if control == "status":
         return HookResult(context=_status_context(state))
+    if control == "agents":
+        return HookResult(context=_agents_context(state, include_history="--all" in args))
     if control == "enable":
         state["enabled"] = True
         if not task:
@@ -298,6 +364,7 @@ def _handle_prompt(payload, state, now):
     if control == "stop":
         if "--force" in args:
             orphaned = list((state.get("active_run") or {}).get("agents", []))
+            _archive_run(state, "force-stopped", now)
             state["active_run"] = None
             state["corrupt"] = False
             state["warning"] = "Forced stop released lifecycle protection."
@@ -389,6 +456,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 ),
             )
         if run.get("status") == "stopping":
+            _archive_run(state, "stopped", now)
             state["active_run"] = None
             write_project_state(data_dir, state, now)
             return HookResult()
@@ -426,6 +494,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 state.setdefault("suggestions", {})[capability] = int(now)
         if mode:
             run["mode"] = mode.group(1).lower()
+        _archive_run(state, "completed", now)
         state["active_run"] = None
         state["warning"] = None
         write_project_state(data_dir, state, now)
@@ -442,8 +511,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
             wait = int(os.environ.get("SYMPHONY_STOP_WAIT_SECONDS", "55"))
         return _handle_stop(payload, Path(data_dir), project_root, current, wait)
 
+    control = CONTROL_RE.search(payload.get("prompt") or "") if event == "UserPromptSubmit" else None
+    read_only = bool(control and control.group(1).lower() == "agents")
     with project_lock(data_dir, project_root):
-        state = read_project_state(data_dir, project_root)
+        state = read_project_state(data_dir, project_root, read_only=read_only)
         original_state = json.dumps(state, sort_keys=True)
         result = HookResult()
         if event == "SessionStart":
@@ -464,6 +535,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
             agent_id = payload.get("agent_id")
             if run and agent_id:
                 run["agents"] = sorted(set(run.get("agents", [])) | {agent_id})
+                run.setdefault("agent_records", {})[agent_id] = _agent_record(payload, current)
                 run["last_event"] = event
                 run["status"] = "active"
                 if not run.get("lead_agent_id") and "symphony" in (payload.get("agent_type") or "").lower():
@@ -479,6 +551,9 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
             agent_id = payload.get("agent_id")
             if run and agent_id:
                 run["agents"] = sorted(set(run.get("agents", [])) - {agent_id})
+                record = run.setdefault("agent_records", {}).setdefault(agent_id, _agent_record(payload))
+                record["status"] = "terminal"
+                record["stopped_at"] = current
                 run["last_event"] = event
                 mode = MODE_RE.search(payload.get("last_assistant_message") or "")
                 if mode:

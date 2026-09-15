@@ -15,7 +15,7 @@ Before doing anything else, inspect the user prompt for an explicit `Orchestrato
 
 When injected context names a Symphony run, its run id, recovery instruction, and completion receipt are authoritative. Do not create another run or another lead for the same run.
 
-When the skill was invoked without lifecycle context, state once that hook protection is not armed. Recommend `/symphony:start <task>` for a guarded one-off run or `/symphony:enable [task]` for persistent project activation. Continue manually only when the user explicitly accepts the weaker guarantee.
+Read-only inspection commands do not require an active run or a lead. For project work invoked without lifecycle context, state once that hook protection is not armed. Recommend `/symphony:start <task>` for a guarded one-off run or `/symphony:enable [task]` for persistent project activation. Continue manually only when the user explicitly accepts the weaker guarantee.
 
 The user commands are:
 
@@ -23,8 +23,11 @@ The user commands are:
 - `/symphony:disable`: disable future activation and gracefully stop an active run;
 - `/symphony:start <task>`: start one guarded run without changing project policy;
 - `/symphony:status`: report policy and run state without changing either;
+- `/symphony:agents [--all]`: list all observed subagents in the active run, including terminal agents; `--all` also includes every retained historical run;
 - `/symphony:stop [--force]`: stop this run while preserving enablement; force releases stale protection;
 - `/symphony:help`: show usage without starting a run.
+
+For `/symphony:agents`, the root must use a live host agent-listing tool when exposed and prefer its status and metadata over lifecycle observations. Use the persistent ledger as recovery evidence and as fallback for fields the live tool does not expose. Report run id, agent id, status, role, model, and effort; absent role, model, or effort is exactly `not exposed by host`. Never infer those values. Report and return without enabling Symphony, starting a run, spawning a lead, or changing agent status. Retain metadata only, never prompts, transcripts, or worker output. A force-stopped run may still contain agents last observed as active.
 
 ## Bootstrap the strong execution lead
 
