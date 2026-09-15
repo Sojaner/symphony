@@ -4,77 +4,129 @@
 
 # Symphony
 
-Symphony is a plugin for Codex and Claude Code aimed at complicated projects. It runs a project the way a capable administrator does: the coordinator does not need deep knowledge of every area of the project. It consults an expert about what needs to be done and who should do it, then delegates the right task to the right model.
+Symphony is a Codex and Claude Code plugin that routes project work through a strong execution lead. The lead chooses the smallest suitable execution mode, uses the models and workflow skills actually available in the current host, and keeps long-running delegated work recoverable.
 
-A lightweight root agent stays in charge of scope, integration, verification, and communication. A reusable **conductor** subagent acts as its senior consultant and recommends:
+The root agent can be cheap or weak. Deterministic lifecycle hooks make it a thin session keeper, while a strongest-available high-effort child owns decisions, implementation or delegation, integration, and verification.
 
-- how to split the project into independent units;
-- which available model and reasoning effort should handle each unit;
-- which units can run in parallel;
-- when a result requires replanning or escalation;
-- which model should perform the final review.
+## Execution modes
 
-Workers receive narrow objectives, explicit ownership, constraints, acceptance checks, and a required return format.
+Each run selects exactly one mode:
 
-## Why this shape works
+- **Small:** the strong lead completes a straightforward task directly.
+- **Medium:** the lead handles fast and integration-sensitive work while delegating independent or specialist units.
+- **Large:** the lead plans, dispatches, and integrates dependency-aware parallel waves.
 
-Sending each task to the model that fits it changes how the whole project behaves, not just what it costs:
+Mode is selected per run. Enabling Symphony never permanently classifies a project as small, medium, or large.
 
-- **Less overthinking.** Senior reasoning models are consulted only on the narrow, hard questions — decomposition, routing, diagnosis, review. Their deep reasoning is never burned on mechanical work, and cheap models are never left to wrestle with problems above their weight.
-- **Less overdoing.** Every worker gets a bounded objective with acceptance checks, so a settled unit ends when its check passes instead of growing extra scope.
-- **Steadier progress.** The project advances through explicit decision gates and independently verifiable units. Long runs stay on course logically instead of drifting, because replanning happens at the gates rather than mid-task.
-- **Right economics as a consequence.** Expensive reasoning is spent on the smallest unresolved question, while the heavy lifting goes to hardworking workhorse models whose longer runs justify their time. The token savings fall out of correct delegation, not corner-cutting.
+## Persistent project enablement
 
-## When Symphony makes sense
+Symphony can remain enabled for a working tree across completed tasks, new sessions, resumes, and context compaction. Project policy and active-run state are stored in the host's writable plugin-data directory, not in the repository.
 
-Orchestration is not free: bootstrapping the conductor, dispatching workers, and integrating their results add minutes of latency before and between project work. In a head-to-head benchmark on a deliberately small five-part task (about two minutes for a single strong agent), Symphony on a cheap low-effort root delivered the same quality at roughly 35% lower token cost — but took over six times as long. On small tasks, time is the dominant cost and a single capable agent wins.
+Completing or stopping a run clears only that run. The project remains enabled until `/symphony:disable` is used.
 
-You do not have to size the project yourself: after its preflight checks, Symphony makes a shallow scan of the request and the project, estimates the units and effort, and recommends orchestrating or working directly — and asks before overriding your invocation either way.
+An active run records its owner session, objective, completion receipt, and tracked subagents. On resume, Symphony reconciles this record and the current worktree instead of launching a duplicate lead. A new session cannot silently take ownership of an unfinished run.
 
-Use Symphony when the project decomposes into **three or more independently dispatchable units**, or a single agent would need **well over fifteen minutes** of work — multi-domain changes, several verification surfaces, or long execution paths. There the coordination overhead is paid once while the savings compound: independent units run in parallel on cheap models, expensive reasoning is bought only for the few decisions that need it, and progress stays steady instead of drifting. Below that size, Symphony's own skill tells the agent to skip orchestration and work directly.
+## Requirements
 
-## Install in Codex
+- Python 3 available to `/usr/bin/env python3` for the lifecycle hook.
+- Trusted plugin hooks. Codex asks users to review plugin hook definitions before running them.
+- A host model catalog that allows spawning a capable child with a model override.
 
-Add this repository as a Git marketplace:
+If hooks are disabled, untrusted, or cannot run Python, the Symphony skill can still explain manual routing but cannot promise guarded stopping or recovery.
+
+## Install
+
+### Codex
 
 ```bash
 codex plugin marketplace add Sojaner/symphony
-```
-
-Install the plugin:
-
-```bash
 codex plugin add symphony@symphony
 ```
 
-## Install in Claude Code
+Review and trust the bundled lifecycle hooks when Codex prompts. Start a new task after installation.
 
-Add this repository as a plugin marketplace:
+### Claude Code
 
 ```text
 /plugin marketplace add Sojaner/symphony
-```
-
-Install the plugin:
-
-```text
 /plugin install symphony@symphony
 ```
 
-## Use
+Start a new session after installation so Claude Code loads the commands, skill, and hooks.
 
-Start a new task on the cheapest available model that supports spawning subagents with model overrides, at `medium` effort for routine coordination or `high` for long or unsettled projects (low effort is not accepted for the orchestrator — verification, fit assessment, and integration are judgment work — though workers may still run at `low`). Then start Symphony:
+## Commands
 
 ```text
-/symphony:start <your project>          (Claude Code)
-$symphony <your project>                (Codex)
+/symphony:help
+/symphony:enable [task]
+/symphony:disable
+/symphony:start <task>
+/symphony:status
+/symphony:stop
+/symphony:stop --force
 ```
 
-That is the whole prompt. You never have to put model ids, efforts, or project paths in it: Symphony verifies the model and effort the task is actually running on, compares them against the cheapest suitable orchestrator in the live catalog, confirms the project location (assuming the current working directory when you started the agent inside the project) and the outcome you expect, and sizes the project — asking questions interactively only where something is unverifiable, unsuitable, or a different choice than recommended.
+- `help` displays usage without enabling or starting Symphony.
+- `enable` persistently enables the current working tree and optionally starts a task.
+- `disable` prevents future automatic activation and gracefully stops an active run.
+- `start` starts one guarded run without changing project enablement.
+- `status` reads policy and run state without changing either.
+- `stop` ends the active run but preserves project enablement.
+- `stop --force` releases stale protection. A tracked or untracked child may continue running, so use it only for recovery.
 
-The preflight gate behind this never trusts words over the runtime: an optional `Orchestrator:`/`Effort:` declaration in the prompt is still verified against the actual task and any mismatch stops project work. The gate re-runs whenever a project resumes (a new session, a restored checkpoint, a handoff) — a profile remembered from an earlier session is never evidence. A skill cannot change the model or effort of its already-running task, so an unsuitable configuration means Symphony helps you pick a model and start a new task.
+When a project is enabled, the first non-control project prompt in a later session automatically arms a guarded run and starts the strong-lead bootstrap.
 
-Symphony reads the live model and reasoning-effort catalog of the current host instead of assuming every host offers the same models.
+## Lifecycle protection
+
+The hook layer runs before model reasoning and at agent lifecycle events:
+
+1. `SessionStart` restores enabled-project and interrupted-run context.
+2. `UserPromptSubmit` applies commands or arms the next project run.
+3. `SubagentStart` and `SubagentStop` maintain the tracked-agent ledger.
+4. `Stop` waits briefly for tracked agents, then blocks normal stopping until every result is reconciled and the final completion receipt matches.
+5. `Interrupt` records recovery context where the host exposes the event.
+
+Neither Codex nor Claude Code lets a plugin prevent every explicit interrupt or host-enforced Stop override. Symphony therefore guarantees normal-Stop protection and recoverable state, not an uninterruptible process.
+
+## Strong-lead bootstrap
+
+The hook gives the root one narrow instruction: spawn a strongest-available general reasoning model at high effort with no inherited turns. That child becomes `symphony_lead` and receives:
+
+- the task outcome and acceptance criteria;
+- the actual root model and effort;
+- live child models, efforts, and concurrency;
+- effective skills and tools;
+- repository instructions and current worktree state;
+- the run record and exact completion receipt;
+- the bundled model- and capability-routing references.
+
+For a small task, this same child continues directly as the implementer. Symphony does not pay for a separate classifier and executor.
+
+## Workflow and evidence capabilities
+
+Symphony inspects the effective catalog for the root and each child. It never treats marketplace installation or files on disk as proof that a skill or tool is usable by that agent.
+
+| Capability | Symphony role |
+|---|---|
+| Superpowers | Primary workflow for its design, planning, debugging, TDD, subagent execution, or verification flows. |
+| Compound Engineering | Primary workflow for end-to-end work, planning, reviews, POV decisions, PRs, or long-running delivery. |
+| Matt Pocock skills | Primary workflow for focused design, diagnosis, TDD, review, domain modeling, research, or agent documentation. |
+| Ponytail | Optional cross-cutting simplicity constraint for coding and design. |
+| Context7 | Current official documentation for version-sensitive framework and host behavior. |
+| Codebase Memory MCP | Structural code discovery, callers, dependencies, architecture, and blast-radius evidence. |
+
+Explicit user requests and repository instructions come first. Symphony normally selects one primary workflow owner; it does not stack overlapping Superpowers, Compound Engineering, and Matt Pocock ceremonies on one unit.
+
+When Codebase Memory is available, the root checks the project index and graph before delegating. Worker packets include qualified symbols, relevant traces, index freshness, and coverage gaps. A worker without graph tools uses that evidence and does not claim direct MCP access. Targeted source search remains the fallback for literals, configuration, non-code files, and graph coverage gaps.
+
+## Missing capabilities
+
+A missing optional capability does not stop a task when a valid fallback exists. If the absence materially affected the result, Symphony may suggest it in the final handoff:
+
+- at most one suggestion per run;
+- at most once per capability and project every 30 days;
+- never during active work unless the missing capability blocks an explicit user guarantee;
+- never installed or enabled automatically.
 
 ## Update
 
@@ -91,41 +143,50 @@ Claude Code:
 /plugin marketplace update symphony
 ```
 
-Start a new task after updating.
+Start a new task after updating so the host reloads hooks and skills.
 
-## How routing works
+## Development and testing
 
-After the orchestrator preflight passes, Symphony creates one reusable conductor using the strongest suitable general reasoning model available. The conductor stays idle between decision gates and is consulted again through follow-up tasks. Independent workers can then run in parallel using different models and effort levels.
-
-The bundled [model-routing index](plugins/symphony/skills/symphony/references/model-routing.md) summarizes current routing principles and links to official OpenAI and Anthropic guidance. The live subagent tool schema of the current host remains authoritative for model availability and supported effort levels.
-
-Symphony uses the host's native subagent tools — Codex collaboration tools or the Claude Code agent tool. It has no MCP server, background service, credentials, or external runtime.
-
-## Testing
-
-The plugin ships an eval suite for Claude Code's `claude plugin eval`. It pins the preflight gate: one case proves Symphony refuses when the declared orchestrator cannot match the runtime model, another proves it proceeds when the profile matches. Run it locally with:
+Run the deterministic lifecycle tests:
 
 ```bash
-claude plugin eval ./plugins/symphony --model claude-haiku-4-5-20251001
+python3 -m unittest discover -s plugins/symphony/tests -v
 ```
 
-The `--model` value must match the orchestrator declared in `plugins/symphony/evals/match-proceeds/prompt.md`. CI runs the same suite on every push and pull request (`.github/workflows/plugin-eval.yml`; requires an `ANTHROPIC_API_KEY` repository secret).
+Validate the Claude plugin:
+
+```bash
+claude plugin validate ./plugins/symphony
+```
+
+The Claude eval suite verifies that a weak root routes to a strong lead and that an explicit false runtime declaration still stops before project work:
+
+```bash
+claude plugin eval ./plugins/symphony \
+  --trust-plugin \
+  --model claude-haiku-4-5-20251001
+```
+
+CI runs validation and evals on every push and pull request. A successful push to `main` creates a GitHub release when the manifest version is new.
 
 ## Repository layout
 
 ```text
-.agents/plugins/marketplace.json       Codex Git marketplace manifest
+.agents/plugins/marketplace.json       Codex marketplace manifest
 .claude-plugin/marketplace.json        Claude Code marketplace manifest
 plugins/symphony/.codex-plugin/        Codex plugin manifest
 plugins/symphony/.claude-plugin/       Claude Code plugin manifest
-plugins/symphony/assets/               Logo and icon assets
-plugins/symphony/evals/                Plugin eval suite for the preflight gate
-plugins/symphony/skills/symphony/      Orchestration skill and routing index (shared by both hosts)
+plugins/symphony/commands/             User command surfaces
+plugins/symphony/hooks/                Claude and Codex hook declarations
+plugins/symphony/scripts/              Shared lifecycle implementation
+plugins/symphony/tests/                Deterministic lifecycle tests
+plugins/symphony/evals/                Claude plugin eval suite
+plugins/symphony/skills/symphony/      Execution and capability-routing instructions
 ```
 
 ## References
 
+- [Codex hooks](https://developers.openai.com/codex/hooks)
 - [OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model)
-- [OpenAI reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)
-- [Anthropic models overview](https://docs.claude.com/en/docs/about-claude/models/overview)
+- [Claude Code hooks](https://code.claude.com/docs/en/hooks)
 - [Claude Code subagents](https://code.claude.com/docs/en/sub-agents)

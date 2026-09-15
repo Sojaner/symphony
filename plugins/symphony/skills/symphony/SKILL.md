@@ -1,150 +1,133 @@
 ---
 name: symphony
-description: Orchestrate complicated projects from a runtime-verified low-cost root through a reusable routing consultant and narrowly scoped parallel subagents. Use for multi-domain, high-risk, or multi-part work where model and reasoning-effort choices materially affect cost, speed, or quality; skip ordinary tasks one agent can finish directly. When the user explicitly asks for Symphony or orchestration, invoke this skill immediately and before asking any clarifying question — Symphony runs its own preflight verification and questionnaires.
+description: Route project work through a strong execution lead that chooses direct, mixed, or heavily delegated execution. Use when a Symphony lifecycle hook activates a run, the user invokes a Symphony command, or the user explicitly asks for Symphony orchestration. Persistent project enablement survives later sessions until disabled.
 ---
 
 # Symphony
 
-Make a cheap root agent an effective project controller. The root owns scope, integration, verification, and the user relationship. Subagents own bounded reasoning or implementation units. A reusable **conductor** advises on decomposition, model choice, effort, scheduling, and review; it never becomes the project owner.
+Use a weak root safely by making it a thin session keeper. A strongest-available high-effort subagent becomes the execution lead and owns sizing, decisions, implementation or delegation, integration, and verification. Deterministic hooks keep an active-run receipt outside model context and guard normal stopping.
 
-## Activate
+## Honor lifecycle context first
 
-Use Symphony when the work has at least one of these properties:
+When injected context names a Symphony run, its run id, recovery instruction, and completion receipt are authoritative. Do not create another run or another lead for the same run.
 
-- several independent implementation units;
-- architecture or reasoning whose mistakes would propagate widely;
-- multiple specialties, repositories, or verification surfaces;
-- a long execution path where routing decisions materially affect cost or quality.
+When the skill was invoked without lifecycle context, state once that hook protection is not armed. Recommend `/symphony:start <task>` for a guarded one-off run or `/symphony:enable [task]` for persistent project activation. Continue manually only when the user explicitly accepts the weaker guarantee.
 
-Handle a small, sequential task directly. Delegation overhead is real work: bootstrapping the conductor and dispatching workers costs minutes of latency before any project work starts. As a sizing rule, orchestrate only when the project decomposes into three or more independently dispatchable units, or a single agent would need well over fifteen minutes of work — below that, the token savings cannot repay the coordination time, and one capable agent finishes faster at similar quality.
+The user commands are:
 
-## Verify the orchestrator
+- `/symphony:enable [task]`: persistently enable this working tree and optionally start a run;
+- `/symphony:disable`: disable future activation and gracefully stop an active run;
+- `/symphony:start <task>`: start one guarded run without changing project policy;
+- `/symphony:status`: report policy and run state without changing either;
+- `/symphony:stop [--force]`: stop this run while preserving enablement; force releases stale protection;
+- `/symphony:help`: show usage without starting a run.
 
-Complete this gate before reading project files, consulting the conductor, spawning workers, or starting project work.
+## Bootstrap the strong execution lead
 
-The user does not need to declare any model id, effort, or profile in the prompt. Symphony gathers and verifies the orchestrator itself and interacts with the user only for what it cannot determine:
+The root may use any model or effort. Before project work, it must:
 
-1. Determine the model and effort the current task is actually running on — yourself, before involving the user. Check every runtime source the host exposes to the agent, in order:
-   - the injected system or session context that names the active model (both Codex and Claude Code provide one);
-   - the shell environment of the agent's own subprocesses — Claude Code exports the effort and session id directly (`CLAUDE_EFFORT`, `CLAUDE_CODE_SESSION_ID`);
-   - the host's own session records — in Claude Code, the transcript at `~/.claude/projects/<project-slug>/<session-id>.jsonl` (the exact file named by the session id from the environment) records the model and effort on its recent assistant entries; in Codex, the newest session under `~/.codex/sessions/` records the session's model (and effort where present) in its metadata, and its transcript must contain this conversation's own recent text before the record is trusted as this session;
-   - the host's status facility or session header, and any other runtime metadata.
+1. Read the live subagent model, effort, and concurrency catalog. Never infer availability from cached examples.
+2. Determine the root's actual model and effort from injected runtime context or trusted session metadata. A user declaration is a value to verify, never evidence. If an explicit declaration contradicts the runtime, report the mismatch and stop before project work.
+3. Inventory the effective skills and tools available to the root. Read [references/capability-routing.md](references/capability-routing.md).
+4. Spawn exactly one `symphony_lead` with no inherited turns, using the strongest available general reasoning model at `high`. If `high` is unavailable, use that model's highest available effort. If no stronger child can be spawned, fail closed and explain which capability is missing; do not pretend a weak root is protected.
+5. Give the lead:
+   - objective and acceptance criteria;
+   - absolute project root and current worktree state;
+   - actual root model and effort;
+   - exact live child model/effort catalog and concurrency limit;
+   - effective skill and tool catalog;
+   - repository instructions;
+   - run id, lifecycle status, tracked agents, and completion receipt;
+   - the absolute paths to `references/model-routing.md` and `references/capability-routing.md`.
 
-   The live model catalog only lists available choices; it does not identify the active orchestrator and cannot satisfy this step. Do not infer or guess, and do not ask the user anything this step can answer.
-2. Read the live catalog and identify the cheapest suitable orchestrator: a model that supports spawning subagents with model overrides, at `medium` or `high` effort. Low effort is not accepted for the orchestrator — the gate, the fit assessment, and integration are judgment work, and a root running at low effort demonstrably skips them. Workers may still run at `low`.
-3. When the runtime profile is verified and suitable, state it in one line — "Orchestrator verified: `<id>` at `<effort>`" — and continue. When it is suitable but a different model or effort than the cheapest suitable recommendation, name the recommendation and ask one question to confirm the current selection is intentional.
-4. When the runtime profile is unsuitable — low effort, or no subagent support — stop before project work and run the profile questionnaire below.
-5. Only when every source in step 1 has been checked and none exposes the model or effort, ask the user to read the host's model selector and report it, through the structured question tool, offering the catalog's suitable candidates as options. Before asking, read the host's stored model configuration where the agent can reach it — `~/.codex/config.toml` in Codex; the `model` and `effortLevel` keys (and per-model `modelSettings` efforts) in `.claude/settings.json` or `~/.claude/settings.json` in Claude Code — and offer its model and effort as the preselected default option: a config value is a strong hint to confirm with one yes/no, never verification by itself, since the session selector can override it. Precede the question with a one-line report of the failed checks — "Runtime metadata does not name the active model or effort (checked session context and status)" — so the attempt is auditable; asking without that report is skipping step 1, not verification. Their explicit answer is the verified profile: a suitable answer passes, an unsuitable one goes to the questionnaire. The question must be about the selector's actual current value, ask nothing else, and never be bundled with other confirmations; a vague question ("a Symphony-capable model at a suitable effort?") or a compound one is not verification. Never proceed on a guess.
-
-A declared profile in the invocation (`Orchestrator: <id>` / `Effort: <medium|high>`) remains supported but is a request to verify, never evidence. Verify it against the runtime exactly; on any mismatch, stop before all project work, report both values plainly — "You declared `<declared>`, but this task is running on `<actual>`" — and run the profile questionnaire. Never continue on the wrong model by default.
-
-Re-run this verification from step 1 whenever the project resumes: a new session, a restored checkpoint, a compacted conversation, or a handoff. A profile remembered from earlier turns, a checkpoint, or phrasing like "previously selected" is never evidence.
-
-### Profile questionnaire
-
-Help the user choose a valid profile instead of refusing outright:
-
-1. Read the live catalog from the host's subagent tool schema — and the host's model selector list where it is exposed — and shortlist two to four orchestrator candidates: the cheapest models that support spawning subagents with model overrides, cheapest first, one line of reasoning each.
-2. Ask the user to pick a model and an effort — `medium` for routine coordination, `high` for long or unsettled projects — recommending the cheapest suitable option. Use the host's structured question tool when it exists (AskUserQuestion in Claude Code, the user-input request facility in Codex); otherwise ask as a plain numbered question in chat.
-3. Tell the user to apply the choice in the host — the model and effort selectors (for example `/model` in Claude Code, the task's model picker in Codex) — or to start a new task with that selection, since a skill cannot change the model or effort of its already-running task.
-4. After the user says they applied it, re-run the verification above from step 1. Every pass through the questionnaire ends back at verification; it never leads directly into project work.
-
-## Confirm the project
-
-The user has often already started the agent inside the project. When the invocation does not name a location, assume the current working directory is the project — but confirm that assumption before acting on it; never treat it as settled silently.
-
-Ask once, through the same question facility as the profile questionnaire — and in the same round when both are still open:
-
-- the project location: the current working directory, another path or repository, or a greenfield project with no existing code yet;
-- the outcome and acceptance criteria, when the invocation left them unclear.
-
-Do not read project files or spawn workers before the location is confirmed. One explicit confirmation is enough; do not re-ask at later gates.
-
-## Assess the fit
-
-Before bootstrapping the conductor, size the project against the Activate criteria — the conductor is itself overhead, so this assessment is the root's own work:
-
-1. Make a shallow pass only: the request, the plan or requirements the user pointed to, and at most a directory listing or file tree. Do not deep-read the codebase to decide whether to orchestrate.
-2. Estimate the independently dispatchable units and the single-agent effort. State the estimate in two or three lines.
-3. When the project meets the sizing rule (three or more independent units, or well over fifteen minutes of single-agent work), say so in one line and proceed to the conductor.
-4. When it does not, recommend direct execution: report that orchestration overhead would exceed its savings, and ask through the same question facility whether to proceed with Symphony anyway, have this agent do the work directly, or stop. The user's explicit choice is final — including choosing orchestration despite the recommendation.
-
-Skip the questionnaire in step 4 when the user has already acknowledged the overhead and asked for orchestration regardless; note their confirmation and proceed.
-
-## Bootstrap the conductor
-
-1. Compare the confirmed orchestrator profile with the host's live subagent tool schema — Codex collaboration tools, or the Claude Code agent tool — then inventory available worker models, efforts, and concurrency. Treat the live schema as authoritative; model names in examples or cached documentation may be stale.
-2. Read [references/model-routing.md](references/model-routing.md). Refresh its working facts from the official vendor documentation it links only when its freshness rule fires. Do not rewrite the installed plugin during a project run.
-3. Spawn `symphony_conductor` with no inherited turns. Prefer the highest-capability available general reasoning model at `high` — for example `gpt-6-astra` on a current Codex catalog, or the strongest Opus- or Fable-tier model on Claude Code. If unavailable, use the strongest listed general model at `high`, or its highest supported effort below `high`.
-4. Give it only:
-   - the project outcome and acceptance criteria;
-   - material constraints and known risks;
-   - the exact live model/effort catalog and concurrency limit;
-   - the absolute path to `references/model-routing.md`;
-   - the decision currently needed.
-
-The conductor returns this compact record:
+The lead returns and follows this record:
 
 ```text
-decision: <route or next step>
-assignments: <unit -> model / effort>
-schedule: <parallel waves and dependencies>
-why: <one sentence per assignment>
-evidence: <checks required before integration>
-reconsult_when: <observable triggers>
+mode: small | medium | large
+why: <size, dependency, and risk evidence>
+primary_workflow: <one skill or none>
+supporting_capabilities: <skill/tool -> purpose>
+assignments: <direct work and delegated units with model/effort>
+schedule: <serial work or parallel waves>
+verification: <authoritative checks>
+suggestion: <one missing material capability or none>
 ```
 
-Keep its agent id. When it is idle, send the next consultation to the same agent — a follow-up task in Codex, a follow-up message in Claude Code — instead of spawning another conductor. An idle agent spends no inference tokens. If the host cannot resume an idle agent, spawn a fresh conductor with the same bootstrap packet plus a one-paragraph summary of decisions so far.
+Include `<!-- SYMPHONY_MODE:<small|medium|large> -->` with that record so lifecycle state can retain the selected mode.
 
-## Consult at decision gates
+Keep the lead id. Reuse it for follow-up decisions when the host supports that; otherwise spawn a replacement with the current run record and a compact checkpoint.
 
-Consult the conductor for every material orchestration decision:
+## Select exactly one mode
 
-- initial decomposition and the first worker wave;
-- each model/effort assignment or reassignment;
-- parallel versus serial scheduling when dependencies are uncertain;
-- replanning after a failed, conflicting, or surprising result;
-- reviewer selection and whether the evidence is sufficient to finish.
+Choose after a shallow task and project scan. Do not ask the weak root to choose.
 
-Bundle related choices into one consultation. Local tool calls, obvious next commands, and implementation details within an approved unit are not orchestration decisions.
+### Small
 
-The root may reject advice that conflicts with user instructions, live constraints, repository evidence, or safety boundaries. Record the replacement decision in one sentence and continue.
+Use when the task is straightforward, sequential, and likely below fifteen minutes for one capable agent. The strong lead performs the work directly. Do not spawn workers merely to justify Symphony.
 
-## Dispatch bounded work
+### Medium
 
-Give every worker a packet with:
+Use when the task mixes fast local work with one or more independent or specialized units. The lead performs quick and integration-sensitive work, delegating only units whose independence or specialist value repays dispatch overhead.
+
+### Large
+
+Use when there are at least three independently dispatchable units, multiple domains or verification surfaces, or a long/high-risk execution path. The lead decomposes work into dependency-aware waves, delegates in parallel within the live limit, and integrates every result.
+
+If evidence changes, the lead may reclassify the active run and records why. Mode is per run, never permanent project configuration.
+
+## Route capabilities
+
+Explicit user skill requests and repository instructions win. Select at most one primary workflow owner for each unit. Superpowers, Compound Engineering, and Matt Pocock workflows overlap; do not stack their planning or delivery ceremonies on one unit. Ponytail may add a simplicity constraint. Context7 and Codebase Memory are evidence tools, not workflow owners.
+
+Name every selected skill in the root or worker assignment so the host's native skill rules load it. A worker must begin its result with:
+
+```text
+capabilities: available=<used names>; missing=<requested names or none>
+```
+
+If a selected capability is not exposed to that worker, use a documented fallback or reassign the unit. Never infer child access from root access.
+
+When Codebase Memory MCP tools are available, use them before filesystem search for structural discovery. Check index status, query the graph, inspect exact snippets, and check coverage for material paths. Before delegation, the parent passes project id, graph generation, qualified symbols, relevant traces, coverage gaps, and source fallbacks. A child without MCP access works from that packet and never claims MCP access.
+
+## Dispatch and wait
+
+Every worker packet contains:
 
 ```text
 objective: one independently verifiable result
 ownership: exact files, modules, or research question
-context: only facts and paths needed for this unit
-constraints: interfaces and decisions it must preserve
+context: only required evidence, including graph findings
+constraints: interfaces, selected skills, and decisions to preserve
 done: observable acceptance checks
-return: conclusions, changed files, checks run, blockers
+return: capability receipt, conclusions, changed files, checks, blockers
 ```
 
-Use full history only when the unit genuinely depends on it. Prefer a narrow recent-turn fork or no fork plus the packet. Parallelize units only when their writes and decisions do not overlap. The root resolves integration and runs authoritative checks; workers do not commit, publish, or broaden scope unless the user explicitly requested that action.
+Track every worker id. After dispatch, immediately call the host's blocking wait/result operation in the same root turn. Keep waiting until every worker is terminal. A commentary update, promise to check later, or final response while a worker is active abandons the run.
 
-Use a stronger reasoning model for a narrow hard question before spending that model on a broad implementation. Use cheaper coding agents for settled units. Select a reviewer different from the primary implementer when the live catalog and capacity allow it.
+Inspect artifacts and run authoritative checks in the lead or root session. Worker success claims are not verification.
 
-## Run the project
+## Recover after resume or compaction
 
-1. Ask the conductor for a decomposition, routes, waves, and evidence.
-2. Dispatch the first independent wave within the live concurrency limit. Dispatch independent units as parallel workers; routing every unit to one worker serializes the project and forfeits the speed of orchestration.
-3. Wait for every dispatched worker to return before proceeding or concluding. Never end the root turn while any worker is outstanding — an unfinished wave is unfinished project work, and "waiting for completion" is not a final state. Where workers run in the background, immediately call the host's blocking wait or result-retrieval tool on each outstanding worker id in the same turn (for example Claude Code's task-output tool, or a Codex follow-up wait); dispatching a wave and then emitting a status message like "dispatched, awaiting completion", "standing by for wakeup", or a promised check-in IS ending the turn and abandons the wave — in a non-interactive session no wakeup will ever come. Keep calling wait tools until every worker in the wave has returned.
-4. Keep a wave ledger the moment more than one worker exists: worker id, unit, dispatch time, status, written where it survives the turn (a scratch file, or restated in the conversation at each dispatch). The host may still suspend the root during a long wait or deliver a worker's return while it sleeps; on every resume — a worker notification, a user message, a restored or compacted session — reconcile the ledger first and collect every returned result before any new decision. A suspended wave is resumed from the ledger, never abandoned; if a worker's status cannot be determined after a wake, query it or redispatch its unit rather than assuming it finished.
-5. Inspect worker artifacts and results rather than trusting summaries alone.
-6. Reconsult only at the gates above, passing deltas instead of replaying the project.
-7. Integrate the smallest coherent change and run the checks named in the accepted route yourself — a worker's claim of success is not evidence.
-8. Ask the conductor to select a focused final reviewer. Address findings or document why they do not apply.
-9. Finish only when the user outcome and acceptance criteria are met and the root has verified them in this session.
+Lifecycle context identifying an existing run triggers recovery, not a cold duplicate:
 
-If subagent spawning or model overrides are unavailable, keep the same decomposition and evidence discipline but execute sequentially with the current agent. State the limitation once.
+1. Re-verify the actual root profile and live catalogs.
+2. Reconcile every tracked agent id and collect terminal results.
+3. Inspect current worktree changes and the saved objective.
+4. Reuse the lead if reachable; otherwise start one strongest/high replacement with the recovery packet.
+5. Preserve the prior mode as a hint and change it only when current evidence warrants reclassification.
 
-## Cost discipline
+An explicit interrupt may bypass Stop hooks. The run record is the recovery source; never assume an interrupted worker completed.
 
-- Default to `low` for deterministic lookup or mechanical work, `medium` for bounded multi-step work, and `high` for genuinely difficult reasoning.
-- Use the host's top effort tiers (`xhigh`, `max`, or `ultra`, where offered) only when the conductor identifies the specific uncertainty that lower effort is unlikely to resolve.
-- Escalate the smallest unit, not the whole project.
-- Stop a worker when its acceptance check is satisfied. Reuse its conclusion; do not make the root solve the same problem again.
-- Prefer diverse review over duplicate implementation.
+## Stop and complete
+
+For graceful stop, dispatch no new work, interrupt tracked agents, wait for them to become terminal, preserve workspace changes, and report incomplete integration or verification. Force-stop is only the stale-state escape hatch and may leave an agent writing in the background.
+
+For successful completion:
+
+1. Ensure all tracked agents are terminal.
+2. Inspect and integrate their artifacts.
+3. Run the accepted verification in the current session.
+4. Report at most one missing capability whose absence materially affected this run and whose cooldown permits it. When reporting one, include `<!-- SYMPHONY_SUGGESTED:<capability-id> -->`.
+5. Include `<!-- SYMPHONY_RUN_COMPLETE:<run-id> -->` in the final assistant message using the exact injected receipt. The Stop hook clears the run only when that receipt matches.
+
+Do not promise that Symphony can prevent user interrupts or host-enforced Stop overrides. The guarantee is recovery plus normal-Stop protection while hooks remain trusted and Python 3 is available.

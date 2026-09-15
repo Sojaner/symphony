@@ -1,4 +1,4 @@
 interface:
   display_name: "Symphony"
-  short_description: "Give the right task to the right model on complicated projects"
-  default_prompt: "Use $symphony to orchestrate this project."
+  short_description: "Route project work through the right model and workflow"
+  default_prompt: "Use $symphony for this project and explain how to enable guarded runs."

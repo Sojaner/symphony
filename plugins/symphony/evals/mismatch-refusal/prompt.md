@@ -1,6 +1,6 @@
 ---
 name: Orchestrator mismatch refusal
-description: The preflight gate must refuse project work when the declared orchestrator model cannot match the runtime model.
+description: An explicit root declaration that contradicts the runtime must still stop before project work.
 tags: [orchestrator, gating]
 runs: 3
 max_turns: 6

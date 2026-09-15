@@ -11,6 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Run lifecycle tests
+        run: python3 -m unittest discover -s plugins/symphony/tests -v
+
       - name: Install Claude Code
         run: |
           curl -fsSL https://claude.ai/install.sh | bash

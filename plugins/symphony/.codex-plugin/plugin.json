@@ -1,15 +1,16 @@
 {
   "name": "symphony",
-  "version": "0.11.5",
-  "description": "Multi-model orchestration that gives the right task to the right model: steadier progress, less overthinking, lower cost.",
+  "version": "0.12.0",
+  "description": "Persistent, recoverable project routing through a strong execution lead and task-aware workflow capabilities.",
   "author": {
     "name": "Sojaner"
   },
   "skills": "./skills/",
+  "hooks": "./hooks/codex.json",
   "interface": {
     "displayName": "Symphony",
-    "shortDescription": "Give the right task to the right model on complicated projects.",
-    "longDescription": "Symphony runs a project the way a capable administrator does: a lightweight root agent consults an expert conductor about what needs to be done and who should do it, then delegates narrow, verifiable units to the models that fit them. Senior reasoning is spent only on the hard questions; the heavy lifting goes to hardworking workhorse models. Progress stays steadier and more logical, with less overthinking, less overdoing, and lower token cost as a consequence.",
+    "shortDescription": "Persistent project routing through a strong execution lead.",
+    "longDescription": "Symphony makes the root a thin session keeper and gives project decisions, execution, delegation, integration, and verification to a strong lead. Lifecycle hooks protect normal stopping and recover interrupted runs. Each task selects direct, mixed, or delegation-heavy execution and uses the workflow and evidence capabilities actually available.",
     "developerName": "Sojaner",
     "category": "Productivity",
     "capabilities": ["Interactive"],
@@ -17,8 +18,8 @@
     "logo": "./assets/logo.png",
     "composerIcon": "./assets/logo.png",
     "defaultPrompt": [
-      "Use Symphony to orchestrate this project.",
-      "Route this plan with Symphony."
+      "Enable Symphony for this project.",
+      "Start one guarded Symphony task."
     ]
   }
 }
