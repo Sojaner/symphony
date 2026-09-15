@@ -33,7 +33,7 @@ def load_codex_smoke_module():
 
 class SymphonyHookTests(unittest.TestCase):
     def test_new_background_work_revokes_prior_shutdown_acknowledgement(self):
-        for followup in ("stop", "disable", "ordinary"):
+        for followup in ("stop", "disable", "ordinary", "malformed"):
             for status in ("running", "pending"):
                 with self.subTest(followup=followup, status=status):
                     self.data = Path(self.tmp.name) / f"repeat-{followup}-{status}"
@@ -50,12 +50,14 @@ class SymphonyHookTests(unittest.TestCase):
                                            background_tasks=background), self.data, stop_wait_seconds=0)
                     self.assertEqual(before, self.state())
                     message = ""
-                    if followup != "ordinary":
+                    if followup in {"stop", "disable"}:
                         repeated = self.hook.handle_event(self.event("UserPromptSubmit", prompt=f"/symphony:{followup}"), self.data)
                         message = repeated.context.splitlines()[-1]
+                    elif followup == "malformed":
+                        message = "SYMPHONY_ASSESSMENT:malformed"
                     result = self.hook.handle_event(self.event("Stop", last_assistant_message=message,
                                                     background_tasks=background), self.data, stop_wait_seconds=0)
-                    self.assertEqual(followup == "ordinary", result.block)
+                    self.assertEqual(followup in {"ordinary", "malformed"}, result.block)
                     self.assertFalse(self.state()["active_run"]["stop_acknowledged"])
                     self.hook.handle_event(self.event("SubagentStop", agent_id="lead"), self.data)
                     self.assertEqual("stopping", self.state()["active_run"]["status"])

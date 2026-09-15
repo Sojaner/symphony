@@ -1013,6 +1013,9 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             return HookResult()
         message = payload.get("last_assistant_message") or ""
         memory_changed = _record_memory_receipt(run, message, now)
+        if background_tasks and run.get("stop_acknowledged"):
+            run["stop_acknowledged"] = False
+            memory_changed = True
         owner_session_id = run.get("owner_session_id")
         session_id = payload.get("session_id")
         known_owner = not payload.get("agent_id") and all(
@@ -1049,9 +1052,6 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 "Do not implement in the root, invent a correction, or repeat the rejected receipt."
             ))
         if background_tasks:
-            if run.get("stop_acknowledged"):
-                run["stop_acknowledged"] = False
-                memory_changed = True
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             task_ids = [str(task.get("id") or task.get("task_id") or "unknown") for task in background_tasks]
