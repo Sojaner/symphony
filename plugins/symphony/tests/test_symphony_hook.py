@@ -32,6 +32,31 @@ def load_codex_smoke_module():
 
 
 class SymphonyHookTests(unittest.TestCase):
+    def test_child_turn_events_do_not_apply_root_lifecycle_or_controls(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="worker"), self.data)
+        before = self.state()
+        for name, values in (
+            ("UserPromptSubmit", {"prompt": "Review the implementation"}),
+            ("UserPromptSubmit", {"prompt": "/symphony:stop --force"}),
+            ("UserPromptSubmit", {"prompt": "/symphony:help"}),
+            ("SessionStart", {}),
+            ("Interrupt", {}),
+            ("PreToolUse", {"tool_name": "spawn_agent", "tool_input": {}}),
+            ("Stop", {"last_assistant_message": "review complete"}),
+        ):
+            with self.subTest(event=name, values=values):
+                self.hook.write_project_state(self.data, before)
+                result = self.hook.handle_event(self.event(name, agent_id="worker", **values),
+                                                self.data, stop_wait_seconds=0)
+                self.assertFalse(result.block)
+                self.assertFalse(result.context)
+                self.assertEqual(before, self.state())
+        self.assertFalse(list(self.data.rglob("*.inspection.*.json")))
+        stopped = self.hook.handle_event(self.event("SubagentStop", agent_id="worker"), self.data)
+        self.assertFalse(stopped.block)
+        self.assertEqual("terminal", self.state()["active_run"]["agent_records"]["worker"]["status"])
+
     def test_initial_codex_assessor_requires_explicit_model_override(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         before = self.state()
@@ -1339,7 +1364,8 @@ class SymphonyHookTests(unittest.TestCase):
                 if missing in ("current", "history"):
                     (self.project / run["memory"][missing]).unlink()
                 result = self.hook.handle_event(
-                    self.event(boundary, agent_id=run["id"], last_assistant_message=f"{missing} unavailable\n<!-- {marker} -->"),
+                    self.event(boundary, **({"agent_id": run["id"]} if boundary == "SubagentStop" else {}),
+                               last_assistant_message=f"{missing} unavailable\n<!-- {marker} -->"),
                     self.data, now=1_235, stop_wait_seconds=0,
                 )
                 memory = self.state()["active_run"]["memory"]

@@ -1110,6 +1110,12 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
 
 
 def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
+    # Codex child turns retain the root session_id and identify themselves separately.
+    # Only lifecycle observation events may update the root's run from a child.
+    if _known_session_id(payload.get("agent_id")) and payload.get("hook_event_name") in {
+        "SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "Interrupt",
+    }:
+        return HookResult()
     current = int(time.time() if now is None else now)
     project_root = resolve_project_root(payload.get("cwd"))
     event = payload.get("hook_event_name")
