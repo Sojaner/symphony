@@ -87,7 +87,7 @@ The hook script cannot invoke MCP tools or judge Markdown content. It therefore 
 The run record stores a memory candidate path plus whether extended memory was activated and the last observed checkpoint time. The lead emits:
 
 ```text
-<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id> -->
+<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->
 ```
 
 on a material checkpoint. The first matching marker activates extended memory for the run; subagent-stop and normal-stop processing record the observation time. Successful completion of an activated memory run requires the matching marker in the final response and verifies that `current.md` is non-empty and was modified during the run. Runs without verified MCP memory remain valid under the existing mode and completion receipts.
@@ -107,7 +107,7 @@ Disabling Symphony stops future automatic activation but does not delete project
 - `plugins/symphony/skills/symphony/SKILL.md`: lead-owned checkpoint and indexed retrieval protocol.
 - `plugins/symphony/skills/symphony/references/capability-routing.md`: codebase-memory-mcp activation and fallback rules.
 - `plugins/symphony/commands/help.md` and `README.md`: memory behavior, location, retention, privacy, and deletion guidance.
-- both plugin manifests and marketplace manifests: version `0.14.0`; version `0.13.0` is intentionally skipped.
+- both plugin manifests: version `0.14.0`; version `0.13.0` is intentionally skipped. Marketplace manifests keep their existing source-only schema.
 
 No daemon, database, new dependency, background indexer, or concurrent memory writer is introduced.
 
