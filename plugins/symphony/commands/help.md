@@ -22,3 +22,5 @@ Each run selects one mode: **small** for direct work by the strong lead, **mediu
 Extended memory requires a strong-lead verification of `codebase-memory-mcp`, healthy indexing, and usable memory-path coverage. The lead reads `.symphony/memory/current.md` directly and queries `.symphony/memory/history/<run-id>.md` with MCP graph/search tools; stale history uses a targeted direct read. Without that verification, Symphony uses compact lifecycle recovery and does not create indexed memory.
 
 `.symphony/memory/` is project-local: Symphony does not automatically ignore, commit, or delete it. `/symphony:disable` and `/symphony:stop --force` preserve it; manual deletion disables historical recall until recreated. Never store secrets, raw environment values, full transcripts, or copied source bodies there. Hooks cannot call MCP, so activation is the strong lead's verified capability receipt, enforced by memory-file and checkpoint-receipt checks.
+
+Manually ignoring `.symphony/memory/` disables indexed history until the ignore policy changes.

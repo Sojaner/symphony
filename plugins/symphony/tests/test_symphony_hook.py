@@ -946,6 +946,10 @@ class HookDeclarationTests(unittest.TestCase):
         for text in (readme, help_text):
             self.assertIn(".symphony/memory/current.md", text)
             self.assertIn("codebase-memory-mcp", text)
+            self.assertIn(
+                "Manually ignoring `.symphony/memory/` disables indexed history until the ignore policy changes.",
+                text,
+            )
         versions = {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")

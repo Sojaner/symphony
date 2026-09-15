@@ -84,6 +84,8 @@ Extended memory is available only when the strong lead verifies `codebase-memory
 
 `.symphony/memory/` is project-local and is not automatically ignored, committed, or deleted. `/symphony:disable` and `/symphony:stop --force` preserve it; deleting it manually disables historical recall until it is recreated. Keep no secrets, raw environment values, full transcripts, or copied source bodies in memory.
 
+Manually ignoring `.symphony/memory/` disables indexed history until the ignore policy changes.
+
 Hooks cannot call MCP. The strong lead activates memory only with its verified capability receipt, and hooks enforce that activation with the documented file and checkpoint-receipt checks.
 
 ## Lifecycle protection
