@@ -32,6 +32,41 @@ def load_codex_smoke_module():
 
 
 class SymphonyHookTests(unittest.TestCase):
+    def test_new_background_work_revokes_prior_shutdown_acknowledgement(self):
+        for followup in ("stop", "disable", "ordinary"):
+            for status in ("running", "pending"):
+                with self.subTest(followup=followup, status=status):
+                    self.data = Path(self.tmp.name) / f"repeat-{followup}-{status}"
+                    self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+                    self.hook.handle_event(self.event("SubagentStart", agent_id="lead"), self.data)
+                    first = self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:stop"), self.data)
+                    self.hook.handle_event(self.event("Stop", last_assistant_message=first.context.splitlines()[-1]),
+                                           self.data, stop_wait_seconds=0)
+                    self.assertTrue(self.state()["active_run"]["stop_acknowledged"])
+                    background = [{"id": "new-background", "status": status}]
+                    before = self.state()
+                    inspection = self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:status"), self.data)
+                    self.hook.handle_event(self.event("Stop", last_assistant_message=inspection.context.splitlines()[-1],
+                                           background_tasks=background), self.data, stop_wait_seconds=0)
+                    self.assertEqual(before, self.state())
+                    message = ""
+                    if followup != "ordinary":
+                        repeated = self.hook.handle_event(self.event("UserPromptSubmit", prompt=f"/symphony:{followup}"), self.data)
+                        message = repeated.context.splitlines()[-1]
+                    result = self.hook.handle_event(self.event("Stop", last_assistant_message=message,
+                                                    background_tasks=background), self.data, stop_wait_seconds=0)
+                    self.assertEqual(followup == "ordinary", result.block)
+                    self.assertFalse(self.state()["active_run"]["stop_acknowledged"])
+                    self.hook.handle_event(self.event("SubagentStop", agent_id="lead"), self.data)
+                    self.assertEqual("stopping", self.state()["active_run"]["status"])
+                    self.assertEqual([], self.state()["run_history"])
+                    blocked = self.hook.handle_event(self.event("Stop", background_tasks=background),
+                                                      self.data, stop_wait_seconds=0)
+                    self.assertTrue(blocked.block)
+                    self.hook.handle_event(self.event("Stop", background_tasks=[]), self.data, stop_wait_seconds=0)
+                    self.assertIsNone(self.state()["active_run"])
+                    self.assertEqual("stopped", self.state()["run_history"][-1]["status"])
+
     def test_initial_lead_registration_requires_final_handoff_before_wait(self):
         initial = self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         skill = (PLUGIN_ROOT / "skills" / "symphony" / "SKILL.md").read_text()

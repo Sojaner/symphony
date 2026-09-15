@@ -970,11 +970,12 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 run = state.get("active_run")
                 if (pending.get("stop_requested") and run
                         and _owns_run(run, payload.get("session_id"))
-                        and run.get("status") == "stopping"
-                        and not any(isinstance(task, dict) and task.get("status") in {"running", "pending"}
-                                    for task in payload.get("background_tasks", []))):
-                    run["stop_acknowledged"] = True
-                    if not _active_agent_ids(run):
+                        and run.get("status") == "stopping"):
+                    run["stop_acknowledged"] = not any(
+                        isinstance(task, dict) and task.get("status") in {"running", "pending"}
+                        for task in payload.get("background_tasks", [])
+                    )
+                    if run["stop_acknowledged"] and not _active_agent_ids(run):
                         _archive_run(state, "stopped", now)
                         state["active_run"] = None
                     write_project_state(data_dir, state, now)
@@ -1048,6 +1049,9 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 "Do not implement in the root, invent a correction, or repeat the rejected receipt."
             ))
         if background_tasks:
+            if run.get("stop_acknowledged"):
+                run["stop_acknowledged"] = False
+                memory_changed = True
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             task_ids = [str(task.get("id") or task.get("task_id") or "unknown") for task in background_tasks]
