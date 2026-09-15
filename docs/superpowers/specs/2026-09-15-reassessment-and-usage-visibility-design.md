@@ -51,7 +51,7 @@ An active run gains:
 
 Each mode-history row contains only mode, project profile, source, bounded reason, revision, and timestamp. Legacy state receives safe defaults during normal read normalization. A manual project profile persists across completed runs and sessions until cleared.
 
-Agent records gain an optional `usage` object. It may contain only host-reported token totals and breakdowns, duration, tool-use count, observation time, and source. Missing numeric values remain absent internally and render as exactly `not exposed by host`.
+Agent records gain an optional `usage` object. Claude Agent `PostToolUse` values are explicitly scoped final-request observations (`final_request_*` fields, source, and scope), not whole-agent totals. It may contain only host-reported token counters and breakdowns, duration, tool-use count, observation time, source, and scope. Missing numeric values remain absent internally and render as exactly `not exposed by host`.
 
 ## Assessment command
 
@@ -127,13 +127,13 @@ Completed: <agent id/role> — <status> — tokens <value or not exposed by host
 
 This is a required execution contract because lifecycle hooks cannot reliably create host-visible chat messages for every spawn. It complements rather than replaces `/symphony:agents`.
 
-`/symphony:agents` adds total tokens, input, output, cache creation/read, duration, tool uses, and usage source. `/symphony:agents --all` retains the same columns for historical runs. `/symphony:status` reports known token totals plus the count of agents with unreported usage; it never presents a partial total as complete.
+`/symphony:agents` adds final-request total tokens, input, output, cache creation/read, duration, tool uses, and usage source/scope. `/symphony:agents --all` retains the same columns for historical runs. `/symphony:status` reports observed final-request tokens plus the count of agents with unreported final-request totals; it labels the result partial and never presents it as a complete agent total.
 
 ## Usage collection
 
-The shared hook accepts usage only from host event fields associated with a known agent id. For Claude, a `PostToolUse` hook scoped to the Agent tool records synchronous completion fields such as `totalTokens`, the `usage` breakdown, `totalDurationMs`, and `totalToolUseCount`. Background launches commonly lack these values and remain unreported until a later host event supplies them.
+The shared hook accepts usage only from host event fields associated with a known agent id. For Claude, a `PostToolUse` hook scoped to the Agent tool records synchronous completion fields such as `totalTokens`, the `usage` breakdown, `totalDurationMs`, and `totalToolUseCount` as final-request observations only. Background launches (`status: async_launched`) remain unreported until a later host event supplies an observation. A malformed breakdown does not discard valid top-level final-request counters.
 
-Codex and future host events use the same normalized extractor when equivalent fields exist. When the installed host does not expose usage to plugin hooks or live agent tools, Symphony reports `not exposed by host`. It never reads agent transcripts to synthesize totals.
+Future host events use the same normalized extractor when equivalent fields exist. When the installed host does not expose usage to plugin hooks or live agent tools, Symphony reports `not exposed by host`. It never reads agent transcripts to synthesize totals.
 
 Late usage follows the same ownership rule as late SubagentStop: update the uniquely owning active or historical run, never the newest run by default. Malformed, negative, boolean, or unowned usage values are ignored. Usage collection never blocks Stop or force-stop recovery.
 

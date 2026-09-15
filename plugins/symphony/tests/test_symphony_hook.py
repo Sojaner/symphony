@@ -569,7 +569,7 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertEqual(("reviewer", "gpt-6-astra", "high"),
                          (record["role"], record["model"], record["effort"]))
 
-    def test_post_tool_use_records_owned_authoritative_usage(self):
+    def test_post_tool_use_records_owned_final_request_usage(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data, now=1_000,
         )
@@ -596,15 +596,16 @@ class SymphonyHookTests(unittest.TestCase):
         )
         usage = self.state()["active_run"]["agent_records"]["worker-1"]["usage"]
         self.assertEqual({
-            "total_tokens": 120,
-            "input_tokens": 50,
-            "output_tokens": 40,
-            "cache_creation_tokens": 20,
-            "cache_read_tokens": 10,
-            "duration_ms": 3400,
-            "tool_use_count": 4,
+            "final_request_total_tokens": 120,
+            "final_request_input_tokens": 50,
+            "final_request_output_tokens": 40,
+            "final_request_cache_creation_tokens": 20,
+            "final_request_cache_read_tokens": 10,
+            "final_request_duration_ms": 3400,
+            "final_request_tool_use_count": 4,
             "observed_at": 1_002,
             "source": "claude-post-tool-use",
+            "scope": "final-agent-request",
         }, usage)
 
         self.hook.handle_event(
@@ -614,8 +615,8 @@ class SymphonyHookTests(unittest.TestCase):
             ), self.data, now=1_003,
         )
         usage = self.state()["active_run"]["agent_records"]["worker-1"]["usage"]
-        self.assertEqual(120, usage["total_tokens"])
-        self.assertEqual(45, usage["output_tokens"])
+        self.assertEqual(120, usage["final_request_total_tokens"])
+        self.assertEqual(45, usage["final_request_output_tokens"])
         self.assertEqual(1_003, usage["observed_at"])
 
         self.hook.handle_event(self.event("SubagentStop", agent_id="worker-1"), self.data, now=1_004)
@@ -629,7 +630,7 @@ class SymphonyHookTests(unittest.TestCase):
             ), self.data, now=1_006,
         )
         usage = self.state()["run_history"][-1]["agent_records"][0]["usage"]
-        self.assertEqual(125, usage["total_tokens"])
+        self.assertEqual(125, usage["final_request_total_tokens"])
         self.assertEqual("claude-post-tool-use", usage["source"])
 
     def test_usage_ingestion_rejects_invalid_unowned_and_background_data(self):
@@ -637,17 +638,9 @@ class SymphonyHookTests(unittest.TestCase):
             self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data, now=1_000,
         )
         self.hook.handle_event(self.event("SubagentStart", agent_id="worker-1"), self.data, now=1_001)
-        state = self.state()
-        state["run_history"] = [{
-            "id": "old-run", "status": "completed", "agent_records": [{
-                "id": "worker-1", "status": "terminal", "role": "worker",
-                "model": "not exposed by host", "effort": "not exposed by host",
-            }],
-        }]
-        self.hook.write_project_state(self.data, state, now=1_002)
         before = self.state()
         invalid_responses = (
-            {"agentId": "worker-1", "async_launched": True, "totalTokens": 1},
+            {"agentId": "worker-1", "status": "async_launched", "totalTokens": 1},
             {"agentId": "worker-1", "totalTokens": True},
             {"agentId": "worker-1", "totalTokens": -1},
             {"agentId": "worker-1", "totalTokens": "1"},
@@ -664,6 +657,36 @@ class SymphonyHookTests(unittest.TestCase):
         self.hook.handle_event(
             self.event("PostToolUse", tool_name="Agent", tool_response={
                 "agentId": "worker-1", "usage": {"inputTokens": 2},
+            }), self.data,
+        )
+        self.assertEqual(
+            2, self.state()["active_run"]["agent_records"]["worker-1"]["usage"]
+            ["final_request_input_tokens"],
+        )
+        self.hook.handle_event(
+            self.event("PostToolUse", tool_name="Agent", tool_response={
+                "agentId": "worker-1", "totalTokens": 2, "totalDurationMs": 3,
+                "totalToolUseCount": 4, "usage": [],
+            }), self.data,
+        )
+        usage = self.state()["active_run"]["agent_records"]["worker-1"]["usage"]
+        self.assertEqual((2, 3, 4), (
+            usage["final_request_total_tokens"], usage["final_request_duration_ms"],
+            usage["final_request_tool_use_count"],
+        ))
+
+        state = self.state()
+        state["run_history"] = [{
+            "id": "old-run", "status": "completed", "agent_records": [{
+                "id": "worker-1", "status": "terminal", "role": "worker",
+                "model": "not exposed by host", "effort": "not exposed by host",
+            }],
+        }]
+        self.hook.write_project_state(self.data, state, now=1_002)
+        before = self.state()
+        self.hook.handle_event(
+            self.event("PostToolUse", tool_name="Agent", tool_response={
+                "agentId": "worker-1", "totalTokens": 3,
             }), self.data,
         )
         self.assertEqual(before, self.state())
@@ -689,12 +712,16 @@ class SymphonyHookTests(unittest.TestCase):
         )
         self.assertEqual(before, state_path.read_bytes())
         for heading in (
-            "Total tokens", "Input tokens", "Output tokens", "Cache creation tokens",
-            "Cache read tokens", "Duration", "Tool uses", "Usage source",
+            "Final-request total tokens", "Final-request input tokens",
+            "Final-request output tokens", "Final-request cache creation tokens",
+            "Final-request cache read tokens", "Final-request duration", "Final-request tool uses",
+            "Usage source/scope",
         ):
             self.assertIn(heading, listing.context)
         self.assertIn("120", listing.context)
         self.assertIn("not exposed by host", listing.context)
+        for line in (line for line in listing.context.splitlines() if line.startswith("|")):
+            self.assertEqual(14, len(line.split("|")[1:-1]))
 
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data)
         historical = self.hook.handle_event(
@@ -702,11 +729,42 @@ class SymphonyHookTests(unittest.TestCase):
         )
         self.assertIn("known", historical.context)
         self.assertIn("120", historical.context)
+        for line in (line for line in historical.context.splitlines() if line.startswith("|")):
+            self.assertEqual(14, len(line.split("|")[1:-1]))
         status = self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:status"), self.data,
         )
-        self.assertIn("Known total tokens: 120", status.context)
-        self.assertIn("agents lacking total tokens: 1", status.context)
+        self.assertIn("Observed final-request tokens (partial): 120", status.context)
+        self.assertIn("agents lacking final-request totals: 1", status.context)
+
+    def test_status_inspection_is_read_only_and_one_shot_for_active_and_stopping_runs(self):
+        for stopping in (False, True):
+            with self.subTest(stopping=stopping):
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+                )
+                if stopping:
+                    self.hook.handle_event(
+                        self.event("UserPromptSubmit", prompt="/symphony:stop"), self.data,
+                    )
+                path = self.hook.project_state_path(self.data, str(self.project))
+                before = path.read_bytes()
+                status = self.hook.handle_event(
+                    self.event("UserPromptSubmit", turn_id="status-turn", prompt="/symphony:status"),
+                    self.data,
+                )
+                receipt = status.context.splitlines()[-1]
+                self.assertTrue(receipt.startswith("<!-- SYMPHONY_AGENTS_INSPECTED:"))
+                self.assertEqual(before, path.read_bytes())
+                result = self.hook.handle_event(
+                    self.event("Stop", turn_id="status-turn", last_assistant_message=receipt),
+                    self.data, stop_wait_seconds=0,
+                )
+                self.assertFalse(result.block)
+                self.assertEqual(before, path.read_bytes())
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data,
+                )
 
     def test_new_run_exposes_memory_candidates_without_creating_documents(self):
         result = self.hook.handle_event(

@@ -19,8 +19,15 @@ MEMORY_ROOT = Path(".symphony") / "memory"
 SUGGESTION_COOLDOWN_SECONDS = 30 * 24 * 60 * 60
 MAX_MODE_HISTORY = 20
 USAGE_FIELDS = (
-    "total_tokens", "input_tokens", "output_tokens", "cache_creation_tokens",
-    "cache_read_tokens", "duration_ms", "tool_use_count",
+    "final_request_total_tokens", "final_request_input_tokens", "final_request_output_tokens",
+    "final_request_cache_creation_tokens", "final_request_cache_read_tokens",
+    "final_request_duration_ms", "final_request_tool_use_count",
+)
+AGENT_TABLE_HEADINGS = (
+    "Run", "Id", "Status", "Role", "Model", "Effort", "Final-request total tokens",
+    "Final-request input tokens", "Final-request output tokens",
+    "Final-request cache creation tokens", "Final-request cache read tokens",
+    "Final-request duration (ms)", "Final-request tool uses", "Usage source/scope",
 )
 RAW_CONTROL_RE = re.compile(
     r"\A/symphony:(enable|disable|start|stop|status|agents|assess|help)(?:\s+([\s\S]*))?\Z",
@@ -405,8 +412,8 @@ def _status_context(state):
     usage = _usage_aggregates(state)
     return (
         f"Symphony project enabled: {str(state['enabled']).lower()}. Active run: {run_text}. "
-        f"Known total tokens: {usage['total_tokens']}; "
-        f"agents lacking total tokens: {usage['missing_total_tokens']}."
+        f"Observed final-request tokens (partial): {usage['total_tokens']}; "
+        f"agents lacking final-request totals: {usage['missing_total_tokens']}."
     )
 
 
@@ -505,27 +512,30 @@ def _clean_usage(value):
         usage["observed_at"] = value["observed_at"]
     if isinstance(value.get("source"), str) and value["source"]:
         usage["source"] = value["source"]
+    if isinstance(value.get("scope"), str) and value["scope"]:
+        usage["scope"] = value["scope"]
     return usage
 
 
 def _usage_record(payload, now):
     response = payload.get("tool_response")
-    if not isinstance(response, dict) or response.get("async_launched") is True:
+    if not isinstance(response, dict) or (
+        response.get("async_launched") is True or response.get("status") == "async_launched"
+    ):
         return None
     agent_id = response.get("agentId")
     if not isinstance(agent_id, str) or not agent_id:
         return None
-    raw_usage = response.get("usage", {})
-    if not isinstance(raw_usage, dict):
-        return None
+    raw_usage = response.get("usage")
+    raw_usage = raw_usage if isinstance(raw_usage, dict) else {}
     locations = {
-        "total_tokens": (response, ("totalTokens", "total_tokens")),
-        "input_tokens": (raw_usage, ("inputTokens", "input_tokens")),
-        "output_tokens": (raw_usage, ("outputTokens", "output_tokens")),
-        "cache_creation_tokens": (raw_usage, ("cacheCreationInputTokens", "cache_creation_input_tokens")),
-        "cache_read_tokens": (raw_usage, ("cacheReadInputTokens", "cache_read_input_tokens")),
-        "duration_ms": (response, ("totalDurationMs", "total_duration_ms")),
-        "tool_use_count": (response, ("totalToolUseCount", "total_tool_use_count")),
+        "final_request_total_tokens": (response, ("totalTokens", "total_tokens")),
+        "final_request_input_tokens": (raw_usage, ("inputTokens", "input_tokens")),
+        "final_request_output_tokens": (raw_usage, ("outputTokens", "output_tokens")),
+        "final_request_cache_creation_tokens": (raw_usage, ("cacheCreationInputTokens", "cache_creation_input_tokens")),
+        "final_request_cache_read_tokens": (raw_usage, ("cacheReadInputTokens", "cache_read_input_tokens")),
+        "final_request_duration_ms": (response, ("totalDurationMs", "total_duration_ms")),
+        "final_request_tool_use_count": (response, ("totalToolUseCount", "total_tool_use_count")),
     }
     usage = {}
     for field, (container, names) in locations.items():
@@ -541,6 +551,7 @@ def _usage_record(payload, now):
         **usage,
         "observed_at": int(now),
         "source": "claude-post-tool-use",
+        "scope": "final-agent-request",
     }
 
 
@@ -598,7 +609,7 @@ def _usage_aggregates(state):
     runs = ([state["active_run"]] if isinstance(state.get("active_run"), dict) else [])
     runs.extend(run for run in state.get("run_history", []) if isinstance(run, dict))
     records = [record for run in runs for record in _agent_records(run)]
-    totals = [record.get("usage", {}).get("total_tokens") for record in records]
+    totals = [record.get("usage", {}).get("final_request_total_tokens") for record in records]
     return {
         "total_tokens": sum(value for value in totals if type(value) is int),
         "missing_total_tokens": sum(type(value) is not int for value in totals),
@@ -621,15 +632,17 @@ def _agents_context(state, include_history=False):
             lines.append("No observed subagents.")
             continue
         lines.extend([
-            "| Run | Id | Status | Role | Model | Effort | Total tokens | Input tokens | Output tokens | Cache creation tokens | Cache read tokens | Duration (ms) | Tool uses | Usage source |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| " + " | ".join(AGENT_TABLE_HEADINGS) + " |",
+            "| " + " | ".join("---" for _ in AGENT_TABLE_HEADINGS) + " |",
         ])
         for record in records:
             values = [item["id"], record["id"], record["status"]]
             values.extend(record.get(field) or "not exposed by host" for field in ("role", "model", "effort"))
             usage = _clean_usage(record.get("usage"))
             values.extend(usage.get(field, "not exposed by host") for field in USAGE_FIELDS)
-            values.append(usage.get("source", "not exposed by host"))
+            source = usage.get("source")
+            scope = usage.get("scope")
+            values.append(f"{source}/{scope}" if source and scope else "not exposed by host")
             lines.append("| " + " | ".join(str(value).replace("|", "\\|").replace("\n", " ").replace("\r", " ") for value in values) + " |")
     return "\n".join(lines)
 
@@ -894,7 +907,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         return _handle_stop(payload, Path(data_dir), project_root, current, wait)
 
     control = _parse_prompt(payload.get("prompt") or "")[0] if event == "UserPromptSubmit" else None
-    read_only = control == "agents"
+    read_only = control in {"agents", "status"}
     with project_lock(data_dir, project_root):
         state = read_project_state(data_dir, project_root, read_only=read_only)
         original_state = json.dumps(state, sort_keys=True)
@@ -1008,6 +1021,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                         **{field: observed[field] for field in USAGE_FIELDS if field in observed},
                         "observed_at": observed["observed_at"],
                         "source": observed["source"],
+                        "scope": observed["scope"],
                     }
                     run["agent_records"] = records if run is active else list(records.values())
         elif event == "Interrupt":

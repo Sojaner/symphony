@@ -22,12 +22,14 @@ The user commands are:
 - `/symphony:enable [task]`: persistently enable this working tree and optionally start a run;
 - `/symphony:disable`: disable future activation and gracefully stop an active run;
 - `/symphony:start <task>`: start one guarded run without changing project policy;
-- `/symphony:status`: report policy and run state without changing either;
+- `/symphony:status`: report policy, run state, and partial final-request usage observations without changing either;
 - `/symphony:agents [--all]`: list all observed subagents in the active run, including terminal agents; `--all` also includes every retained historical run;
 - `/symphony:stop [--force]`: stop this run while preserving enablement; force releases stale protection;
 - `/symphony:help`: show usage without starting a run.
 
-For `/symphony:agents`, the root must use a live host agent-listing tool when exposed and prefer its status and metadata over lifecycle observations. Use the persistent ledger as recovery evidence and as fallback for fields the live tool does not expose. Report run id, agent id, status, role, model, effort, total/input/output/cache-creation/cache-read tokens, duration, tool uses, and usage source; every unavailable field is exactly `not exposed by host`. Never infer usage or cost. Report and return without enabling Symphony, starting a run, spawning a lead, or changing agent status. Retain metadata only, never prompts, transcripts, reasoning, or worker output. A force-stopped run may still contain agents last observed as active.
+For `/symphony:agents`, the root must use a live host agent-listing tool when exposed and prefer its status and metadata over lifecycle observations. Use the persistent ledger as recovery evidence and as fallback for fields the live tool does not expose. Report run id, agent id, status, role, model, effort, final-request total/input/output/cache-creation/cache-read tokens, final-request duration/tool uses, and usage source/scope; every unavailable field is exactly `not exposed by host`. Claude Agent `PostToolUse` fields are final-request observations, never whole-agent totals; never infer usage or cost. Report and return without enabling Symphony, starting a run, spawning a lead, or changing agent status. Retain metadata only, never prompts, transcripts, reasoning, or worker output. A force-stopped run may still contain agents last observed as active.
+
+For `/symphony:status`, report `Observed final-request tokens (partial)` plus agents lacking final-request totals. Do not present this observation as a complete agent total. End only that inspection response with the exact injected `SYMPHONY_AGENTS_INSPECTED` receipt on its own final line; it has the same single-use, run/session/turn-bound Stop authorization as `/symphony:agents`.
 
 End only that inspection response with the exact injected `SYMPHONY_AGENTS_INSPECTED` receipt on its own final line. It is a random, single-use authorization bound to the run, session, and host turn when exposed. The hook stores each session's pending authorization separately from lifecycle state, consumes it on matching Stop, and invalidates it on the next prompt in that same session. Other sessions keep their own authorizations. Never reuse this receipt for later project work or emit a run-completion receipt for inspection.
 
