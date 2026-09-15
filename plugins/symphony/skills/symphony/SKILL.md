@@ -50,7 +50,14 @@ The root may use any model or effort. Before project work, it must:
    - current-memory path and relevant indexed history findings;
    - the absolute paths to `references/model-routing.md` and `references/capability-routing.md`.
 
-The assessor is read-only: it must not implement, edit, delegate, or become the execution lead. It returns exactly one concise assessment result: project profile, run mode, bounded reason, execution-lead model/effort, assignments, and verification strategy, followed by the exact two-line `SYMPHONY_ASSESSMENT` receipt. The root waits for and records that receipt, then emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>` before any project work.
+The assessor is read-only: it must not implement, edit, delegate, or become the execution lead. It returns exactly one concise assessment result: project profile, run mode, bounded reason, execution-lead model/effort, assignments, and verification strategy, followed by exactly these two lines:
+
+```text
+SYMPHONY_ASSESSMENT:<run-id>:<project-profile>:<run-mode>
+SYMPHONY_ASSESSMENT_REASON:<single bounded line>
+```
+
+Bind `<run-id>` to the current run. The current run's root must relay both lines and wait for the authorized receipt before execution, then emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
 
 6. Select a separate execution lead from the accepted mode. Emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution` before spawning it with no inherited turns. Give the lead the assessor result plus the same bounded execution packet, including checkpoint responsibility and completion receipt. After it is terminal, emit `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`.
 
@@ -69,13 +76,17 @@ suggestion: <one missing material capability or none>
 
 Include `<!-- SYMPHONY_MODE:<small|medium|large> -->` with that record so lifecycle state can retain the selected mode.
 
-If the user explicitly requests a dry run, do not spawn or write files. Derive the planned assessor and separate lead from the live catalogs. Report a medium-shaped planned route with `Delegating:` and `Completed:` records for both roles, one mode, capability routing, mode marker, and exact completion receipt; do not ask a follow-up question. These are planned records only, not claims that agents ran.
+If the user explicitly requests a dry run, do not spawn or write files. Derive the planned strongest/high assessor and the separate execution lead from the selected mode and live catalog; do not hard-code the execution lead or mode. Report planned `Delegating:` and `Completed:` records for both roles, one mode, capability routing, mode marker, and exact completion receipt; do not ask a follow-up question. These are planned records only, not claims that agents ran.
 
 Keep the execution lead id while its context remains bounded. On resume or compaction, reconcile tracked workers first, then start a fresh execution lead from bounded lifecycle/document memory rather than indefinitely resuming context.
 
 ## Delegation visibility
 
 Before every assessor, lead, worker, or reviewer spawn, the root emits `Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>`. After each completion, it emits `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`. These commentary records complement the persistent agent ledger; never invent usage that the host did not expose.
+
+## Ordinary reassessment
+
+When an owner prompt or final worker wave marks `assessment_due`, the current execution lead cheaply reassesses from current evidence. For unchanged mode it returns the same two-line current-run receipt above; the current run's root must relay it because an execution-lead `SubagentStop` receipt is not authorized. A proposed mode change or unresolved high-risk ambiguity requires a new strong assessor before further execution. Reassessment reuses current evidence; do not repeat a broad repository scan without drift.
 
 ## Select exactly one mode
 
@@ -164,7 +175,7 @@ Lifecycle context identifying an existing run triggers recovery, not a cold dupl
 1. Re-verify the actual root profile and live catalogs.
 2. Reconcile every tracked agent id and collect terminal results.
 3. Inspect current worktree changes and the saved objective.
-4. Start a fresh mode-appropriate execution lead from bounded lifecycle/document memory; require a new assessor only when assessment is due for an initial/explicit, proposed mode change, or unresolved high-risk decision.
+4. Bypass the assessor only when pre-boundary evidence has a valid mode, `mode_revision > 0`, and `assessment_due=false`; then start a fresh mode-appropriate execution lead from bounded lifecycle/document memory. A legacy mode alone is not accepted evidence. Otherwise require a new assessor for initial/explicit assessment, a proposed mode change, or unresolved high-risk decision.
 5. Preserve the prior mode as a hint and change it only when current evidence warrants reclassification.
 
 An explicit interrupt may bypass Stop hooks. The run record is the recovery source; never assume an interrupted worker completed.

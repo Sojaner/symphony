@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -990,16 +991,107 @@ class SymphonyHookTests(unittest.TestCase):
         )
         state = self.state()
         state["active_run"]["mode"] = "medium"
+        state["active_run"]["mode_revision"] = 1
         state["active_run"]["assessment_due"] = False
         self.hook.write_project_state(self.data, state)
 
         for source in ("resume", "compact"):
+            state = self.state()
+            state["active_run"]["assessment_due"] = False
+            self.hook.write_project_state(self.data, state)
             result = self.hook.handle_event(
                 self.event("SessionStart", source=source),
                 self.data,
             )
             self.assertIn("Recover Symphony run", result.context)
             self.assertIn("fresh separate mode-appropriate execution lead", result.context)
+
+    def test_recovery_requires_accepted_assessment_before_skipping_assessor(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        state = self.state()
+        state["active_run"].update({"mode": "medium", "mode_revision": 0, "assessment_due": False})
+        self.hook.write_project_state(self.data, state)
+
+        legacy = self.hook.handle_event(self.event("SessionStart", source="resume"), self.data)
+        self.assertIn("read-only symphony_assessor", legacy.context)
+
+        state = self.state()
+        state["active_run"].update({"mode": "medium", "mode_revision": 1, "assessment_due": False})
+        self.hook.write_project_state(self.data, state)
+        accepted = self.hook.handle_event(self.event("SessionStart", source="resume"), self.data)
+        self.assertIn("fresh separate mode-appropriate execution lead", accepted.context)
+
+    def test_ordinary_reassessment_is_led_then_root_relayed(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data, now=1_000,
+        )
+        run = self.state()["active_run"]
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:medium:medium\n"
+            "SYMPHONY_ASSESSMENT_REASON:Same work remains bounded"
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor", agent_type="symphony_assessor"), self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="lead", agent_type="symphony_lead"), self.data,
+        )
+
+        due = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="continue the parser"), self.data, now=1_001,
+        )
+        self.assertIn("Reassessment is due", due.context)
+        self.assertIn("current execution lead", due.context)
+        self.assertIn("root must relay", due.context)
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
+
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="lead", last_assistant_message=receipt), self.data,
+        )
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
+
+        self.hook.handle_event(
+            self.event("Stop", last_assistant_message=receipt), self.data, now=1_002,
+            stop_wait_seconds=0,
+        )
+        self.assertFalse(self.state()["active_run"]["assessment_due"])
+
+    def test_assess_context_survives_reassessment_helper(self):
+        result = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data,
+        )
+        self.assertIn("Symphony assessment requested", result.context)
+
+    def test_replacement_lead_updates_wave_exclusion_without_worker_takeover(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="lead-a", agent_type="symphony_lead"), self.data,
+        )
+        self.hook.handle_event(self.event("SubagentStop", agent_id="lead-a"), self.data)
+        state = self.state()
+        state["active_run"]["assessment_due"] = False
+        self.hook.write_project_state(self.data, state)
+
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="lead-b", agent_type="symphony_lead"), self.data,
+        )
+        self.assertEqual("lead-b", self.state()["active_run"]["lead_agent_id"])
+        self.hook.handle_event(self.event("SubagentStop", agent_id="lead-b"), self.data)
+        self.assertFalse(self.state()["active_run"]["assessment_due"])
+
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="worker", agent_type="worker"), self.data,
+        )
+        self.assertEqual("lead-b", self.state()["active_run"]["lead_agent_id"])
+        self.hook.handle_event(self.event("SubagentStop", agent_id="worker"), self.data)
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
 
     def test_subagent_lifecycle_blocks_stop_until_receipt(self):
         self.hook.handle_event(
@@ -1530,6 +1622,11 @@ class HookDeclarationTests(unittest.TestCase):
             "exactly one concise assessment result",
             "must not implement",
             "separate execution lead",
+            "SYMPHONY_ASSESSMENT:<run-id>:<project-profile>:<run-mode>",
+            "SYMPHONY_ASSESSMENT_REASON:<single bounded line>",
+            "current run's root must relay",
+            "current execution lead cheaply reassesses",
+            "proposed mode change or unresolved high-risk ambiguity requires a new strong assessor",
             "Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>",
             "Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>",
             "fresh execution lead from bounded lifecycle/document memory",
@@ -1540,6 +1637,7 @@ class HookDeclarationTests(unittest.TestCase):
             "Spawn exactly one `symphony_lead` with no inherited turns, using the strongest available "
             "general reasoning model at `high`.", skill,
         )
+        self.assertNotIn("medium-shaped planned route", skill)
 
         prompt = (PLUGIN_ROOT / "evals" / "match-proceeds" / "prompt.md").read_text(
             encoding="utf-8"
@@ -1553,8 +1651,24 @@ class HookDeclarationTests(unittest.TestCase):
             "Completed: symphony_lead",
         ):
             self.assertIn(text, prompt)
-        grader = (PLUGIN_ROOT / "evals" / "match-proceeds" / "graders" / "delegation-visibility.md")
-        self.assertIn("Delegating:", grader.read_text(encoding="utf-8"))
+        grader = (PLUGIN_ROOT / "evals" / "match-proceeds" / "graders" / "delegation-visibility.md").read_text(
+            encoding="utf-8"
+        )
+        pattern = re.search(r"^pattern: '(.*)'$", grader, re.MULTILINE).group(1)
+        passing = """Delegating: symphony_assessor — classify task — claude-opus-5/high — bounded read-only assessment
+Completed: symphony_assessor — planned — tokens not exposed by host — duration not exposed by host
+Delegating: symphony_lead — implement task — claude-sonnet-5/medium — medium execution
+Completed: symphony_lead — planned — tokens not exposed by host — duration not exposed by host
+<!-- SYMPHONY_MODE:medium -->"""
+        adversarial = """Delegating: symphony_assessor — classify task — claude-opus-5/medium — assessment
+Completed: symphony_assessor — planned
+Delegating: symphony_lead — implement task — claude-opus-5/high — execution
+Completed: symphony_lead — planned
+<!-- SYMPHONY_MODE:medium -->"""
+        implementation_adversarial = passing.replace("bounded read-only assessment", "implement the task")
+        self.assertIsNotNone(re.search(pattern, passing))
+        self.assertIsNone(re.search(pattern, adversarial))
+        self.assertIsNone(re.search(pattern, implementation_adversarial))
 
     def test_documentation_and_manifests_describe_memory_release(self):
         readme = (PLUGIN_ROOT.parents[1] / "README.md").read_text(encoding="utf-8")

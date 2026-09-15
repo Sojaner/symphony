@@ -316,18 +316,29 @@ def _new_run(payload, objective, now, project_root):
     }
 
 
-def _bootstrap_context(run, state, *, recovery=False, now=None):
+def _has_accepted_assessment(run):
+    return (
+        run.get("mode") in ("small", "medium", "large")
+        and type(run.get("mode_revision")) is int and run["mode_revision"] > 0
+        and run.get("assessment_due") is False
+    )
+
+
+def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, now=None):
     action = "Recover" if recovery else "Start"
     assessment_route = (
         "Reconcile tracked workers, then visibly delegate a fresh separate mode-appropriate execution "
         "lead from bounded lifecycle/document memory using the accepted assessment; it performs the "
         "cheap reassessment before project work. "
-        if recovery and run.get("mode") else
+        if recovery and accepted_recovery else
         "Visibly delegate one strongest-available general reasoning model at high effort with no "
         "inherited turns as read-only symphony_assessor. Wait for its authorized assessment receipt, "
         "then visibly delegate a separate mode-appropriate execution lead: small=capable direct/medium, "
         "medium=balanced/medium with at most two workers, large=capable coordinator/medium-or-high with "
-        "delegated waves. The assessor must not implement or become the lead. "
+        "delegated waves. The assessor must not implement or become the lead. It returns exactly: "
+        "`SYMPHONY_ASSESSMENT:<run-id>:<project-profile>:<run-mode>` and "
+        "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>` using this current run id "
+        f"`{run['id']}`; the current run's root must relay both lines before execution. "
         if run["assessment_due"] else
         "Reconcile tracked workers, then visibly delegate a fresh separate mode-appropriate execution "
         "lead from bounded lifecycle/document memory using the accepted assessment. "
@@ -352,7 +363,7 @@ def _bootstrap_context(run, state, *, recovery=False, now=None):
         "all agents are terminal and the final assistant message contains exactly one mode marker "
         f"and `<!-- {run['receipt']} -->`. If the user explicitly requests a dry run or forbids "
         "spawning or writes, obey that constraint: plan without acting and report only the actual "
-        "root profile, planned strongest/high lead, one mode, applicable capability routing, mode "
+        "root profile, planned assessor and separate mode-appropriate lead, one mode, applicable capability routing, mode "
         "marker, and completion receipt; do not ask a follow-up question. "
         "Explicit interrupts cannot be prevented; reconcile this run on resume. "
         f"Run status: {run['status']}; owner session: {run['owner_session_id']}; "
@@ -401,6 +412,17 @@ def _assessment_context(state):
         f"Symphony assessment requested. Project profile: {profile} ({source}, revision "
         f"{assessment['revision']}). {run_text} Use current objective and repository evidence; "
         "a manual profile is project context, not a forced run mode."
+    )
+
+
+def _reassessment_context(run):
+    return (
+        f"Continue Symphony run {run['id']}. Reassessment is due: the current execution lead cheaply "
+        "reassesses from current evidence. For the same mode it returns exactly "
+        f"`SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>` and "
+        "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>`; the current run's root must relay both "
+        "lines because an execution-lead SubagentStop receipt is not authorized. A proposed mode change "
+        "or unresolved high-risk ambiguity requires a new strong assessor; do not launch duplicate work."
     )
 
 
@@ -636,6 +658,8 @@ def _handle_prompt(payload, state, now):
             run["assessment_due"] = True
         if run.get("status") == "stopping":
             return HookResult(context="This Symphony run is stopping; reconcile tracked agents before continuing.")
+        if run["assessment_due"]:
+            return HookResult(context=_reassessment_context(run))
         return HookResult(context=f"Continue Symphony run {run['id']}; do not launch a duplicate lead.")
 
     if start_requested or (state.get("enabled") and control is None):
@@ -790,8 +814,11 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         if event == "SessionStart":
             run = state.get("active_run")
             if run:
+                accepted_recovery = _has_accepted_assessment(run)
                 run["assessment_due"] = True
-                result = HookResult(context=_bootstrap_context(run, state, recovery=True, now=current))
+                result = HookResult(context=_bootstrap_context(
+                    run, state, recovery=True, accepted_recovery=accepted_recovery, now=current,
+                ))
             elif state.get("enabled"):
                 result = HookResult(
                     context=(
@@ -824,10 +851,14 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 run.setdefault("agent_records", {})[agent_id] = _agent_record(payload, current)
                 run["last_event"] = event
                 run["status"] = "active"
-                if (payload.get("agent_type") or "").lower() == "symphony_assessor":
+                agent_type = (payload.get("agent_type") or "").lower()
+                if agent_type == "symphony_assessor":
                     run["assessor_agent_id"] = agent_id
-                elif not run.get("lead_agent_id") and "symphony" in (payload.get("agent_type") or "").lower():
-                    run["lead_agent_id"] = agent_id
+                elif agent_type == "symphony_lead":
+                    lead_id = run.get("lead_agent_id")
+                    records = {record["id"]: record for record in _agent_records(run)}
+                    if not lead_id or records.get(lead_id, {}).get("status") == "terminal":
+                        run["lead_agent_id"] = agent_id
                 result = HookResult(
                     context=(
                         f"You are part of Symphony run {run['id']}. Follow the explicitly assigned "
