@@ -1077,9 +1077,19 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
         ):
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
+            role = "assessor" if run["strong_assessment_required"] else "lead"
+            terminal_ids = [record["id"] for record in _agent_records(run)
+                            if record["status"] == "terminal"]
             return HookResult(
                 block=True,
-                reason="Symphony completion requires an accepted current assessment before normal project work can finish.",
+                reason=(
+                    "Symphony completion requires an accepted current assessment before normal project work can finish. "
+                    f"In your next final response, register the current terminal {role} with "
+                    f"`SYMPHONY_REGISTER:{run['id']}:{role}:<agent-id>` and relay its exact "
+                    "SYMPHONY_ASSESSMENT and SYMPHONY_ASSESSMENT_REASON lines. Commentary does not persist "
+                    f"registration. Observed terminal ids: {', '.join(terminal_ids) or 'none'}. "
+                    "If no authorized result exists, obtain it before reporting completion; do not invent a receipt."
+                ),
             )
         memory_error = _memory_checkpoint_error(run, project_root, message)
         if memory_error:

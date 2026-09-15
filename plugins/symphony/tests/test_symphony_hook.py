@@ -49,6 +49,28 @@ class SymphonyHookTests(unittest.TestCase):
         ), self.data)
         self.assertFalse(result.block)
 
+    def test_missing_recovery_lead_registration_gets_actionable_stop_guidance(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.set_current_assessment("small")
+        self.hook.handle_event(self.event("SubagentStart", agent_id="recovery-lead"), self.data)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="recovery-lead"), self.data)
+        run = self.state()["active_run"]
+        message = (f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
+                   "SYMPHONY_ASSESSMENT_REASON:Recovered work verified\n"
+                   "<!-- SYMPHONY_MODE:small -->\n" + run["receipt"])
+        blocked = self.hook.handle_event(self.event("Stop", last_assistant_message=message),
+                                         self.data, stop_wait_seconds=0)
+        self.assertTrue(blocked.block)
+        self.assertIn(f"SYMPHONY_REGISTER:{run['id']}:lead:<agent-id>", blocked.reason)
+        self.assertIn("recovery-lead", blocked.reason)
+        self.assertIn("final", blocked.reason)
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
+        accepted = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            f"SYMPHONY_REGISTER:{run['id']}:lead:recovery-lead\n" + message
+        )), self.data, stop_wait_seconds=0)
+        self.assertFalse(accepted.block)
+        self.assertIsNone(self.state()["active_run"])
+
     def setUp(self):
         self.hook = load_hook_module()
         self.tmp = tempfile.TemporaryDirectory()
