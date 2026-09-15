@@ -1962,6 +1962,9 @@ Completed: symphony_lead — planned
                 "long-running large-profile project may still have a small task",
                 "owner prompt, final worker wave, interrupt, or resume",
                 "separate read-only assessor",
+                "bounded, read-only assessor",
+                "returns exactly one concise assessment result",
+                "does not implement",
                 "Delegating:",
                 "Completed:",
                 "authoritative host observations only",
@@ -1976,8 +1979,26 @@ Completed: symphony_lead — planned
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
         self.assertEqual({"0.15.0"}, versions)
-        for relative in (".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"):
-            self.assertNotIn("0.15.0", (PLUGIN_ROOT.parents[1] / relative).read_text(encoding="utf-8"))
+        self.assertEqual({
+            "name": "symphony",
+            "interface": {"displayName": "Symphony"},
+            "plugins": [{
+                "name": "symphony",
+                "source": {"source": "local", "path": "./plugins/symphony"},
+                "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+                "category": "Productivity",
+            }],
+        }, json.loads((PLUGIN_ROOT.parents[1] / ".agents/plugins/marketplace.json").read_text(encoding="utf-8")))
+        self.assertEqual({
+            "name": "symphony",
+            "owner": {"name": "Sojaner"},
+            "plugins": [{
+                "name": "symphony",
+                "source": "./plugins/symphony",
+                "description": "Multi-model orchestration that gives the right task to the right model: steadier progress, less overthinking, lower cost.",
+                "category": "productivity",
+            }],
+        }, json.loads((PLUGIN_ROOT.parents[1] / ".claude-plugin/marketplace.json").read_text(encoding="utf-8")))
 
     def test_agent_inspection_command_and_live_host_contract(self):
         command = (PLUGIN_ROOT / "commands" / "agents.md").read_text(encoding="utf-8")

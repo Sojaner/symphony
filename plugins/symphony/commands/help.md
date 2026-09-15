@@ -18,7 +18,7 @@ description: Show Symphony usage without enabling or starting it
 
 Each run selects one mode: **small** for direct work by the strong lead, **medium** for mixed direct work and selective delegation, or **large** for delegation waves. A project profile is separate from the per-run execution mode: a long-running large-profile project may still have a small task. Enabled projects start a guarded run automatically on their next non-control project prompt.
 
-New and explicitly reassessed runs use a separate read-only assessor before a mode-appropriate execution lead. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Symphony makes routing visible with `Delegating:` and `Completed:` records.
+New and explicitly reassessed runs use a separate read-only assessor: a bounded, read-only assessor that returns exactly one concise assessment result and does not implement. A mode-appropriate execution lead follows. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Symphony makes routing visible with `Delegating:` and `Completed:` records.
 
 ## Usage visibility
 

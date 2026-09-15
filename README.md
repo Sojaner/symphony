@@ -22,7 +22,7 @@ Mode is selected per run. Enabling Symphony never permanently classifies a proje
 
 `/symphony:assess [small|medium|large|auto]` requests reassessment or sets a persistent project profile. Use `/symphony:assess large` for this repository when its long-running shape calls for that profile; `auto` reverses the override. A project profile is not a per-run execution mode: a long-running large-profile project may still have a small task.
 
-Each new or explicitly reassessed run first uses a separate read-only assessor, then a mode-appropriate execution lead. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Before and after each spawned role, Symphony shows `Delegating:` and `Completed:` records so the routing is visible.
+Each new or explicitly reassessed run first uses a separate read-only assessor: a bounded, read-only assessor that returns exactly one concise assessment result and does not implement. A mode-appropriate execution lead follows. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Before and after each spawned role, Symphony shows `Delegating:` and `Completed:` records so the routing is visible.
 
 ## Persistent project enablement
 
