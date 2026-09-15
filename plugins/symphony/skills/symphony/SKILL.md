@@ -42,6 +42,7 @@ The root may use any model or effort. Before project work, it must:
    - effective skill and tool catalog;
    - repository instructions;
    - run id, lifecycle status, tracked agents, and completion receipt;
+   - current-memory path, relevant indexed history findings, and checkpoint responsibility;
    - the absolute paths to `references/model-routing.md` and `references/capability-routing.md`.
 
 The lead returns and follows this record:
@@ -95,6 +96,33 @@ If a selected capability is not exposed to that worker, use a documented fallbac
 
 When Codebase Memory MCP tools are available, use them before filesystem search for structural discovery. Check index status, query the graph, inspect exact snippets, and check coverage for material paths. Before delegation, the parent passes project id, graph generation, qualified symbols, relevant traces, coverage gaps, and source fallbacks. A child without MCP access works from that packet and never claims MCP access.
 
+## Extended document memory
+
+Activate this only after the root or strong lead verifies usable codebase-memory-mcp tools and a healthy index for the current project. Otherwise do not create `.symphony/memory/`; continue with compact lifecycle recovery.
+
+The strong lead is the only writer. It atomically replaces `.symphony/memory/current.md` and appends changed durable facts to `.symphony/memory/history/<run-id>.md` after mode selection, material decisions, worker-wave dispatch and integration, verification changes, and final checkpointing.
+
+`current.md` contains, in order: Run; Objective and acceptance criteria; Invariants and constraints; Decisions and rationale; Important discoveries; Completed work; Pending work; Verification evidence; Risks and blockers; Retrieval index.
+
+```markdown
+# Symphony Current Memory
+
+## Run
+## Objective and acceptance criteria
+## Invariants and constraints
+## Decisions and rationale
+## Important discoveries
+## Completed work
+## Pending work
+## Verification evidence
+## Risks and blockers
+## Retrieval index
+```
+
+On recovery, read `current.md` directly, check index status, query only relevant history sections, run `check_index_coverage` for every memory path used, and fall back to targeted direct reads for stale or uncovered sections. Give workers only relevant invariants, decisions, evidence references, and acceptance criteria.
+
+After a durable checkpoint include `<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->`. Never write secrets, environment values, unnecessary personal data, transcripts, or copied source bodies.
+
 ## Dispatch and wait
 
 Every worker packet contains:
@@ -102,8 +130,8 @@ Every worker packet contains:
 ```text
 objective: one independently verifiable result
 ownership: exact files, modules, or research question
-context: only required evidence, including graph findings
-constraints: interfaces, selected skills, and decisions to preserve
+context: only required evidence, including current-memory path and relevant indexed history findings
+constraints: interfaces, selected skills, decisions to preserve, and workers return facts for the lead checkpoint
 done: observable acceptance checks
 return: capability receipt, conclusions, changed files, checks, blockers
 ```

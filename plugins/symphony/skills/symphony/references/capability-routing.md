@@ -38,6 +38,10 @@ Use this order:
 
 The root performs this grounding before delegation. Its worker packet includes the project id, index generation/freshness, bounded scope, queries and pagination state, qualified symbols, trace findings, coverage results, source fallback, and unresolved questions. A worker without graph tools must not claim direct MCP evidence.
 
+### Document memory
+
+Markdown memory requires verified MCP availability and healthy indexing. Read `current.md` directly; retrieve history with `search_graph` or `search_code`, then inspect exact snippets or use targeted direct reads and run `check_index_coverage` for every memory path used. If memory files are ignored, indexed history is disabled until the user changes that policy.
+
 ## Missing-capability suggestions
 
 A missing capability never blocks work unless the user requested its guarantee and no valid fallback exists. Suggest only when it would have materially improved the run.

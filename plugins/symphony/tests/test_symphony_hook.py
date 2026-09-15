@@ -615,6 +615,21 @@ class SymphonyHookTests(unittest.TestCase):
 
 
 class HookDeclarationTests(unittest.TestCase):
+    def test_skill_defines_mcp_gated_document_memory(self):
+        skill = (PLUGIN_ROOT / "skills" / "symphony" / "SKILL.md").read_text(encoding="utf-8")
+        required = (
+            "Extended document memory",
+            ".symphony/memory/current.md",
+            ".symphony/memory/history/<run-id>.md",
+            "SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp",
+            "The strong lead is the only writer",
+            "## Objective and acceptance criteria",
+            "## Verification evidence",
+            "check_index_coverage",
+        )
+        for text in required:
+            self.assertIn(text, skill)
+
     def test_hook_declarations_and_manifest_are_wired(self):
         for relative in ("hooks/hooks.json", "hooks/codex.json"):
             declaration = json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))
