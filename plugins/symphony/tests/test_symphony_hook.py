@@ -32,6 +32,87 @@ def load_codex_smoke_module():
 
 
 class SymphonyHookTests(unittest.TestCase):
+    def test_initial_synchronous_lead_registration_remains_supported(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.set_current_assessment()
+        self.hook.handle_event(self.event("SubagentStart", agent_id="synchronous-lead", agent_type="general-purpose"), self.data)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="synchronous-lead"), self.data)
+        run = self.state()["active_run"]
+        accepted = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            f"SYMPHONY_REGISTER:{run['id']}:lead:synchronous-lead\n"
+            f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
+            "SYMPHONY_ASSESSMENT_REASON:Synchronous lead verified the task\n"
+            f"SYMPHONY_MODE:small\n{run['receipt']}"
+        )), self.data, stop_wait_seconds=0)
+        self.assertFalse(accepted.block)
+        self.assertIsNone(self.state()["active_run"])
+        self.assertEqual("lead", self.state()["run_history"][-1]["agent_records"][0]["registered_role"])
+
+    def test_completion_guidance_names_only_authorized_current_lead(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.set_current_assessment()
+        self.start_role("authorized-lead", "lead")
+        self.hook.handle_event(self.event("SubagentStart", agent_id="unrelated-worker"), self.data)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="unrelated-worker"), self.data)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="authorized-lead"), self.data)
+        run = self.state()["active_run"]
+        blocked = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            f"SYMPHONY_MODE:small\n{run['receipt']}"
+        )), self.data, stop_wait_seconds=0)
+        self.assertTrue(blocked.block)
+        self.assertIn("authorized-lead", blocked.reason)
+        self.assertNotIn("unrelated-worker", blocked.reason)
+        self.assertIn("same lead", blocked.reason)
+
+    def test_registered_roles_remain_immutable_after_replacement(self):
+        for original_role, attempted_role in (("assessor", "lead"), ("lead", "assessor")):
+            with self.subTest(original_role=original_role):
+                self.data = Path(self.tmp.name) / f"immutable-{original_role}"
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+                self.start_role("original", original_role)
+                self.hook.handle_event(self.event("SubagentStop", agent_id="original"), self.data)
+                self.start_role("replacement", original_role)
+                self.hook.handle_event(self.event("SubagentStop", agent_id="replacement"), self.data)
+                before = self.state()
+                run_id = before["active_run"]["id"]
+                self.hook.handle_event(self.event("Stop", last_assistant_message=(
+                    f"SYMPHONY_REGISTER:{run_id}:{attempted_role}:original"
+                )), self.data, stop_wait_seconds=0)
+                self.assertEqual(before, self.state())
+
+    def test_execution_wave_child_cannot_be_promoted_to_reassessment_lead(self):
+        for host_role in ("worker", "reviewer", "default"):
+            with self.subTest(host_role=host_role):
+                self.data = Path(self.tmp.name) / f"promotion-{host_role}"
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+                self.set_current_assessment()
+                self.start_role("original-lead", "lead")
+                self.hook.handle_event(self.event("SubagentStart", agent_id="wave-child", agent_type=host_role), self.data)
+                self.hook.handle_event(self.event("SubagentStop", agent_id="wave-child", agent_type=host_role), self.data)
+                self.hook.handle_event(self.event("SubagentStop", agent_id="original-lead"), self.data)
+                run = self.state()["active_run"]
+                receipt = (f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
+                           "SYMPHONY_ASSESSMENT_REASON:Worker receipt must not authorize reassessment")
+                rejected = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+                    f"SYMPHONY_REGISTER:{run['id']}:lead:wave-child\n{receipt}\n"
+                    f"SYMPHONY_MODE:small\n{run['receipt']}")), self.data, stop_wait_seconds=0)
+                self.assertTrue(rejected.block)
+                after = self.state()["active_run"]
+                self.assertEqual("original-lead", after["lead_agent_id"])
+                self.assertEqual(host_role, after["agent_records"]["wave-child"]["role"])
+                self.assertNotIn("registered_role", after["agent_records"]["wave-child"])
+                self.assertEqual(run["mode_revision"], after["mode_revision"])
+                self.assertTrue(after["assessment_due"])
+                # A genuinely fresh recovery lead can be registered after a
+                # synchronous host call has already made it terminal.
+                self.hook.handle_event(self.event("SubagentStart", agent_id="fresh-lead", agent_type="general-purpose"), self.data)
+                self.hook.handle_event(self.event("SubagentStop", agent_id="fresh-lead"), self.data)
+                accepted = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+                    f"SYMPHONY_REGISTER:{run['id']}:lead:fresh-lead\n{receipt}")), self.data, stop_wait_seconds=0)
+                self.assertTrue(accepted.block)
+                self.assertEqual("fresh-lead", self.state()["active_run"]["lead_agent_id"])
+                self.assertFalse(self.state()["active_run"]["assessment_due"])
+
     def test_new_background_work_revokes_prior_shutdown_acknowledgement(self):
         for followup in ("stop", "disable", "ordinary", "malformed"):
             for status in ("running", "pending"):
@@ -454,11 +535,14 @@ class SymphonyHookTests(unittest.TestCase):
         self.hook.handle_event(self.event("Stop", last_assistant_message=(
             f"SYMPHONY_REGISTER:{run['id']}:lead:lead-b"
         )), self.data, stop_wait_seconds=0)
-        self.assertEqual("lead-b", self.state()["active_run"]["lead_agent_id"])
+        self.assertEqual("lead-a", self.state()["active_run"]["lead_agent_id"])
+        self.hook.handle_event(self.event("SubagentStop", agent_id="lead-b"), self.data)
+        self.start_role("lead-c", "lead", "general-purpose")
+        self.assertEqual("lead-c", self.state()["active_run"]["lead_agent_id"])
+        self.hook.handle_event(self.event("SubagentStop", agent_id="lead-c", agent_type="general-purpose"), self.data)
         self.hook.handle_event(self.event("Stop", last_assistant_message=receipt), self.data, stop_wait_seconds=0)
-        self.hook.handle_event(self.event("SubagentStop", agent_id="lead-b", agent_type="general-purpose"), self.data)
         self.assertFalse(self.state()["active_run"]["assessment_due"])
-        self.assertEqual("symphony_lead", self.state()["active_run"]["agent_records"]["lead-b"]["role"])
+        self.assertEqual("symphony_lead", self.state()["active_run"]["agent_records"]["lead-c"]["role"])
 
     def test_synchronous_agent_roles_and_assessment_register_on_root_relay(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)

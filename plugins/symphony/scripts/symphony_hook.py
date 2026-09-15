@@ -501,6 +501,10 @@ def _record_assessment_receipt(state, run, message, now, agent_id=None):
     if agent_id is None and _host_reports_child_lifecycle() is not False:
         records = {record["id"]: record for record in _agent_records(run)}
         role = "assessor" if run.get("strong_assessment_required") else "lead"
+        if any(registered_run == run["id"] and registered_role == role
+               and registered_id != run.get(f"{role}_agent_id")
+               for registered_run, registered_role, registered_id in REGISTRATION_RE.findall(message or "")):
+            return False
         authority = records.get(run.get(f"{role}_agent_id"))
         if not authority or authority["status"] != "terminal":
             return False
@@ -544,7 +548,11 @@ def _register_roles(state, run, message):
     for run_id, role, agent_id in REGISTRATION_RE.findall(message):
         if run_id != run["id"] or agent_id not in records:
             continue
+        if records[agent_id].get("registered_role") not in {None, role}:
+            continue
         if role == "assessor" and records[agent_id].get("assessment_superseded"):
+            continue
+        if role == "lead" and records[agent_id].get("lead_ineligible"):
             continue
         if any(agent_id == record["id"] for past in state["run_history"] for record in _agent_records(past)):
             continue
@@ -660,6 +668,8 @@ def _agent_records(run):
             record["registered_role"] = value["registered_role"]
         if value.get("assessment_superseded") is True:
             record["assessment_superseded"] = True
+        if value.get("lead_ineligible") is True:
+            record["lead_ineligible"] = True
         records[record["id"]] = record
     agents = run.get("agents")
     for agent_id in agents if isinstance(agents, list) else []:
@@ -1114,8 +1124,14 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             role = "assessor" if run["strong_assessment_required"] else "lead"
+            current_role_id = run.get(f"{role}_agent_id")
             terminal_ids = [record["id"] for record in _agent_records(run)
-                            if record["status"] == "terminal"]
+                            if record["status"] == "terminal"
+                            and (record["id"] == current_role_id if current_role_id else (
+                                record.get("registered_role") in {None, role}
+                                and not (role == "lead" and record.get("lead_ineligible"))
+                                and not (role == "assessor" and record.get("assessment_superseded"))
+                            ))]
             return HookResult(
                 block=True,
                 reason=(
@@ -1123,8 +1139,10 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     f"In your next final response, register the current terminal {role} with "
                     f"`SYMPHONY_REGISTER:{run['id']}:{role}:<agent-id>` and relay its exact "
                     "SYMPHONY_ASSESSMENT and SYMPHONY_ASSESSMENT_REASON lines. Commentary does not persist "
-                    f"registration. Observed terminal ids: {', '.join(terminal_ids) or 'none'}. "
-                    "If no authorized result exists, obtain it before reporting completion; do not invent a receipt."
+                    f"registration. Eligible terminal {role} ids: {', '.join(terminal_ids) or 'none'}. "
+                    f"Ask the same {role} for any missing assessment receipt. If it is unavailable, "
+                    "dispatch a fresh role holder after the previous holder is terminal; existing execution-wave "
+                    "children cannot be promoted to lead. Do not invent or reuse another role's receipt."
                 ),
             )
         memory_error = _memory_checkpoint_error(run, project_root, message)
@@ -1263,6 +1281,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 run["agents"] = sorted(set(run.get("agents", [])) | {agent_id})
                 if record is None:
                     record = _agent_record(payload, current)
+                    # A replacement lead must be a fresh dispatch after the
+                    # prior lead is terminal, not a child from its active wave.
+                    if records.get(run.get("lead_agent_id"), {}).get("status") == "active":
+                        record["lead_ineligible"] = True
                 else:
                     record["status"] = "active"
                     record["stopped_at"] = None
