@@ -32,6 +32,50 @@ def load_codex_smoke_module():
 
 
 class SymphonyHookTests(unittest.TestCase):
+    def test_early_execution_child_cannot_be_promoted_after_late_lead_registration(self):
+        for registration_timing in ("active", "terminal"):
+            with self.subTest(registration_timing=registration_timing):
+                self.data = Path(self.tmp.name) / f"early-child-{registration_timing}"
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+                self.set_current_assessment()
+                self.hook.handle_event(self.event("SubagentStart", agent_id="original-lead"), self.data)
+                self.hook.handle_event(self.event("SubagentStart", agent_id="early-worker"), self.data)
+                run = self.state()["active_run"]
+                registration = f"SYMPHONY_REGISTER:{run['id']}:lead:original-lead"
+                if registration_timing == "active":
+                    self.hook.handle_event(self.event("Stop", last_assistant_message=registration), self.data, stop_wait_seconds=0)
+                self.hook.handle_event(self.event("SubagentStop", agent_id="early-worker"), self.data)
+                self.hook.handle_event(self.event("SubagentStop", agent_id="original-lead"), self.data)
+                # This fresh dispatch is outside the original lead's execution
+                # window, even when its registration arrives synchronously late.
+                self.hook.handle_event(self.event("SubagentStart", agent_id="fresh-lead"), self.data)
+                self.hook.handle_event(self.event("SubagentStop", agent_id="fresh-lead"), self.data)
+                if registration_timing == "terminal":
+                    self.hook.handle_event(self.event("Stop", last_assistant_message=registration), self.data, stop_wait_seconds=0)
+                before = self.state()["active_run"]
+                receipt = (f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
+                           "SYMPHONY_ASSESSMENT_REASON:Verified bounded work")
+                rejected = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+                    f"SYMPHONY_REGISTER:{run['id']}:lead:early-worker\n{receipt}\n"
+                    f"SYMPHONY_MODE:small\n{run['receipt']}")), self.data, stop_wait_seconds=0)
+                self.assertTrue(rejected.block)
+                after = self.state()["active_run"]
+                self.assertEqual("original-lead", after["lead_agent_id"])
+                self.assertNotIn("registered_role", after["agent_records"]["early-worker"])
+                self.assertEqual(before["mode_revision"], after["mode_revision"])
+                self.assertTrue(after["assessment_due"])
+                self.assertIn("original-lead", rejected.reason)
+                self.assertNotIn("early-worker", rejected.reason)
+                self.assertNotIn("fresh-lead", rejected.reason)
+                accepted = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+                    f"SYMPHONY_REGISTER:{run['id']}:lead:fresh-lead\n{receipt}\n"
+                    f"SYMPHONY_MODE:small\n{run['receipt']}")), self.data, stop_wait_seconds=0)
+                self.assertFalse(accepted.block)
+                self.assertIsNone(self.state()["active_run"])
+                records = {r["id"]: r for r in self.state()["run_history"][-1]["agent_records"]}
+                self.assertEqual("lead", records["fresh-lead"]["registered_role"])
+                self.assertEqual("lead", records["original-lead"]["registered_role"])
+
     def test_initial_synchronous_lead_registration_remains_supported(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         self.set_current_assessment()

@@ -566,6 +566,14 @@ def _register_roles(state, run, message):
         if role == "assessor" and current_id != agent_id:
             run["assessment_due"] = True
             run["strong_assessment_required"] = True
+        if role == "lead" and current_id != agent_id:
+            # Registration may follow child dispatch or even synchronous
+            # completion. Reconcile only children born in this lead's window;
+            # a fresh dispatch after its terminal event remains eligible.
+            for candidate in records.values():
+                if (candidate["id"] != agent_id and not candidate.get("registered_role")
+                        and agent_id in candidate.get("active_agent_ids_at_start", [])):
+                    candidate["lead_ineligible"] = True
         run[key] = agent_id
         records[agent_id]["role"] = f"symphony_{role}"
         records[agent_id]["registered_role"] = role
@@ -670,6 +678,11 @@ def _agent_records(run):
             record["assessment_superseded"] = True
         if value.get("lead_ineligible") is True:
             record["lead_ineligible"] = True
+        active_at_start = value.get("active_agent_ids_at_start")
+        if isinstance(active_at_start, list):
+            record["active_agent_ids_at_start"] = sorted({
+                agent_id for agent_id in active_at_start if isinstance(agent_id, str) and agent_id
+            })
         records[record["id"]] = record
     agents = run.get("agents")
     for agent_id in agents if isinstance(agents, list) else []:
@@ -1281,6 +1294,9 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 run["agents"] = sorted(set(run.get("agents", [])) | {agent_id})
                 if record is None:
                     record = _agent_record(payload, current)
+                    active_at_start = sorted(record["id"] for record in records.values() if record["status"] == "active")
+                    if active_at_start:
+                        record["active_agent_ids_at_start"] = active_at_start
                     # A replacement lead must be a fresh dispatch after the
                     # prior lead is terminal, not a child from its active wave.
                     if records.get(run.get("lead_agent_id"), {}).get("status") == "active":
