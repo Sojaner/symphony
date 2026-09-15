@@ -419,12 +419,16 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
         "`Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration "
         "<value or not exposed by host>`. `Waiting:` may contain only observed lifecycle state. "
         f"After the host exposes an id, emit `SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>` or "
-        f"`SYMPHONY_REGISTER:{run['id']}:lead:<agent-id>` as applicable. Relay exactly "
+        f"`SYMPHONY_REGISTER:{run['id']}:lead:<agent-id>` as applicable. "
+        "For the initial execution lead and each recovery lead, immediately end a final-channel response "
+        "containing its exact registration line, without run completion. Commentary does not persist registration. "
+        "After the hook acknowledges registration, call the blocking wait for that same lead. "
+        "Relay exactly "
         f"`SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>` and "
         "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>` from the terminal assessor or same-mode "
         "lead. Both receipt size fields must be small, medium, or large; automatic is a source, "
         "not a project size, and must never appear in the receipt. "
-        "Immediately call the host blocking wait/result operation after a spawn and continue "
+        "After the registration handoff, immediately call the host blocking wait/result operation and continue "
         "until every observed agent is terminal. Finish only with the accepted mode marker and "
         f"`<!-- {run['receipt']} -->`."
     )
@@ -916,10 +920,12 @@ def _handle_prompt(payload, state, now):
 
     run = state.get("active_run")
     if run:
-        if control is None:
-            run["assessment_due"] = True
         if run.get("status") == "stopping":
             return HookResult(context="This Symphony run is stopping; reconcile tracked agents before continuing.")
+        if project_request and _owns_run(run, payload.get("session_id")):
+            run["interruption_recovery_eligible"] = False
+        if control is None:
+            run["assessment_due"] = True
         if foreign_run:
             return HookResult(context=_bootstrap_context(
                 run, state, recovery=True,
@@ -961,6 +967,17 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 and (pending.get("turn_id") is None or pending["turn_id"] == payload.get("turn_id"))
             ):
                 pending_path.unlink()
+                run = state.get("active_run")
+                if (pending.get("stop_requested") and run
+                        and _owns_run(run, payload.get("session_id"))
+                        and run.get("status") == "stopping"
+                        and not any(isinstance(task, dict) and task.get("status") in {"running", "pending"}
+                                    for task in payload.get("background_tasks", []))):
+                    run["stop_acknowledged"] = True
+                    if not _active_agent_ids(run):
+                        _archive_run(state, "stopped", now)
+                        state["active_run"] = None
+                    write_project_state(data_dir, state, now)
                 return HookResult()
     initial_state = read_project_state(data_dir, project_root)
     if initial_state.get("corrupt"):
@@ -1221,6 +1238,12 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     "run_id": (state.get("active_run") or {}).get("id"),
                     "session_id": payload.get("session_id"),
                     "turn_id": payload.get("turn_id"),
+                    **({"stop_requested": True} if (
+                        control in {"stop", "disable"}
+                        and not _invalid_control_args(control, args)
+                        and bool(state.get("active_run"))
+                        and _owns_run(state["active_run"], payload.get("session_id"))
+                    ) else {}),
                 })
                 result.context = (result.context + "\n" if result.context else "") + (
                     "End this control response with the following single-use receipt; "
@@ -1287,6 +1310,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                         and not _has_active_non_lead_agent(run)
                     ):
                         run["assessment_due"] = True
+                    if (run.get("status") == "stopping" and run.get("stop_acknowledged")
+                            and not _active_agent_ids(run)):
+                        _archive_run(state, "stopped", current)
+                        state["active_run"] = None
         elif event == "PostToolUse" and payload.get("tool_name") == "Agent":
             observed = _usage_record(payload, current)
             if observed:

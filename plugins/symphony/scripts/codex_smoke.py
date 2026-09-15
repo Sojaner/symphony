@@ -50,25 +50,39 @@ def build_exec_command(codex, repo, prompt, *, model, effort, persist=False):
 def run_process(command, *, env, timeout, cwd=None, input_text=None):
     if timeout <= 0:
         raise ProcessTimeout(command, timeout, "", "")
-    process = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=env,
-        stdin=subprocess.PIPE if input_text is not None else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
-    try:
-        stdout, stderr = process.communicate(input=input_text, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGKILL)
-        else:
-            process.kill()
-        stdout, stderr = process.communicate()
-        raise ProcessTimeout(command, timeout, stdout, stderr)
+    # Detached descendants can retain pipes after killpg. Files preserve partial
+    # evidence without making output collection depend on descendant EOF.
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        process = subprocess.Popen(
+            command, cwd=cwd, env=env,
+            stdin=subprocess.PIPE if input_text is not None else None,
+            stdout=out, stderr=err, text=True, start_new_session=True,
+        )
+        timed_out = False
+        try:
+            process.communicate(input=input_text, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                pass
+        finally:
+            if process.stdin:
+                process.stdin.close()
+        out.seek(0)
+        err.seek(0)
+        stdout = out.read(os.fstat(out.fileno()).st_size).decode("utf-8", errors="replace")
+        stderr = err.read(os.fstat(err.fileno()).st_size).decode("utf-8", errors="replace")
+        if timed_out:
+            raise ProcessTimeout(command, timeout, stdout, stderr)
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 

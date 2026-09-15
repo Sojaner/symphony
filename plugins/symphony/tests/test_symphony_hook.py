@@ -32,6 +32,81 @@ def load_codex_smoke_module():
 
 
 class SymphonyHookTests(unittest.TestCase):
+    def test_initial_lead_registration_requires_final_handoff_before_wait(self):
+        initial = self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        skill = (PLUGIN_ROOT / "skills" / "symphony" / "SKILL.md").read_text()
+        for text in (initial.context, skill):
+            self.assertIn("initial execution lead", text)
+            self.assertIn("final-channel response", text)
+            self.assertIn("hook acknowledges registration", text)
+        self.set_current_assessment()
+        self.hook.handle_event(self.event("SubagentStart", agent_id="original-lead"), self.data)
+        run = self.state()["active_run"]
+        acknowledged = self.hook.handle_event(self.event("Stop", last_assistant_message=
+            f"SYMPHONY_REGISTER:{run['id']}:lead:original-lead"), self.data, stop_wait_seconds=0)
+        self.assertTrue(acknowledged.block)
+        self.assertIn("lead=original-lead", acknowledged.reason)
+        self.assertEqual("lead", self.state()["active_run"]["agent_records"]["original-lead"]["registered_role"])
+
+    def test_stop_receipt_does_not_finalize_untracked_background_work(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        control = self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:stop"), self.data)
+        acknowledged = self.hook.handle_event(self.event("Stop", last_assistant_message=control.context.splitlines()[-1],
+            background_tasks=[{"id": "background", "status": "running"}]), self.data, stop_wait_seconds=60)
+        self.assertFalse(acknowledged.block)
+        self.assertEqual("stopping", self.state()["active_run"]["status"])
+        self.assertFalse(self.state()["active_run"].get("stop_acknowledged"))
+        self.hook.handle_event(self.event("Stop", background_tasks=[]), self.data, stop_wait_seconds=0)
+        self.assertIsNone(self.state()["active_run"])
+
+    def test_stop_disable_receipts_finalize_idle_and_async_runs_before_next_start(self):
+        for control in ("stop", "disable"):
+            for child_timing in ("none", "before-receipt", "after-receipt"):
+                with self.subTest(control=control, child_timing=child_timing):
+                    self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:enable old task"), self.data)
+                    old_id = self.state()["active_run"]["id"]
+                    if child_timing != "none":
+                        self.hook.handle_event(self.event("SubagentStart", agent_id=old_id), self.data)
+                    result = self.hook.handle_event(self.event("UserPromptSubmit", prompt=f"/symphony:{control}"), self.data)
+                    receipt = result.context.splitlines()[-1]
+                    if child_timing == "before-receipt":
+                        self.hook.handle_event(self.event("SubagentStop", agent_id=old_id), self.data)
+                    acknowledged = self.hook.handle_event(self.event("Stop", last_assistant_message=receipt),
+                                                         self.data, stop_wait_seconds=60)
+                    self.assertFalse(acknowledged.block)
+                    if child_timing == "after-receipt":
+                        self.assertEqual("stopping", self.state()["active_run"]["status"])
+                        self.hook.handle_event(self.event("SubagentStop", agent_id=old_id), self.data)
+                    self.assertIsNone(self.state()["active_run"])
+                    self.assertEqual("stopped", self.state()["run_history"][-1]["status"])
+                    self.assertEqual(control == "stop", self.state()["enabled"])
+                    self.assertFalse(list(self.data.rglob("*.inspection.*.json")))
+                    self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start new task"), self.data)
+                    self.assertNotEqual(old_id, self.state()["active_run"]["id"])
+                    self.assertEqual("new task", self.state()["active_run"]["objective"])
+                    self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data)
+
+    def test_owner_project_resume_consumes_takeover_eligibility(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.set_current_assessment()
+        self.hook.handle_event(self.event("Interrupt"), self.data)
+        run_id = self.state()["active_run"]["id"]
+        self.hook.handle_event(self.event("SessionStart", source="compact"), self.data)
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:status"), self.data)
+        self.assertTrue(self.state()["active_run"]["interruption_recovery_eligible"])
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="Continue the task"), self.data)
+        self.assertFalse(self.state()["active_run"]["interruption_recovery_eligible"])
+        self.start_role("resumed-lead", "lead")
+        self.hook.handle_event(self.event("SubagentStop", agent_id="resumed-lead"), self.data)
+        self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            f"SYMPHONY_ASSESSMENT:{run_id}:small:small\nSYMPHONY_ASSESSMENT_REASON:Resumed verification"
+        )), self.data, stop_wait_seconds=0)
+        before = self.state()
+        foreign = self.hook.handle_event(self.event("UserPromptSubmit", session_id="foreign",
+                                                    prompt="Continue the task"), self.data)
+        self.assertIn("inspection-only", foreign.context)
+        self.assertEqual(before, self.state())
+
     def test_smoke_rejects_reachable_assessor_only_root_completion(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         self.start_role("assessor", "assessor")
@@ -596,9 +671,16 @@ class SymphonyHookTests(unittest.TestCase):
                             data, stop_wait_seconds=55,
                         )
                     self.assertFalse(stopped.block)
-                    self.assertEqual(
-                        after_control, self.hook.read_project_state(data, str(self.project)),
-                    )
+                    after_receipt = self.hook.read_project_state(data, str(self.project))
+                    if control_name in {"stop", "disable"} and after_control["active_run"]:
+                        if state_name == "active":
+                            self.assertTrue(after_receipt["active_run"]["stop_acknowledged"])
+                            self.assertEqual("stopping", after_receipt["active_run"]["status"])
+                        else:
+                            self.assertIsNone(after_receipt["active_run"])
+                            self.assertEqual("stopped", after_receipt["run_history"][-1]["status"])
+                    else:
+                        self.assertEqual(after_control, after_receipt)
 
     def test_empty_start_is_terminal_usage_without_work_instructions_for_active_runs(self):
         prompts = (
@@ -2784,6 +2866,34 @@ class MemoryContractTests(unittest.TestCase):
 
 
 class CodexSmokeTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "requires a detached descendant")
+    def test_process_timeout_does_not_wait_for_detached_descendant_pipes(self):
+        descendant_pid = Path(self.tmp.name) / "descendant.pid"
+        script = (
+            "import os, sys, time\n"
+            "print('partial stdout', flush=True)\n"
+            "print('partial stderr', file=sys.stderr, flush=True)\n"
+            "if os.fork() == 0:\n"
+            "    os.setsid()\n"
+            f"    open({str(descendant_pid)!r}, 'w').write(str(os.getpid()))\n"
+            "    time.sleep(2)\n"
+            "    os._exit(0)\n"
+            "time.sleep(5)\n"
+        )
+        started = time.monotonic()
+        try:
+            with self.assertRaises(self.smoke.ProcessTimeout) as raised:
+                self.smoke.run_process([sys.executable, "-c", script], env=os.environ.copy(), timeout=0.1)
+            self.assertLess(time.monotonic() - started, 0.6)
+            self.assertIn("partial stdout", raised.exception.stdout)
+            self.assertIn("partial stderr", raised.exception.stderr)
+        finally:
+            if descendant_pid.exists():
+                try:
+                    os.kill(int(descendant_pid.read_text()), 9)
+                except ProcessLookupError:
+                    pass
+
     def setUp(self):
         self.smoke = load_codex_smoke_module()
         self.tmp = tempfile.TemporaryDirectory()
