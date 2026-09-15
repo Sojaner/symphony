@@ -15,12 +15,18 @@ import time
 
 
 SCHEMA_VERSION = 1
+MEMORY_ROOT = Path(".symphony") / "memory"
 SUGGESTION_COOLDOWN_SECONDS = 30 * 24 * 60 * 60
 CONTROL_RE = re.compile(r"SYMPHONY_CONTROL:\s*([a-z-]+)", re.IGNORECASE)
 TASK_RE = re.compile(r"SYMPHONY_TASK:\s*([^\n]*)", re.IGNORECASE)
 ARGS_RE = re.compile(r"SYMPHONY_ARGS:\s*([^\n]*)", re.IGNORECASE)
 SUGGESTION_RE = re.compile(r"SYMPHONY_SUGGESTED:([a-z0-9-]+)", re.IGNORECASE)
 MODE_RE = re.compile(r"SYMPHONY_MODE:\s*(small|medium|large)", re.IGNORECASE)
+
+
+def memory_paths(project_root, run_id):
+    root = Path(project_root)
+    return root / MEMORY_ROOT / "current.md", root / MEMORY_ROOT / "history" / f"{run_id}.md"
 
 
 class HookResult:
@@ -151,8 +157,9 @@ def can_suggest(state, capability, now=None):
     return previous is None or current - int(previous) >= SUGGESTION_COOLDOWN_SECONDS
 
 
-def _new_run(payload, objective, now):
+def _new_run(payload, objective, now, project_root):
     run_id = secrets.token_hex(8)
+    current, history = memory_paths(project_root, run_id)
     return {
         "id": run_id,
         "owner_session_id": payload.get("session_id", "unknown"),
@@ -164,6 +171,12 @@ def _new_run(payload, objective, now):
         "receipt": f"SYMPHONY_RUN_COMPLETE:{run_id}",
         "created_at": int(now),
         "last_event": payload.get("hook_event_name"),
+        "memory": {
+            "enabled": False,
+            "current": str(current.relative_to(project_root)),
+            "history": str(history.relative_to(project_root)),
+            "checkpoint_at": None,
+        },
     }
 
 
@@ -178,6 +191,7 @@ def _bootstrap_context(run, state, *, recovery=False, now=None):
         )
     ) or "none"
     agents = ", ".join(run.get("agents", [])) or "none"
+    current_memory, history_memory = memory_paths(state["project_root"], run["id"])
     return (
         f"{action} Symphony run {run['id']}. Invoke the installed Symphony skill first and "
         "follow it for this run. You are the thin root/session keeper. "
@@ -198,6 +212,9 @@ def _bootstrap_context(run, state, *, recovery=False, now=None):
         f"Run status: {run['status']}; owner session: {run['owner_session_id']}; "
         f"tracked agents: {agents}; recorded mode: {run.get('mode') or 'unselected'}. "
         f"Capabilities currently under suggestion cooldown: {cooldowns}. "
+        f"Memory candidates: current={current_memory}; history={history_memory}. "
+        "Verify codebase-memory-mcp plus a healthy index before creating either file; "
+        "otherwise leave extended memory disabled. "
         f"Objective: {run['objective']}"
     )
 
@@ -283,7 +300,7 @@ def _handle_prompt(payload, state, now):
 
     if start_requested or (state.get("enabled") and control is None):
         objective = task if start_requested else prompt
-        state["active_run"] = _new_run(payload, objective, now)
+        state["active_run"] = _new_run(payload, objective, now, state["project_root"])
         return HookResult(context=_bootstrap_context(state["active_run"], state, now=now))
 
     return HookResult()

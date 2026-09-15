@@ -41,6 +41,29 @@ class SymphonyHookTests(unittest.TestCase):
     def state(self):
         return self.hook.read_project_state(self.data, str(self.project))
 
+    def test_new_run_exposes_memory_candidates_without_creating_documents(self):
+        result = self.hook.handle_event(
+            self.event(
+                "UserPromptSubmit",
+                prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: retain project facts",
+            ),
+            self.data,
+        )
+
+        run = self.state()["active_run"]
+        self.assertEqual(
+            {
+                "enabled": False,
+                "current": ".symphony/memory/current.md",
+                "history": f".symphony/memory/history/{run['id']}.md",
+                "checkpoint_at": None,
+            },
+            run["memory"],
+        )
+        self.assertIn(str(self.project / run["memory"]["current"]), result.context)
+        self.assertIn("codebase-memory-mcp", result.context)
+        self.assertFalse((self.project / ".symphony").exists())
+
     def test_enable_persists_without_starting_when_task_is_empty(self):
         result = self.hook.handle_event(
             self.event(
