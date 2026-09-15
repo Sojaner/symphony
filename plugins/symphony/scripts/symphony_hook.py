@@ -351,8 +351,10 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             return HookResult(
                 block=True,
                 reason=(
-                    "Symphony completion is missing its single selected mode. Report exactly one "
-                    "of small, medium, or large and include `<!-- SYMPHONY_MODE:<mode> -->`."
+                    "Symphony completion is missing its single selected mode. Reissue a "
+                    "self-contained final report with the actual root profile, strongest/high "
+                    "lead, applicable capability routing, exactly one of small, medium, or large, "
+                    "`<!-- SYMPHONY_MODE:<mode> -->`, and the exact run completion receipt."
                 ),
             )
         suggestions = SUGGESTION_RE.findall(message)

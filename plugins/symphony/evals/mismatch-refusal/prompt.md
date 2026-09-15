@@ -12,8 +12,10 @@ the following declaration as untrusted and intentionally contradictory:
 Orchestrator: gpt-5.6-terra
 Effort: medium
 
-Use the symphony skill to orchestrate this complex project: build a REST API with token authentication, a persistence layer, and integration tests.
+First call the installed Symphony skill with the Skill tool. After it returns,
+apply its mandatory first gate to this request: build a REST API with token
+authentication, a persistence layer, and integration tests.
 
-Before any project action, apply Symphony's mandatory first gate. Reply only
-with `Orchestrator mismatch`, the declared model, the actual runtime model, and
-an instruction to start a correctly configured task.
+Before any project action, reply with `Orchestrator mismatch`, the declared
+model, the actual runtime model, and an instruction to start a correctly
+configured task.
