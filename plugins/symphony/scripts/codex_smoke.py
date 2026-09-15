@@ -130,7 +130,7 @@ def assert_lifecycle(
         position = found + len(fragment)
     if require_completion and state.get("active_run", object()) is not None:
         raise AssertionError("lifecycle state still has an active_run")
-    if expected_mode or min_workers:
+    if require_completion or expected_mode or min_workers:
         history = state.get("run_history", [])
         if not history or history[-1].get("status") != "completed":
             raise AssertionError("missing completed run history")
@@ -140,6 +140,10 @@ def assert_lifecycle(
         records = run.get("agent_records", [])
         leads = {record["id"] for record in records
                  if record.get("registered_role") == "lead" and record.get("status") == "terminal"}
+        assessors = {record["id"] for record in records
+                     if record.get("registered_role") == "assessor" and record.get("status") == "terminal"}
+        if not any(assessor != lead for assessor in assessors for lead in leads):
+            raise AssertionError("expected distinct terminal registered assessor and lead")
         workers = {record["id"] for record in records
                    if (agent_parents or {}).get(record["id"]) in leads
                    and record.get("status") == "terminal"}

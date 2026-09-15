@@ -32,6 +32,28 @@ def load_codex_smoke_module():
 
 
 class SymphonyHookTests(unittest.TestCase):
+    def test_smoke_rejects_reachable_assessor_only_root_completion(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.start_role("assessor", "assessor")
+        run = self.state()["active_run"]
+        assessment = (f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
+                      "SYMPHONY_ASSESSMENT_REASON:One bounded unit")
+        self.hook.handle_event(self.event("SubagentStop", agent_id="assessor",
+                                         last_assistant_message=assessment), self.data)
+        final = ("Delegating: symphony_assessor\nCompleted: assessor\n"
+                 f"SYMPHONY_MODE:small\n{run['receipt']}")
+        result = self.hook.handle_event(self.event("Stop", last_assistant_message=final),
+                                       self.data, stop_wait_seconds=0)
+        self.assertFalse(result.block)
+        self.assertIsNone(self.state()["active_run"])
+        self.assertEqual("completed", self.state()["run_history"][-1]["status"])
+        events = [{"type": "item.completed", "item": {"type": "agent_message", "text": final}}]
+        with self.assertRaisesRegex(AssertionError, "distinct terminal registered assessor and lead"):
+            load_codex_smoke_module().assert_lifecycle(
+                events, self.state(), ["Delegating:", "Completed:", "SYMPHONY_RUN_COMPLETE:"],
+                require_completion=True, expected_mode="small", min_workers=0,
+            )
+
     def test_invalid_assessment_format_requests_corrected_assessor_receipt(self):
         initial = self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         self.start_role("assessor", "assessor")
@@ -2923,7 +2945,10 @@ class CodexSmokeTests(unittest.TestCase):
                 "<!-- SYMPHONY_RUN_COMPLETE:abc -->"
             )},
         }]
-        state = {"active_run": None, "run_history": [{"id": "abc", "status": "completed"}]}
+        state = {"active_run": None, "run_history": [{"id": "abc", "status": "completed", "agent_records": [
+            {"id": "assessor", "registered_role": "assessor", "status": "terminal"},
+            {"id": "lead", "registered_role": "lead", "status": "terminal"},
+        ]}]}
 
         assert_lifecycle(events, state, [
             "Delegating: symphony_assessor", "Completed: assessor",
@@ -2953,6 +2978,26 @@ class CodexSmokeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AssertionError, "missing lifecycle fragment"):
             assert_lifecycle(events, {"active_run": None}, ["SYMPHONY_RUN_COMPLETE:forged"])
+
+    def test_completed_trials_require_distinct_terminal_registered_roles(self):
+        assessor = {"id": "assessor", "registered_role": "assessor", "status": "terminal"}
+        lead = {"id": "lead", "registered_role": "lead", "status": "terminal"}
+        state = {"active_run": None, "run_history": [{
+            "id": "run", "status": "completed", "mode": "small", "agent_records": [assessor, lead],
+        }]}
+        self.smoke.assert_lifecycle([], state, [], require_completion=True, expected_mode="small")
+        for records in (
+            [], [assessor], [lead],
+            [assessor, {**lead, "status": "active"}],
+            [{**assessor, "status": "active"}, lead],
+            [assessor, {**lead, "registered_role": None}],
+            [{**assessor, "registered_role": None}, lead],
+            [assessor, {**lead, "id": "assessor"}],
+        ):
+            with self.subTest(records=records):
+                state["run_history"][-1]["agent_records"] = records
+                with self.assertRaisesRegex(AssertionError, "distinct terminal registered assessor and lead"):
+                    self.smoke.assert_lifecycle([], state, [], require_completion=True)
 
     def test_nested_workers_require_terminal_lead_owned_lifecycle_records(self):
         state = {"active_run": None, "run_history": [{
