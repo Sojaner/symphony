@@ -18,11 +18,11 @@ SCHEMA_VERSION = 1
 MEMORY_ROOT = Path(".symphony") / "memory"
 SUGGESTION_COOLDOWN_SECONDS = 30 * 24 * 60 * 60
 RAW_CONTROL_RE = re.compile(
-    r"\A/symphony:(enable|disable|start|stop|status|agents|help)(?:\s+([\s\S]*))?\Z",
+    r"\A/symphony:(enable|disable|start|stop|status|agents|assess|help)(?:\s+([\s\S]*))?\Z",
     re.IGNORECASE,
 )
 CONTROL_RE = re.compile(
-    r"^[ \t]*(?:<!--[ \t]*)?SYMPHONY_CONTROL:[ \t]*(enable|disable|start|stop|status|agents|help)"
+    r"^[ \t]*(?:<!--[ \t]*)?SYMPHONY_CONTROL:[ \t]*(enable|disable|start|stop|status|agents|assess|help)"
     r"(?=[ \t]*(?:-->|$))", re.IGNORECASE | re.MULTILINE,
 )
 SUGGESTION_RE = re.compile(r"SYMPHONY_SUGGESTED:([a-z0-9-]+)", re.IGNORECASE)
@@ -115,9 +115,53 @@ def default_state(project_root):
         "active_run": None,
         "run_history": [],
         "suggestions": {},
+        "assessment": _default_assessment(),
         "corrupt": False,
         "warning": None,
     }
+
+
+def _default_assessment():
+    return {
+        "profile": None,
+        "source": None,
+        "revision": 0,
+        "reason": None,
+        "assessed_at": None,
+    }
+
+
+def _valid_profile(value):
+    return value is None or isinstance(value, str) and value in ("small", "medium", "large")
+
+
+def _valid_assessment(assessment):
+    return (
+        isinstance(assessment, dict)
+        and _valid_profile(assessment.get("profile"))
+        and assessment.get("source") in (None, "automatic", "manual")
+        and type(assessment.get("revision")) is int and assessment["revision"] >= 0
+        and (assessment.get("reason") is None or isinstance(assessment["reason"], str))
+        and (assessment.get("assessed_at") is None or type(assessment["assessed_at"]) is int)
+    )
+
+
+def _normalize_assessment_state(state):
+    assessment = state.setdefault("assessment", _default_assessment())
+    if not _valid_assessment(assessment):
+        raise ValueError("invalid assessment state")
+    run = state.get("active_run")
+    if not isinstance(run, dict):
+        return
+    run.setdefault("mode_revision", 0)
+    run.setdefault("assessment_due", True)
+    run.setdefault("mode_history", [])
+    if (
+        type(run["mode_revision"]) is not int or run["mode_revision"] < 0
+        or type(run["assessment_due"]) is not bool
+        or not isinstance(run["mode_history"], list)
+    ):
+        raise ValueError("invalid assessment run state")
 
 
 def _atomic_write(path, value):
@@ -154,6 +198,7 @@ def read_project_state(data_dir, project_root, *, read_only=False):
         state.setdefault("enabled", False)
         state.setdefault("corrupt", False)
         state.setdefault("warning", None)
+        _normalize_assessment_state(state)
         state["run_history"] = _run_history(state)
         if isinstance(state["active_run"], dict):
             run = state["active_run"]
@@ -240,6 +285,9 @@ def _new_run(payload, objective, now, project_root):
         "owner_session_id": payload.get("session_id", "unknown"),
         "status": "starting",
         "mode": None,
+        "mode_revision": 0,
+        "assessment_due": True,
+        "mode_history": [],
         "lead_agent_id": None,
         "agents": [],
         "agent_records": {},
@@ -313,6 +361,22 @@ def _status_context(state):
             f"mode={run.get('mode') or 'unselected'}, agents={','.join(run.get('agents', [])) or 'none'}"
         )
     return f"Symphony project enabled: {str(state['enabled']).lower()}. Active run: {run_text}."
+
+
+def _assessment_context(state):
+    assessment = state["assessment"]
+    run = state.get("active_run")
+    profile = assessment["profile"] or "automatic"
+    source = assessment["source"] or "automatic"
+    run_text = (
+        f"Active run {run['id']} is due for reassessment; choose its mode independently."
+        if run else "No run is active; the next run will require assessment."
+    )
+    return (
+        f"Symphony assessment requested. Project profile: {profile} ({source}, revision "
+        f"{assessment['revision']}). {run_text} Use current objective and repository evidence; "
+        "a manual profile is project context, not a forced run mode."
+    )
 
 
 def _agent_record(payload, started_at=None):
@@ -427,6 +491,29 @@ def _handle_prompt(payload, state, now):
         return HookResult(context=_status_context(state))
     if control == "agents":
         return HookResult(context=_agents_context(state, include_history="--all" in args.split()))
+    if control == "assess":
+        profile = args.strip().lower()
+        if profile not in {"", "small", "medium", "large", "auto"}:
+            return HookResult(context="Usage: /symphony:assess [small|medium|large|auto]")
+        if profile in {"small", "medium", "large"}:
+            state["assessment"] = {
+                "profile": profile,
+                "source": "manual",
+                "revision": state["assessment"]["revision"] + 1,
+                "reason": f"Manual project profile override: {profile}.",
+                "assessed_at": int(now),
+            }
+        elif profile == "auto":
+            state["assessment"] = {
+                "profile": None,
+                "source": None,
+                "revision": state["assessment"]["revision"] + 1,
+                "reason": None,
+                "assessed_at": None,
+            }
+        if state.get("active_run"):
+            state["active_run"]["assessment_due"] = True
+        return HookResult(context=_assessment_context(state))
     if control == "enable":
         state["enabled"] = True
         if not task:

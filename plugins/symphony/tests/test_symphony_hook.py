@@ -1181,6 +1181,92 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIn("strong execution lead", started.context)
         self.assertIsNotNone(self.state()["active_run"])
 
+    def test_assessment_state_normalizes_legacy_runs(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start legacy task"), self.data,
+        )
+        state = self.state()
+        state.pop("assessment", None)
+        for field in ("mode_revision", "assessment_due", "mode_history"):
+            state["active_run"].pop(field, None)
+        self.hook.write_project_state(self.data, state)
+
+        state = self.state()
+        self.assertEqual({
+            "profile": None,
+            "source": None,
+            "revision": 0,
+            "reason": None,
+            "assessed_at": None,
+        }, state.get("assessment"))
+        self.assertEqual(0, state["active_run"].get("mode_revision"))
+        self.assertTrue(state["active_run"].get("assessment_due"))
+        self.assertEqual([], state["active_run"].get("mode_history"))
+
+    def test_assess_commands_persist_clear_and_request_profiles(self):
+        command_path = PLUGIN_ROOT / "commands" / "assess.md"
+        self.assertTrue(command_path.is_file())
+        template = command_path.read_text(encoding="utf-8")
+
+        for source in ("raw", "template"):
+            with self.subTest(source=source):
+                self.data = Path(self.tmp.name) / f"data-{source}"
+                self.data.mkdir()
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data, now=1_000,
+                )
+
+                def assess(argument, now):
+                    prompt = (
+                        f"/symphony:assess{f' {argument}' if argument else ''}"
+                        if source == "raw" else template.replace("$ARGUMENTS", argument)
+                    )
+                    return self.hook.handle_event(
+                        self.event("UserPromptSubmit", prompt=prompt), self.data, now=now,
+                    )
+
+                assess("large", 1_001)
+                state = self.state()
+                self.assertEqual("large", state["assessment"]["profile"])
+                self.assertEqual("manual", state["assessment"]["source"])
+                self.assertEqual(1, state["assessment"]["revision"])
+                self.assertIsInstance(state["assessment"]["reason"], str)
+                self.assertEqual(1_001, state["assessment"]["assessed_at"])
+                self.assertTrue(state["active_run"]["assessment_due"])
+
+                state = self.state()
+                state["active_run"]["assessment_due"] = False
+                self.hook.write_project_state(self.data, state, now=1_002)
+                assess("", 1_003)
+                state = self.state()
+                self.assertEqual("large", state["assessment"]["profile"])
+                self.assertEqual("manual", state["assessment"]["source"])
+                self.assertEqual(1, state["assessment"]["revision"])
+                self.assertEqual(1_001, state["assessment"]["assessed_at"])
+                self.assertTrue(state["active_run"]["assessment_due"])
+
+                assess("auto", 1_004)
+                state = self.state()
+                self.assertEqual({
+                    "profile": None,
+                    "source": None,
+                    "revision": 2,
+                    "reason": None,
+                    "assessed_at": None,
+                }, state["assessment"])
+                self.assertTrue(state["active_run"]["assessment_due"])
+
+                state["active_run"]["assessment_due"] = False
+                self.hook.write_project_state(self.data, state, now=1_005)
+                before = self.state()
+                result = assess("invalid", 1_006)
+                self.assertIn("Usage", result.context)
+                self.assertEqual(before, self.state())
+
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data,
+                )
+
     def test_suggestion_receipt_sets_thirty_day_cooldown(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
