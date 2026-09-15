@@ -1149,6 +1149,16 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                         "the assessment and return control for execution. "
                         + " ".join(f"SYMPHONY_REGISTER:{run['id']}:assessor:{agent_id}" for agent_id in pending)
                     ))
+                elif payload.get("tool_name") == "spawn_agent":
+                    arguments = payload.get("tool_input") or {}
+                    model = arguments.get("model") if isinstance(arguments, dict) else None
+                    if not isinstance(model, str) or not model.strip():
+                        result = HookResult(block=True, reason=(
+                            "Symphony's assessor requires an explicit model override to the strongest "
+                            "available general reasoning model at high effort. Omitting model inherits "
+                            "the weak root. Retry spawn_agent with the named model from the live host "
+                            "catalog and reasoning_effort=high; do not proceed with an inherited model."
+                        ))
         elif event == "SessionStart":
             run = state.get("active_run")
             if run:

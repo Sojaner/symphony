@@ -32,6 +32,23 @@ def load_codex_smoke_module():
 
 
 class SymphonyHookTests(unittest.TestCase):
+    def test_initial_codex_assessor_requires_explicit_model_override(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        before = self.state()
+        for arguments in ({}, {"reasoning_effort": "high"}, {"model": ""}):
+            with self.subTest(arguments=arguments):
+                result = self.hook.handle_event(self.event(
+                    "PreToolUse", tool_name="spawn_agent", tool_input=arguments,
+                ), self.data)
+                self.assertTrue(result.block)
+                self.assertIn("explicit model override", result.reason)
+                self.assertEqual(before, self.state())
+        result = self.hook.handle_event(self.event(
+            "PreToolUse", tool_name="spawn_agent",
+            tool_input={"model": "gpt-6-astra", "reasoning_effort": "high"},
+        ), self.data)
+        self.assertFalse(result.block)
+
     def setUp(self):
         self.hook = load_hook_module()
         self.tmp = tempfile.TemporaryDirectory()
@@ -76,7 +93,7 @@ class SymphonyHookTests(unittest.TestCase):
 
     def test_spawn_boundary_requires_persisted_assessment_before_execution(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
-        spawn = self.event("PreToolUse", tool_name="spawn_agent")
+        spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={"model": "gpt-6-astra"})
         self.assertFalse(self.hook.handle_event(spawn, self.data).block)
         self.hook.handle_event(self.event("SubagentStart", agent_id="assessor"), self.data)
         run = self.state()["active_run"]
@@ -117,7 +134,7 @@ class SymphonyHookTests(unittest.TestCase):
                     self.hook.handle_event(self.event("Stop", last_assistant_message=(
                         f"SYMPHONY_REGISTER:{run_id}:assessor:{failed_id}"
                     )), self.data, stop_wait_seconds=0)
-                spawn = self.event("PreToolUse", tool_name="spawn_agent")
+                spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={"model": "gpt-6-astra"})
                 self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data)
                 self.assertTrue(self.hook.handle_event(spawn, self.data).block)
                 self.hook.handle_event(self.event("SubagentStop", agent_id=failed_id), self.data)
