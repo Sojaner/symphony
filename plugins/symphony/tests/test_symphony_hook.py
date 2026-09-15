@@ -940,6 +940,18 @@ class SymphonyHookTests(unittest.TestCase):
 
 
 class HookDeclarationTests(unittest.TestCase):
+    def test_documentation_and_manifests_describe_memory_release(self):
+        readme = (PLUGIN_ROOT.parents[1] / "README.md").read_text(encoding="utf-8")
+        help_text = (PLUGIN_ROOT / "commands" / "help.md").read_text(encoding="utf-8")
+        for text in (readme, help_text):
+            self.assertIn(".symphony/memory/current.md", text)
+            self.assertIn("codebase-memory-mcp", text)
+        versions = {
+            json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
+            for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
+        }
+        self.assertEqual({"0.14.0"}, versions)
+
     def test_agent_inspection_command_and_live_host_contract(self):
         command = (PLUGIN_ROOT / "commands" / "agents.md").read_text(encoding="utf-8")
         self.assertIn("SYMPHONY_CONTROL: agents", command)

@@ -29,7 +29,7 @@ When enabled, memory lives under:
 
 `current.md` is a bounded, directly readable checkpoint for the active project and run. Direct reading is faster and more reliable than an index query for this single hot document.
 
-The history file is append-only for one run and contains durable checkpoints useful across later runs. codebase-memory-mcp indexes its Markdown sections for targeted lookup. Symphony does not add the directory to `.gitignore`; ignoring it could exclude it from indexing. The user decides whether to commit, ignore, or delete these project-local files after considering that choice's indexing consequences.
+The history file is append-only for one run and contains durable checkpoints useful across later runs. codebase-memory-mcp indexes its Markdown sections for targeted lookup. Symphony does not add the directory to `.gitignore`, commit it, or delete it automatically; ignoring it could exclude it from indexing. The user decides whether to commit, ignore, or delete these project-local files after considering that choice's indexing consequences.
 
 ### Use a fixed document contract
 
@@ -82,7 +82,7 @@ The full history is never injected into every prompt. A worker receives the curr
 
 ### Hooks enforce freshness without understanding prose
 
-The hook script cannot invoke MCP tools or judge Markdown content. It therefore supplies deterministic paths and validates only observable lifecycle facts.
+The hook script cannot invoke MCP tools or judge Markdown content. It therefore supplies deterministic paths and validates only observable lifecycle facts. It trusts activation only after the strong lead's verified capability receipt and checks the memory file and checkpoint receipt, never inferred Markdown prose.
 
 The run record stores a memory candidate path plus whether extended memory was activated and the last observed checkpoint time. The lead emits:
 

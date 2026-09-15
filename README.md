@@ -62,6 +62,7 @@ Start a new session after installation so Claude Code loads the commands, skill,
 /symphony:disable
 /symphony:start <task>
 /symphony:status
+/symphony:agents [--all]
 /symphony:stop
 /symphony:stop --force
 ```
@@ -71,10 +72,19 @@ Start a new session after installation so Claude Code loads the commands, skill,
 - `disable` prevents future automatic activation and gracefully stops an active run.
 - `start` starts one guarded run without changing project enablement.
 - `status` reads policy and run state without changing either.
+- `agents` lists the active run's subagents, including terminal agents; `--all` also includes retained historical runs. Model or effort that the host does not provide is shown as `not exposed by host`.
 - `stop` ends the active run but preserves project enablement.
 - `stop --force` releases stale protection. A tracked or untracked child may continue running, so use it only for recovery.
 
 When a project is enabled, the first non-control project prompt in a later session automatically arms a guarded run and starts the strong-lead bootstrap.
+
+## Document memory
+
+Extended memory is available only when the strong lead verifies `codebase-memory-mcp`, a healthy project index, and usable memory-path coverage. The lead reads `.symphony/memory/current.md` directly for the active checkpoint and queries `.symphony/memory/history/<run-id>.md` through MCP graph/search tools; stale or uncovered history uses a targeted direct read while indexing catches up. Otherwise Symphony keeps using its compact lifecycle record and does not create or claim indexed memory.
+
+`.symphony/memory/` is project-local and is not automatically ignored, committed, or deleted. `/symphony:disable` and `/symphony:stop --force` preserve it; deleting it manually disables historical recall until it is recreated. Keep no secrets, raw environment values, full transcripts, or copied source bodies in memory.
+
+Hooks cannot call MCP. The strong lead activates memory only with its verified capability receipt, and hooks enforce that activation with the documented file and checkpoint-receipt checks.
 
 ## Lifecycle protection
 
@@ -182,6 +192,7 @@ plugins/symphony/scripts/              Shared lifecycle implementation
 plugins/symphony/tests/                Deterministic lifecycle tests
 plugins/symphony/evals/                Claude plugin eval suite
 plugins/symphony/skills/symphony/      Execution and capability-routing instructions
+.symphony/memory/                      Runtime-created project-local document memory
 ```
 
 ## References
