@@ -100,6 +100,12 @@ Memory documents must not contain credentials, access tokens, private keys, raw 
 
 Disabling Symphony stops future automatic activation but does not delete project memory. Force-stop also preserves it for diagnosis. Users can remove `.symphony/memory/` explicitly; Symphony treats missing files as memory unavailable and falls back to compact lifecycle state.
 
+### Agent inspection is read-only and honest
+
+`/symphony:agents` lists every subagent observed in the active run, including terminal agents. `/symphony:agents --all` also lists compact ledgers from completed, gracefully stopped, and force-stopped historical runs.
+
+Each row contains run id, agent id, lifecycle status, role, model, and effort. Values come from live host listing data first and lifecycle event metadata second. A host that does not expose model or effort is reported as `not exposed by host`; Symphony never guesses. The hook retains metadata only, not prompts, transcripts, or worker output. The command is read-only and never enables Symphony, starts a run, or changes agent status.
+
 ## Files and interfaces
 
 - `plugins/symphony/scripts/symphony_hook.py`: deterministic candidate paths, memory marker parsing, recovery context, and completion freshness checks.
@@ -107,6 +113,7 @@ Disabling Symphony stops future automatic activation but does not delete project
 - `plugins/symphony/skills/symphony/SKILL.md`: lead-owned checkpoint and indexed retrieval protocol.
 - `plugins/symphony/skills/symphony/references/capability-routing.md`: codebase-memory-mcp activation and fallback rules.
 - `plugins/symphony/commands/help.md` and `README.md`: memory behavior, location, retention, privacy, and deletion guidance.
+- `plugins/symphony/commands/agents.md`: active-run agent inspection and the `--all` historical view.
 - both plugin manifests: version `0.14.0`; version `0.13.0` is intentionally skipped. Marketplace manifests keep their existing source-only schema.
 
 No daemon, database, new dependency, background indexer, or concurrent memory writer is introduced.
@@ -133,5 +140,6 @@ Test-driven implementation will first add failing lifecycle tests for:
 6. completion succeeding with a fresh current document and matching marker;
 7. disable and force-stop preserving memory files;
 8. documentation and manifests using version `0.14.0`.
+9. active and historical agent listing with honest missing-metadata labels and no state mutation.
 
 Repository verification will run the Python unit suite, compilation, plugin validators, diff checks, and hosted weak-root evals before release.

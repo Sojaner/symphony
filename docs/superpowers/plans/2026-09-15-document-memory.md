@@ -17,6 +17,7 @@
 - The strong lead is the only document writer; workers return bounded facts and never write shared memory concurrently.
 - Never store credentials, tokens, private keys, raw environment values, unnecessary personal data, full transcripts, or copied source bodies.
 - Do not add a daemon, database, dependency, background indexer, concurrent writer, or automatic `.gitignore` edit.
+- `/symphony:agents` is read-only; `--all` includes every retained historical run, and missing model or effort metadata is rendered as `not exposed by host` rather than guessed.
 - Keep the existing plugin-data lifecycle record and non-MCP recovery path working.
 - Bump both plugin manifests from `0.12.0` directly to `0.14.0`; do not publish `0.13.0` or add version fields to marketplace manifests.
 
@@ -372,7 +373,106 @@ git commit -m "feat: add indexed document memory protocol"
 
 ---
 
-### Task 4: Document retention, privacy, fallback, and the skipped version
+### Task 4: Add active and historical subagent inspection
+
+**Files:**
+- Create: `plugins/symphony/commands/agents.md`
+- Modify: `plugins/symphony/scripts/symphony_hook.py`
+- Modify: `plugins/symphony/tests/test_symphony_hook.py`
+- Modify: `plugins/symphony/commands/help.md`
+- Modify: `plugins/symphony/skills/symphony/SKILL.md`
+
+**Interfaces:**
+- Produces: `/symphony:agents` and `/symphony:agents --all`.
+- Produces: `active_run["agent_records"]`, keyed by agent id, while preserving `active_run["agents"]` as the active-id Stop guard.
+- Produces: project-state `run_history`, containing compact terminal run and agent metadata without prompts, transcripts, or outputs.
+- Produces: `_agents_context(state, include_history=False) -> str` and `_archive_run(state, status, now) -> None`.
+
+- [ ] **Step 1: Write failing agent-ledger tests**
+
+Add tests that start a run, send `SubagentStart` with `agent_id`, `agent_type`, `model`, and `reasoning_effort`, then send `SubagentStop`. Assert the active id leaves `agents`, while `agent_records[id]` remains with terminal status and exact metadata. Add a second test that completes the run, invokes `SYMPHONY_CONTROL: agents` with and without `SYMPHONY_ARGS: --all`, and verifies only the `--all` response includes the historical run and agent.
+
+Use these core assertions:
+
+```python
+record = self.state()["active_run"]["agent_records"]["worker-1"]
+self.assertEqual("terminal", record["status"])
+self.assertEqual("test-writer", record["role"])
+self.assertEqual("gpt-6-astra", record["model"])
+self.assertEqual("high", record["effort"])
+
+self.assertIn("No active Symphony run", current.context)
+self.assertIn("worker-1", historical.context)
+self.assertIn("gpt-6-astra", historical.context)
+```
+
+Add a missing-metadata case and assert both model and effort render as `not exposed by host`.
+
+- [ ] **Step 2: Run the focused tests and verify RED**
+
+Run the new tests by fully qualified names. Expected: FAIL because `agent_records`, `run_history`, and the `agents` control do not exist.
+
+- [ ] **Step 3: Implement compact agent records and run archiving**
+
+Initialize `run_history` in `default_state` and `read_project_state`, and initialize `agent_records` in `_new_run`. On `SubagentStart`, retain the active id and write:
+
+```python
+run["agent_records"][agent_id] = {
+    "id": agent_id,
+    "status": "active",
+    "role": payload.get("agent_type") or "not exposed by host",
+    "model": payload.get("model") or "not exposed by host",
+    "effort": payload.get("reasoning_effort") or payload.get("effort") or "not exposed by host",
+    "started_at": current,
+    "stopped_at": None,
+}
+```
+
+On `SubagentStop`, remove only the active id and update the retained record to `terminal` with `stopped_at`. Support legacy state whose `agent_records` field is absent.
+
+Before successful, graceful, or forced run clearing, `_archive_run` stores run id, objective, mode, terminal status, created/completed timestamps, and the values of `agent_records`. It must not store message bodies or worker results.
+
+- [ ] **Step 4: Implement the read-only command**
+
+Create `commands/agents.md` with:
+
+```markdown
+---
+description: List Symphony subagents for the active run or retained run history
+argument-hint: [--all]
+---
+
+<!-- SYMPHONY_CONTROL: agents -->
+<!-- SYMPHONY_ARGS: $ARGUMENTS -->
+
+Report the injected Symphony agent ledger as a compact table with run, id, status, role, model, and effort. When the host exposes a live agent-listing tool, reconcile live status and metadata before reporting. Preserve `not exposed by host`; never infer model or effort.
+```
+
+Handle `control == "agents"` before automatic run activation. Pass `include_history="--all" in args` to `_agents_context`. The formatter returns active records by default and active plus `run_history` with `--all`; it never mutates state.
+
+- [ ] **Step 5: Update help and skill command references**
+
+Add `/symphony:agents [--all]` to both command lists. State that the default is the active run and `--all` includes historical runs. Require the root to use a live host agent-listing tool when exposed, with the persistent ledger as recovery evidence and honest missing-value fallback.
+
+- [ ] **Step 6: Run focused and full tests**
+
+```bash
+python3 -m unittest discover -s plugins/symphony/tests -v
+claude plugin validate ./plugins/symphony
+```
+
+Expected: all tests PASS and plugin validation succeeds.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add plugins/symphony/commands/agents.md plugins/symphony/commands/help.md plugins/symphony/scripts/symphony_hook.py plugins/symphony/skills/symphony/SKILL.md plugins/symphony/tests/test_symphony_hook.py
+git commit -m "feat: add Symphony agent inspection"
+```
+
+---
+
+### Task 5: Document retention, privacy, fallback, and the skipped version
 
 **Files:**
 - Modify: `README.md`
@@ -452,7 +552,7 @@ git commit -m "docs: release indexed memory in v0.14.0"
 
 ---
 
-### Task 5: Verify, review, push, and observe release completion
+### Task 6: Verify, review, push, and observe release completion
 
 **Files:**
 - Modify only if verification or review finds an in-scope defect.
