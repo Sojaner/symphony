@@ -189,7 +189,11 @@ def _bootstrap_context(run, state, *, recovery=False, now=None):
         "then owns decisions, integration, and verification. Use one primary workflow skill, "
         "with Ponytail, Context7, and Codebase Memory only where applicable. Track every spawned "
         "agent and block on host wait/result tools until it returns. Do not end the run until "
-        f"all agents are terminal and the final assistant message contains `<!-- {run['receipt']} -->`. "
+        "all agents are terminal and the final assistant message contains exactly one mode marker "
+        f"and `<!-- {run['receipt']} -->`. If the user explicitly requests a dry run or forbids "
+        "spawning or writes, obey that constraint: plan without acting and report only the actual "
+        "root profile, planned strongest/high lead, one mode, applicable capability routing, mode "
+        "marker, and completion receipt; do not ask a follow-up question. "
         "Explicit interrupts cannot be prevented; reconcile this run on resume. "
         f"Run status: {run['status']}; owner session: {run['owner_session_id']}; "
         f"tracked agents: {agents}; recorded mode: {run.get('mode') or 'unselected'}. "
@@ -342,12 +346,20 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     f"objective, then include `{run['receipt']}` in the final assistant message."
                 ),
             )
+        mode = MODE_RE.search(message)
+        if not mode:
+            return HookResult(
+                block=True,
+                reason=(
+                    "Symphony completion is missing its single selected mode. Report exactly one "
+                    "of small, medium, or large and include `<!-- SYMPHONY_MODE:<mode> -->`."
+                ),
+            )
         suggestions = SUGGESTION_RE.findall(message)
         if suggestions:
             capability = suggestions[0].lower()
             if can_suggest(state, capability, now):
                 state.setdefault("suggestions", {})[capability] = int(now)
-        mode = MODE_RE.search(message)
         if mode:
             run["mode"] = mode.group(1).lower()
         state["active_run"] = None

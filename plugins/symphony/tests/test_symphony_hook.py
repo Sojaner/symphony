@@ -178,7 +178,10 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertTrue(missing_receipt.block)
 
         complete = self.hook.handle_event(
-            self.event("Stop", last_assistant_message=run["receipt"]),
+            self.event(
+                "Stop",
+                last_assistant_message=f"<!-- SYMPHONY_MODE: medium -->\n{run['receipt']}",
+            ),
             self.data,
             stop_wait_seconds=0,
         )
@@ -203,6 +206,23 @@ class SymphonyHookTests(unittest.TestCase):
 
         self.assertTrue(result.block)
         self.assertIn("background tasks", result.reason)
+
+    def test_completion_without_any_mode_is_blocked(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: dry run"),
+            self.data,
+        )
+        run = self.state()["active_run"]
+
+        result = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=run["receipt"]),
+            self.data,
+            stop_wait_seconds=0,
+        )
+
+        self.assertTrue(result.block)
+        self.assertIn("mode", result.reason)
+        self.assertIsNotNone(self.state()["active_run"])
 
     def test_unrelated_background_task_does_not_block_without_a_run(self):
         result = self.hook.handle_event(
@@ -318,7 +338,7 @@ class SymphonyHookTests(unittest.TestCase):
             self.event(
                 "Stop",
                 last_assistant_message=(
-                    f"{run['receipt']}\nSYMPHONY_SUGGESTED:context7\n"
+                    f"<!-- SYMPHONY_MODE: small -->\n{run['receipt']}\nSYMPHONY_SUGGESTED:context7\n"
                     "SYMPHONY_SUGGESTED:codebase-memory"
                 ),
             ),

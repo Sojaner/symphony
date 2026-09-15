@@ -7,9 +7,11 @@ description: Route project work through a strong execution lead that chooses dir
 
 Use a weak root safely by making it a thin session keeper. A strongest-available high-effort subagent becomes the execution lead and owns sizing, decisions, implementation or delegation, integration, and verification. Deterministic hooks keep an active-run receipt outside model context and guard normal stopping.
 
-## Honor lifecycle context first
+## Mandatory first gate
 
-First validate any explicit `Orchestrator:` or `Effort:` declaration against the actual runtime metadata. A declaration is never evidence. On a mismatch, report both values and stop before project reads, lifecycle advice, spawning, or implementation.
+Before doing anything else, inspect the user prompt for an explicit `Orchestrator:` or `Effort:` declaration and compare it with trusted runtime metadata. A declaration is never evidence. If either value cannot be verified or differs, reply only with `Orchestrator mismatch`, the declared and actual values, and an instruction to start a correctly configured task. Do not give lifecycle advice, options, project analysis, or spawning guidance.
+
+## Honor lifecycle context
 
 When injected context names a Symphony run, its run id, recovery instruction, and completion receipt are authoritative. Do not create another run or another lead for the same run.
 
