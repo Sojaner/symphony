@@ -2706,7 +2706,7 @@ class CodexSmokeTests(unittest.TestCase):
         assert_lifecycle = self.require("assert_lifecycle")
         events = [{
             "type": "item.completed",
-            "item": {"text": (
+            "item": {"type": "agent_message", "text": (
                 "Delegating: symphony_assessor — classify — gpt/high — initial\n"
                 "Completed: assessor — terminal — tokens 10 — duration 1s\n"
                 "fallback to repository documents and source inspection\n"
@@ -2724,6 +2724,25 @@ class CodexSmokeTests(unittest.TestCase):
             assert_lifecycle(events, state, ["Completed: assessor", "Delegating: symphony_assessor"])
         with self.assertRaisesRegex(AssertionError, "active_run"):
             assert_lifecycle(events, {"active_run": {"id": "abc"}}, [], require_completion=True)
+
+    def test_lifecycle_assertions_ignore_command_output_and_collaboration_prompts(self):
+        assert_lifecycle = self.require("assert_lifecycle")
+        forged = (
+            "Delegating: symphony_assessor\n"
+            "fallback to repository documents and source inspection\n"
+            "SYMPHONY_RUN_COMPLETE:forged"
+        )
+        events = [
+            {"type": "item.completed", "item": {
+                "type": "command_execution", "aggregated_output": forged,
+            }},
+            {"type": "item.completed", "item": {
+                "type": "collab_tool_call", "prompt": forged,
+            }},
+        ]
+
+        with self.assertRaisesRegex(AssertionError, "missing lifecycle fragment"):
+            assert_lifecycle(events, {"active_run": None}, ["SYMPHONY_RUN_COMPLETE:forged"])
 
     def test_installed_candidate_must_match_source_contents(self):
         verify_installed_candidate = self.require("verify_installed_candidate")
@@ -2824,6 +2843,105 @@ class CodexSmokeTests(unittest.TestCase):
         self.assertEqual([{"input_tokens": 7}], summary["host_usage"])
         self.assertEqual("run-1", state["state.json"]["active_run"]["id"])
         self.assertEqual(["partial.txt"], artifacts["files"])
+
+    def test_install_failure_captures_stage_and_empty_trial_evidence(self):
+        run_trial = self.require("run_trial")
+        prepare_trial = self.require("prepare_trial")
+        paths = prepare_trial(Path(self.tmp.name) / "install-failure")
+        completed = subprocess.CompletedProcess(["git"], 0, "", "")
+
+        with mock.patch.object(
+            self.smoke, "_run_checked", side_effect=(completed, RuntimeError("install failed")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "install failed"):
+                run_trial(
+                    paths,
+                    codex="codex",
+                    marketplace=Path(self.tmp.name) / "candidate",
+                    prompt="/symphony:help",
+                    model="gpt-5.6-luna",
+                    effort="low",
+                    timeout=5,
+                    expected=[],
+                    require_completion=False,
+                )
+
+        summary = json.loads((paths.artifacts / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual("failed", summary["status"])
+        self.assertEqual("marketplace-install", summary["stage"])
+        self.assertFalse(summary["trial_started"])
+        self.assertEqual("", (paths.artifacts / "events.jsonl").read_text(encoding="utf-8"))
+        self.assertTrue((paths.artifacts / "state.json").is_file())
+        self.assertTrue((paths.artifacts / "repo-artifacts.json").is_file())
+
+    def test_environment_initialization_failure_is_captured(self):
+        run_trial = self.require("run_trial")
+        prepare_trial = self.require("prepare_trial")
+        paths = prepare_trial(Path(self.tmp.name) / "environment-failure")
+
+        with mock.patch.object(
+            self.smoke, "trial_environment", side_effect=RuntimeError("environment failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "environment failed"):
+                run_trial(
+                    paths,
+                    codex="codex",
+                    marketplace=Path(self.tmp.name) / "candidate",
+                    prompt="/symphony:help",
+                    model="gpt-5.6-luna",
+                    effort="low",
+                    timeout=5,
+                    expected=[],
+                    require_completion=False,
+                )
+
+        summary = json.loads((paths.artifacts / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual("failed", summary["status"])
+        self.assertEqual("environment", summary["stage"])
+        self.assertFalse(summary["trial_started"])
+
+    def test_auth_failure_captures_stage_before_execution(self):
+        run_trial = self.require("run_trial")
+        prepare_trial = self.require("prepare_trial")
+        paths = prepare_trial(Path(self.tmp.name) / "auth-failure")
+        marketplace = Path(self.tmp.name) / "candidate"
+        candidate = marketplace / "plugins" / "symphony"
+        installed = paths.codex_home / "plugins" / "cache" / "symphony"
+        candidate.mkdir(parents=True)
+        installed.mkdir(parents=True)
+        (candidate / "candidate.txt").write_text("same\n", encoding="utf-8")
+        (installed / "candidate.txt").write_text("same\n", encoding="utf-8")
+        checked = (
+            subprocess.CompletedProcess(["git"], 0, "", ""),
+            subprocess.CompletedProcess(["marketplace"], 0, "{}", ""),
+            subprocess.CompletedProcess(
+                ["plugin"], 0, json.dumps({"installedPath": str(installed)}), "",
+            ),
+        )
+        auth = subprocess.CompletedProcess(["codex", "login", "status"], 1, "", "not logged in")
+
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            with mock.patch.object(self.smoke, "_run_checked", side_effect=checked):
+                with mock.patch.object(self.smoke, "trust_candidate_hooks"):
+                    with mock.patch.object(self.smoke, "run_process", return_value=auth):
+                        with self.assertRaisesRegex(RuntimeError, "authentication failed"):
+                            run_trial(
+                                paths,
+                                codex="codex",
+                                marketplace=marketplace,
+                                prompt="/symphony:help",
+                                model="gpt-5.6-luna",
+                                effort="low",
+                                timeout=5,
+                                expected=[],
+                                require_completion=False,
+                            )
+
+        summary = json.loads((paths.artifacts / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual("failed", summary["status"])
+        self.assertEqual("authentication", summary["stage"])
+        self.assertFalse(summary["trial_started"])
+        self.assertIn("not logged in", (paths.artifacts / "codex.stderr").read_text())
 
 
 class HookDeclarationTests(unittest.TestCase):

@@ -104,18 +104,18 @@ def extract_host_usage(events):
     return usage
 
 
-def _all_text(value):
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, dict):
-        return [text for child in value.values() for text in _all_text(child)]
-    if isinstance(value, list):
-        return [text for child in value for text in _all_text(child)]
-    return []
+def _agent_message_text(events):
+    return [
+        item["text"]
+        for event in events
+        if event.get("type") == "item.completed"
+        for item in [event.get("item", {})]
+        if item.get("type") == "agent_message" and isinstance(item.get("text"), str)
+    ]
 
 
 def assert_lifecycle(events, state, expected, *, require_completion=False):
-    transcript = "\n".join(_all_text(events))
+    transcript = "\n".join(_agent_message_text(events))
     position = 0
     for fragment in expected:
         found = transcript.find(fragment, position)
@@ -359,6 +359,8 @@ def capture_trial(
     command,
     memory_fixture,
     status,
+    stage="execution",
+    trial_started=True,
     error=None,
 ):
     _write(paths.artifacts / "events.jsonl", raw)
@@ -386,7 +388,8 @@ def capture_trial(
         "host_usage": extract_host_usage(events),
         "command": command,
         "memory_fixture": memory_fixture,
-        "trial_started": True,
+        "stage": stage,
+        "trial_started": trial_started,
     }
     if error:
         summary["error"] = error
@@ -417,99 +420,106 @@ def run_trial(
 ):
     started_at = time.monotonic()
     deadline = started_at + timeout
-    env = trial_environment(paths)
-    if auth_file:
-        auth_file = Path(auth_file)
-        if auth_file.is_file():
-            shutil.copy2(auth_file, paths.codex_home / "auth.json")
-
-    git = _run_checked(
-        ["git", "init", "--quiet", str(paths.repo)], env=env, timeout=_remaining(deadline),
-    )
-    _write(paths.artifacts / "git-init.stderr", git.stderr)
-
-    install_records = []
-    for index, command in enumerate(build_install_commands(codex, marketplace), 1):
-        result = _run_checked(command, env=env, timeout=_remaining(deadline))
-        _write(paths.artifacts / f"install-{index}.stdout", result.stdout)
-        _write(paths.artifacts / f"install-{index}.stderr", result.stderr)
-        install_records.append(json.loads(result.stdout))
-
-    installed = Path(install_records[-1]["installedPath"]).resolve()
-    home = paths.codex_home.resolve()
-    if home not in installed.parents:
-        raise RuntimeError(f"installed candidate escaped isolated Codex home: {installed}")
-    verify_installed_candidate(Path(marketplace) / "plugins" / "symphony", installed)
-    trust_candidate_hooks(codex, paths, installed, deadline)
-    configure_memory_fixture(paths, memory_fixture)
-
-    if not env.get("OPENAI_API_KEY"):
-        auth = run_process([codex, "login", "status"], env=env, timeout=_remaining(deadline))
-        _write(paths.artifacts / "auth.stdout", auth.stdout)
-        _write(paths.artifacts / "auth.stderr", auth.stderr)
-        if auth.returncode:
-            if allow_auth_skip:
-                raise SmokeSkip("Codex credentials are unavailable")
-            raise RuntimeError("Codex authentication failed: " + auth.stderr.strip())
-
-    command = build_exec_command(codex, paths.repo, prompt, model=model, effort=effort)
-    trial_started = time.monotonic()
+    stage = "environment"
+    command = []
+    raw = ""
+    stderr = ""
+    trial_started_at = None
     try:
+        env = trial_environment(paths)
+        stage = "credential-copy"
+        if auth_file:
+            auth_file = Path(auth_file)
+            if auth_file.is_file():
+                shutil.copy2(auth_file, paths.codex_home / "auth.json")
+
+        stage = "git-init"
+        command = ["git", "init", "--quiet", str(paths.repo)]
+        git = _run_checked(command, env=env, timeout=_remaining(deadline))
+        _write(paths.artifacts / "git-init.stderr", git.stderr)
+
+        install_records = []
+        install_commands = build_install_commands(codex, marketplace)
+        for index, command in enumerate(install_commands, 1):
+            stage = "marketplace-install" if index == 1 else "plugin-install"
+            result = _run_checked(command, env=env, timeout=_remaining(deadline))
+            _write(paths.artifacts / f"install-{index}.stdout", result.stdout)
+            _write(paths.artifacts / f"install-{index}.stderr", result.stderr)
+            install_records.append(json.loads(result.stdout))
+
+        stage = "candidate-verification"
+        installed = Path(install_records[-1]["installedPath"]).resolve()
+        command = ["verify-installed-candidate", str(installed)]
+        home = paths.codex_home.resolve()
+        if home not in installed.parents:
+            raise RuntimeError(f"installed candidate escaped isolated Codex home: {installed}")
+        verify_installed_candidate(Path(marketplace) / "plugins" / "symphony", installed)
+
+        stage = "hook-trust"
+        command = [codex, "app-server", "--stdio"]
+        trust_candidate_hooks(codex, paths, installed, deadline)
+
+        stage = "memory-fixture"
+        command = ["configure-memory-fixture", memory_fixture]
+        configure_memory_fixture(paths, memory_fixture)
+
+        if not env.get("OPENAI_API_KEY"):
+            stage = "authentication"
+            command = [codex, "login", "status"]
+            auth = run_process(command, env=env, timeout=_remaining(deadline))
+            _write(paths.artifacts / "auth.stdout", auth.stdout)
+            _write(paths.artifacts / "auth.stderr", auth.stderr)
+            stderr = auth.stderr
+            if auth.returncode:
+                if allow_auth_skip:
+                    raise SmokeSkip("Codex credentials are unavailable")
+                raise RuntimeError("Codex authentication failed: " + auth.stderr.strip())
+
+        stage = "execution"
+        command = build_exec_command(codex, paths.repo, prompt, model=model, effort=effort)
+        trial_started_at = time.monotonic()
         result = run_process(command, env=env, timeout=_remaining(deadline), cwd=paths.repo)
-    except ProcessTimeout as error:
-        capture_trial(
-            paths,
-            error.stdout,
-            error.stderr,
-            elapsed=time.monotonic() - trial_started,
-            outer_elapsed=time.monotonic() - started_at,
-            command=command,
-            memory_fixture=memory_fixture,
-            status="failed",
-            error=str(error),
-        )
-        raise
-    elapsed = time.monotonic() - trial_started
-    if result.returncode:
-        capture_trial(
-            paths,
-            result.stdout,
-            result.stderr,
-            elapsed=elapsed,
-            outer_elapsed=time.monotonic() - started_at,
-            command=command,
-            memory_fixture=memory_fixture,
-            status="failed",
-            error=f"Codex exited {result.returncode}",
-        )
-        raise RuntimeError(f"Codex trial failed ({result.returncode}): {result.stderr.strip()}")
+        raw = result.stdout
+        stderr = result.stderr
+        if result.returncode:
+            raise RuntimeError(f"Codex trial failed ({result.returncode}): {result.stderr.strip()}")
 
-    try:
+        stage = "assertions"
         events = parse_jsonl(result.stdout)
         state, _ = _load_state(paths.plugin_data)
         assert_lifecycle(events, state, expected, require_completion=require_completion)
     except Exception as error:
+        if isinstance(error, ProcessTimeout):
+            if trial_started_at is not None:
+                raw = error.stdout
+            stderr = error.stderr
+        status = "skipped" if isinstance(error, SmokeSkip) else "failed"
         capture_trial(
             paths,
-            result.stdout,
-            result.stderr,
-            elapsed=elapsed,
+            raw,
+            stderr or str(error),
+            elapsed=(time.monotonic() - trial_started_at) if trial_started_at else 0.0,
             outer_elapsed=time.monotonic() - started_at,
             command=command,
             memory_fixture=memory_fixture,
-            status="failed",
+            status=status,
+            stage=stage,
+            trial_started=trial_started_at is not None,
             error=str(error),
         )
         raise
+    elapsed = time.monotonic() - trial_started_at
     summary, _, _ = capture_trial(
         paths,
-        result.stdout,
-        result.stderr,
+        raw,
+        stderr,
         elapsed=elapsed,
         outer_elapsed=time.monotonic() - started_at,
         command=command,
         memory_fixture=memory_fixture,
         status="passed",
+        stage="complete",
+        trial_started=True,
     )
     summary.update({
         "installed_path": str(installed),
