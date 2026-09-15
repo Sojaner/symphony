@@ -1944,7 +1944,7 @@ Completed: symphony_lead — planned
         self.assertIsNone(re.search(pattern, adversarial))
         self.assertIsNone(re.search(pattern, implementation_adversarial))
 
-    def test_documentation_and_manifests_describe_memory_release(self):
+    def test_documentation_and_manifests_describe_assessment_release(self):
         readme = (PLUGIN_ROOT.parents[1] / "README.md").read_text(encoding="utf-8")
         help_text = (PLUGIN_ROOT / "commands" / "help.md").read_text(encoding="utf-8")
         for text in (readme, help_text):
@@ -1954,11 +1954,30 @@ Completed: symphony_lead — planned
                 "Manually ignoring `.symphony/memory/` disables indexed history until the ignore policy changes.",
                 text,
             )
+            for required in (
+                "/symphony:assess [small|medium|large|auto]",
+                "/symphony:assess large",
+                "project profile",
+                "per-run execution mode",
+                "long-running large-profile project may still have a small task",
+                "owner prompt, final worker wave, interrupt, or resume",
+                "separate read-only assessor",
+                "Delegating:",
+                "Completed:",
+                "authoritative host observations only",
+                "not exposed by host",
+                "Claude synchronous Agent usage may be exposed",
+                "background Agent usage and Codex usage remain `not exposed by host`",
+                "No hard token or cost budget is promised.",
+            ):
+                self.assertIn(required, text)
         versions = {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.14.0"}, versions)
+        self.assertEqual({"0.15.0"}, versions)
+        for relative in (".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"):
+            self.assertNotIn("0.15.0", (PLUGIN_ROOT.parents[1] / relative).read_text(encoding="utf-8"))
 
     def test_agent_inspection_command_and_live_host_contract(self):
         command = (PLUGIN_ROOT / "commands" / "agents.md").read_text(encoding="utf-8")

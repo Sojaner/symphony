@@ -18,6 +18,12 @@ Each run selects exactly one mode:
 
 Mode is selected per run. Enabling Symphony never permanently classifies a project as small, medium, or large.
 
+## Assessment and reassessment
+
+`/symphony:assess [small|medium|large|auto]` requests reassessment or sets a persistent project profile. Use `/symphony:assess large` for this repository when its long-running shape calls for that profile; `auto` reverses the override. A project profile is not a per-run execution mode: a long-running large-profile project may still have a small task.
+
+Each new or explicitly reassessed run first uses a separate read-only assessor, then a mode-appropriate execution lead. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Before and after each spawned role, Symphony shows `Delegating:` and `Completed:` records so the routing is visible.
+
 ## Persistent project enablement
 
 Symphony can remain enabled for a working tree across completed tasks, new sessions, resumes, and context compaction. Project policy and active-run state are stored in the host's writable plugin-data directory, not in the repository.
@@ -61,6 +67,7 @@ Start a new session after installation so Claude Code loads the commands, skill,
 /symphony:enable [task]
 /symphony:disable
 /symphony:start <task>
+/symphony:assess [small|medium|large|auto]
 /symphony:status
 /symphony:agents [--all]
 /symphony:stop
@@ -71,6 +78,7 @@ Start a new session after installation so Claude Code loads the commands, skill,
 - `enable` persistently enables the current working tree and optionally starts a task.
 - `disable` prevents future automatic activation and gracefully stops an active run.
 - `start` starts one guarded run without changing project enablement.
+- `assess` requests reassessment; `small`, `medium`, or `large` set a persistent project profile, while `auto` clears it.
 - `status` reads policy and run state without changing either.
 - `agents` lists the active run's subagents, including terminal agents; `--all` also includes retained historical runs. Model or effort that the host does not provide is shown as `not exposed by host`.
 - `stop` ends the active run but preserves project enablement.
@@ -102,19 +110,23 @@ The hook layer runs before model reasoning and at agent lifecycle events:
 
 Neither Codex nor Claude Code lets a plugin prevent every explicit interrupt or host-enforced Stop override. Symphony therefore guarantees normal-Stop protection and recoverable state, not an uninterruptible process.
 
-## Strong-lead bootstrap
+## Assessment and execution bootstrap
 
-The hook gives the root one narrow instruction: spawn a strongest-available general reasoning model at high effort with no inherited turns. That child becomes `symphony_lead` and receives:
+The hook has the root first spawn a separate read-only assessor: the strongest available general reasoning model at high effort with no inherited turns. After its authorized assessment receipt, the root spawns a separate mode-appropriate `symphony_lead`. Both receive:
 
 - the task outcome and acceptance criteria;
 - the actual root model and effort;
 - live child models, efforts, and concurrency;
 - effective skills and tools;
 - repository instructions and current worktree state;
-- the run record and exact completion receipt;
+- the run record and exact assessment/completion receipts;
 - the bundled model- and capability-routing references.
 
-For a small task, this same child continues directly as the implementer. Symphony does not pay for a separate classifier and executor.
+For a small task, the selected lead continues directly as the implementer. The assessor never implements.
+
+## Usage visibility
+
+Usage is authoritative host observations only; Symphony never estimates usage or cost. Claude synchronous Agent usage may be exposed, but background Agent usage and Codex usage remain `not exposed by host`. Token fields describe the final request only; duration and tool count describe the agent run. No hard token or cost budget is promised.
 
 ## Workflow and evidence capabilities
 
