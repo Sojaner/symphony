@@ -29,6 +29,8 @@ The user commands are:
 
 For `/symphony:agents`, the root must use a live host agent-listing tool when exposed and prefer its status and metadata over lifecycle observations. Use the persistent ledger as recovery evidence and as fallback for fields the live tool does not expose. Report run id, agent id, status, role, model, and effort; absent role, model, or effort is exactly `not exposed by host`. Never infer those values. Report and return without enabling Symphony, starting a run, spawning a lead, or changing agent status. Retain metadata only, never prompts, transcripts, or worker output. A force-stopped run may still contain agents last observed as active.
 
+End only that inspection response with the exact injected `SYMPHONY_AGENTS_INSPECTED` receipt on its own final line. The Stop hook then preserves the run. Never reuse this receipt for later project work or emit a run-completion receipt for inspection.
+
 ## Bootstrap the strong execution lead
 
 The root may use any model or effort. Before project work, it must:

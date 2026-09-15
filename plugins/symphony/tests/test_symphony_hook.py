@@ -195,6 +195,125 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertEqual("{broken", path.read_text(encoding="utf-8"))
         self.assertFalse(list(path.parent.glob("*.corrupt.*")))
 
+    def test_inspection_response_stop_preserves_active_and_stopping_runs(self):
+        for stopping in (False, True):
+            for args in ("", "--all"):
+                with self.subTest(stopping=stopping, args=args):
+                    self.hook.handle_event(
+                        self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
+                        self.data,
+                    )
+                    run = self.state()["active_run"]
+                    if not stopping:
+                        self.hook.handle_event(self.event("SubagentStart", agent_id="worker-1"), self.data)
+                    if stopping:
+                        self.hook.handle_event(
+                            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: stop"), self.data,
+                        )
+                    path = self.hook.project_state_path(self.data, str(self.project))
+                    before = path.read_bytes()
+                    listing = self.hook.handle_event(
+                        self.event("UserPromptSubmit", prompt=f"SYMPHONY_CONTROL: agents\nSYMPHONY_ARGS: {args}"),
+                        self.data,
+                    )
+                    receipt = f"<!-- SYMPHONY_AGENTS_INSPECTED:{run['id']} -->"
+                    self.assertIn(receipt, listing.context)
+                    result = self.hook.handle_event(
+                        self.event("Stop", last_assistant_message=f"Inspection report.\n{receipt}",
+                                   background_tasks=[{"id": "background-1", "status": "running"}]),
+                        self.data, stop_wait_seconds=0,
+                    )
+                    self.assertFalse(result.block)
+                    self.assertEqual(before, path.read_bytes())
+                    normal = self.hook.handle_event(
+                        self.event("Stop", last_assistant_message="ordinary response"),
+                        self.data, stop_wait_seconds=0,
+                    )
+                    self.assertEqual(not stopping, normal.block)
+                    self.hook.handle_event(
+                        self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: stop\nSYMPHONY_ARGS: --force"),
+                        self.data,
+                    )
+
+    def test_malformed_agent_ledgers_allow_listing_and_force_stop(self):
+        for malformed in (None, "broken", 42, [None, "bad", {}], {"worker-1": None}):
+            with self.subTest(malformed=malformed):
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
+                    self.data,
+                )
+                state = self.state()
+                state["active_run"]["agents"] = ["worker-1"]
+                state["active_run"]["agent_records"] = malformed
+                state["run_history"] = malformed
+                self.hook.write_project_state(self.data, state)
+                path = self.hook.project_state_path(self.data, str(self.project))
+                before = path.read_bytes()
+                result = self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: agents\nSYMPHONY_ARGS: --all"),
+                    self.data,
+                )
+                self.assertIn("worker-1", result.context)
+                self.assertEqual(before, path.read_bytes())
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: stop\nSYMPHONY_ARGS: --force"),
+                    self.data,
+                )
+                self.assertIsNone(self.state()["active_run"])
+                self.assertEqual("force-stopped", self.state()["run_history"][-1]["status"])
+
+    def test_mixed_history_preserves_valid_agents_and_ignores_malformed_records(self):
+        state = self.state()
+        state["run_history"] = [None, {}, {
+            "id": "old-run", "status": "completed", "agent_records": [None, {}, {
+                "id": "old-worker", "status": "terminal", "model": "gpt-6-astra",
+                "role": "reviewer", "effort": "high", "started_at": 1, "stopped_at": 2,
+            }],
+        }, {"id": "null-records", "status": "stopped", "agent_records": None}]
+        self.hook.write_project_state(self.data, state)
+        path = self.hook.project_state_path(self.data, str(self.project))
+        before = path.read_bytes()
+        result = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: agents\nSYMPHONY_ARGS: --all"), self.data,
+        )
+        self.assertIn("old-worker", result.context)
+        self.assertIn("gpt-6-astra", result.context)
+        self.assertIn("null-records", result.context)
+        self.assertEqual(before, path.read_bytes())
+
+    def test_inspection_receipt_must_match_run_and_end_response(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"), self.data,
+        )
+        run = self.state()["active_run"]
+        for message in ("<!-- SYMPHONY_AGENTS_INSPECTED:none -->",
+                        f"<!-- SYMPHONY_AGENTS_INSPECTED:{run['id']} -->\nNow doing project work."):
+            result = self.hook.handle_event(
+                self.event("Stop", last_assistant_message=message), self.data, stop_wait_seconds=0,
+            )
+            self.assertTrue(result.block)
+        self.assertEqual(run, self.state()["active_run"])
+
+    def test_stop_event_merges_exposed_metadata_without_erasing_known_values(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"), self.data,
+        )
+        self.hook.handle_event(self.event("SubagentStart", agent_id="worker-1"), self.data)
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="worker-1", agent_type="reviewer",
+                       model="gpt-6-astra", reasoning_effort="high"), self.data,
+        )
+        record = self.state()["active_run"]["agent_records"]["worker-1"]
+        self.assertEqual(("reviewer", "gpt-6-astra", "high"),
+                         (record["role"], record["model"], record["effort"]))
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="worker-1", agent_type=None,
+                       model="not exposed by host", reasoning_effort=""), self.data,
+        )
+        record = self.state()["active_run"]["agent_records"]["worker-1"]
+        self.assertEqual(("reviewer", "gpt-6-astra", "high"),
+                         (record["role"], record["model"], record["effort"]))
+
     def test_new_run_exposes_memory_candidates_without_creating_documents(self):
         result = self.hook.handle_event(
             self.event(

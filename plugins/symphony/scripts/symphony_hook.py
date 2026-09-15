@@ -22,6 +22,7 @@ TASK_RE = re.compile(r"SYMPHONY_TASK:\s*([^\n]*)", re.IGNORECASE)
 ARGS_RE = re.compile(r"SYMPHONY_ARGS:\s*([^\n]*)", re.IGNORECASE)
 SUGGESTION_RE = re.compile(r"SYMPHONY_SUGGESTED:([a-z0-9-]+)", re.IGNORECASE)
 MODE_RE = re.compile(r"SYMPHONY_MODE:\s*(small|medium|large)", re.IGNORECASE)
+INSPECTION_RE = re.compile(r"(?:^|\n)<!-- SYMPHONY_AGENTS_INSPECTED:([a-f0-9]+|none) -->\s*\Z")
 MEMORY_CHECKPOINT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])SYMPHONY_MEMORY_CHECKPOINT:([a-f0-9]+):codebase-memory-mcp(?![A-Za-z0-9_-])",
     re.IGNORECASE,
@@ -135,6 +136,11 @@ def read_project_state(data_dir, project_root, *, read_only=False):
         state.setdefault("enabled", False)
         state.setdefault("corrupt", False)
         state.setdefault("warning", None)
+        state["run_history"] = _run_history(state)
+        if isinstance(state["active_run"], dict):
+            state["active_run"]["agent_records"] = {
+                record["id"]: record for record in _agent_records(state["active_run"])
+            }
         return state
     except (OSError, ValueError, json.JSONDecodeError) as error:
         if read_only:
@@ -283,16 +289,42 @@ def _agent_record(payload, started_at=None):
 
 
 def _agent_records(run):
-    records = dict(run.get("agent_records") or {})
-    for agent_id in run.get("agents", []):
-        records.setdefault(agent_id, _agent_record({"agent_id": agent_id}))
+    raw = run.get("agent_records")
+    values = raw.values() if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+    records = {}
+    for value in values:
+        if not isinstance(value, dict) or not isinstance(value.get("id"), str) or not value["id"]:
+            continue
+        if value.get("status") not in ("active", "terminal"):
+            continue
+        record = {field: value.get(field) for field in _agent_record({"agent_id": value["id"]})}
+        for field in ("role", "model", "effort"):
+            if not isinstance(record[field], str) or not record[field]:
+                record[field] = "not exposed by host"
+        records[record["id"]] = record
+    agents = run.get("agents")
+    for agent_id in agents if isinstance(agents, list) else []:
+        if isinstance(agent_id, str) and agent_id:
+            records.setdefault(agent_id, _agent_record({"agent_id": agent_id}))
     return list(records.values())
+
+
+def _run_history(state):
+    history = state.get("run_history")
+    if not isinstance(history, list):
+        return []
+    return [
+        {**run, "agent_records": _agent_records(run)} for run in history
+        if isinstance(run, dict) and isinstance(run.get("id"), str) and run["id"]
+        and isinstance(run.get("status"), str)
+    ]
 
 
 def _archive_run(state, status, now):
     run = state.get("active_run")
     if run:
-        state.setdefault("run_history", []).append({
+        state["run_history"] = _run_history(state)
+        state["run_history"].append({
             "id": run["id"],
             "objective": run["objective"],
             "mode": run.get("mode"),
@@ -312,7 +344,7 @@ def _agents_context(state, include_history=False):
         lines.append("No active Symphony run.")
     runs = [(run, _agent_records(run))] if run else []
     if include_history:
-        runs.extend((past, past.get("agent_records", [])) for past in state.get("run_history", []))
+        runs.extend((past, past["agent_records"]) for past in _run_history(state))
     for item, records in runs:
         lines.append(f"Run {item['id']} ({item['status']}):")
         if not records:
@@ -344,7 +376,13 @@ def _handle_prompt(payload, state, now):
     if control == "status":
         return HookResult(context=_status_context(state))
     if control == "agents":
-        return HookResult(context=_agents_context(state, include_history="--all" in args))
+        run_id = (state.get("active_run") or {}).get("id", "none")
+        return HookResult(context=(
+            _agents_context(state, include_history="--all" in args)
+            + "\nEnd only this inspection response with the following receipt; do not reuse it "
+            "for later project work or report run completion:\n"
+            f"<!-- SYMPHONY_AGENTS_INSPECTED:{run_id} -->"
+        ))
     if control == "enable":
         state["enabled"] = True
         if not task:
@@ -405,7 +443,10 @@ def _handle_prompt(payload, state, now):
 
 
 def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
-    initial_state = read_project_state(data_dir, project_root)
+    inspection = INSPECTION_RE.search(payload.get("last_assistant_message") or "")
+    initial_state = read_project_state(data_dir, project_root, read_only=bool(inspection))
+    if inspection and inspection.group(1) == (initial_state.get("active_run") or {}).get("id", "none"):
+        return HookResult()
     if initial_state.get("corrupt"):
         return HookResult(block=True, reason="Symphony state is corrupt; use /symphony:stop --force to recover.")
     if not initial_state.get("active_run"):
@@ -552,6 +593,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
             if run and agent_id:
                 run["agents"] = sorted(set(run.get("agents", [])) - {agent_id})
                 record = run.setdefault("agent_records", {}).setdefault(agent_id, _agent_record(payload))
+                exposed = _agent_record(payload)
+                for field in ("role", "model", "effort"):
+                    if isinstance(exposed[field], str) and exposed[field] != "not exposed by host":
+                        record[field] = exposed[field]
                 record["status"] = "terminal"
                 record["stopped_at"] = current
                 run["last_event"] = event
