@@ -683,7 +683,10 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             return HookResult()
         message = payload.get("last_assistant_message") or ""
         memory_changed = _record_memory_receipt(run, message, now)
-        assessment_changed = _record_assessment_receipt(state, run, message, now)
+        assessment_changed = (
+            _record_assessment_receipt(state, run, message, now)
+            if payload.get("session_id") == run.get("owner_session_id") else False
+        )
         if background_tasks:
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
@@ -824,6 +827,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 run = owners[0]
                 records = {record["id"]: record for record in _agent_records(run)}
                 record = records[agent_id]
+                was_active = record["status"] == "active"
                 exposed = _agent_record(payload)
                 for field in ("role", "model", "effort"):
                     if isinstance(exposed[field], str) and exposed[field] != "not exposed by host":
@@ -841,7 +845,11 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     _record_assessment_receipt(
                         state, run, payload.get("last_assistant_message"), current, agent_id,
                     )
-                    if agent_id not in {run.get("lead_agent_id"), run.get("assessor_agent_id")} and not _has_active_non_lead_agent(run):
+                    if (
+                        was_active
+                        and agent_id not in {run.get("lead_agent_id"), run.get("assessor_agent_id")}
+                        and not _has_active_non_lead_agent(run)
+                    ):
                         run["assessment_due"] = True
         elif event == "Interrupt":
             run = state.get("active_run")

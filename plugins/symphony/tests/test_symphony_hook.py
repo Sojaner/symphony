@@ -1386,6 +1386,60 @@ class SymphonyHookTests(unittest.TestCase):
         self.hook.handle_event(self.event("SubagentStop", agent_id="assessor"), self.data, now=1_015)
         self.assertFalse(self.state()["active_run"]["assessment_due"])
 
+    def test_foreign_stop_cannot_relay_assessment_receipt(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data, now=1_000,
+        )
+        run = self.state()["active_run"]
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:large:medium\n"
+            "SYMPHONY_ASSESSMENT_REASON:Foreign session must not update this run"
+        )
+
+        self.hook.handle_event(
+            self.event("Stop", session_id="foreign-session", last_assistant_message=receipt),
+            self.data, now=1_001, stop_wait_seconds=0,
+        )
+
+        state = self.state()
+        self.assertEqual({
+            "profile": None, "source": None, "revision": 0, "reason": None, "assessed_at": None,
+        }, state["assessment"])
+        self.assertEqual((None, 0, True, []), (
+            state["active_run"]["mode"], state["active_run"]["mode_revision"],
+            state["active_run"]["assessment_due"], state["active_run"]["mode_history"],
+        ))
+
+    def test_replayed_worker_stop_does_not_retrigger_reassessment(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data, now=1_000,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="lead", agent_type="symphony_lead"), self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor", agent_type="symphony_assessor"), self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="worker", agent_type="worker"), self.data,
+        )
+        state = self.state()
+        run = state["active_run"]
+        receipt = f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\nSYMPHONY_ASSESSMENT_REASON:Routine task"
+        self.assertTrue(self.hook._record_assessment_receipt(state, run, receipt, 1_001, "assessor"))
+        self.hook.write_project_state(self.data, state, now=1_001)
+
+        self.hook.handle_event(self.event("SubagentStop", agent_id="worker"), self.data, now=1_002)
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
+        state = self.state()
+        self.assertTrue(self.hook._record_assessment_receipt(
+            state, state["active_run"], receipt, 1_003, "assessor",
+        ))
+        self.hook.write_project_state(self.data, state, now=1_003)
+
+        self.hook.handle_event(self.event("SubagentStop", agent_id="worker"), self.data, now=1_004)
+        self.assertFalse(self.state()["active_run"]["assessment_due"])
+
     def test_suggestion_receipt_sets_thirty_day_cooldown(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
