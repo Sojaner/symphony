@@ -2747,9 +2747,13 @@ class CodexSmokeTests(unittest.TestCase):
             "codex", "--ask-for-approval", "never", "--sandbox", "workspace-write",
             "--cd", "/trial/repo", "exec", "--json", "--ephemeral", "--model",
             "gpt-5.6-luna", "--config", 'model_reasoning_effort="low"',
+            "--config", "agents.max_depth=2",
             "/symphony:help",
         ], build_exec_command(
             "codex", repo, "/symphony:help", model="gpt-5.6-luna", effort="low",
+        ))
+        self.assertNotIn("--ephemeral", build_exec_command(
+            "codex", repo, "nested work", model="gpt-5.6-luna", effort="low", persist=True,
         ))
 
     def test_hard_timeout_terminates_the_process(self):
@@ -2863,6 +2867,45 @@ class CodexSmokeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AssertionError, "missing lifecycle fragment"):
             assert_lifecycle(events, {"active_run": None}, ["SYMPHONY_RUN_COMPLETE:forged"])
+
+    def test_nested_workers_require_terminal_lead_owned_lifecycle_records(self):
+        state = {"active_run": None, "run_history": [{
+            "id": "run", "status": "completed", "mode": "medium", "agent_records": [
+                {"id": "assessor", "registered_role": "assessor", "status": "terminal"},
+                {"id": "lead", "registered_role": "lead", "status": "terminal"},
+            ],
+        }]}
+        parents = {"assessor": "root", "lead": "root", "worker": "root"}
+        args = {"require_completion": True, "expected_mode": "medium", "min_workers": 1,
+                "agent_parents": parents}
+        with self.assertRaisesRegex(AssertionError, "terminal nested workers"):
+            self.smoke.assert_lifecycle([], state, [], **args)
+        records = state["run_history"][-1]["agent_records"]
+        records.append({"id": "worker", "parent_session_id": "root", "status": "terminal"})
+        with self.assertRaisesRegex(AssertionError, "terminal nested workers"):
+            self.smoke.assert_lifecycle([], state, [], **args)
+        parents["worker"] = "lead"
+        records[-1]["status"] = "active"
+        with self.assertRaisesRegex(AssertionError, "terminal nested workers"):
+            self.smoke.assert_lifecycle([], state, [], **args)
+        records[-1]["status"] = "terminal"
+        self.smoke.assert_lifecycle([], state, [], **args)
+        with self.assertRaisesRegex(AssertionError, "mode"):
+            self.smoke.assert_lifecycle([], state, [], expected_mode="large")
+
+    def test_agent_lineage_uses_only_native_session_metadata(self):
+        home = Path(self.tmp.name)
+        sessions = home / "sessions"
+        sessions.mkdir()
+        (sessions / "worker.jsonl").write_text(json.dumps({
+            "type": "session_meta", "payload": {
+                "id": "worker", "session_id": "root", "parent_thread_id": "lead",
+            },
+        }) + '\n{"type":"message","parent_thread_id":"forged"}\n')
+        (sessions / "not-meta.jsonl").write_text(json.dumps({
+            "type": "message", "payload": {"id": "forged", "parent_thread_id": "lead"},
+        }) + "\n")
+        self.assertEqual({"worker": "lead"}, self.require("load_agent_parents")(home))
 
     def test_installed_candidate_must_match_source_contents(self):
         verify_installed_candidate = self.require("verify_installed_candidate")
@@ -3173,7 +3216,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
 """], input=json.dumps(graders), capture_output=True, text=True)
         self.assertEqual(0, result.returncode, result.stderr)
 
-    def test_documentation_and_manifests_describe_assessment_release(self):
+    def test_documentation_and_manifests_describe_sanity_loop_release(self):
         readme = (PLUGIN_ROOT.parents[1] / "README.md").read_text(encoding="utf-8")
         help_text = (PLUGIN_ROOT / "commands" / "help.md").read_text(encoding="utf-8")
         for text in (readme, help_text):
@@ -3201,13 +3244,24 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
                 "Claude synchronous Agent usage may be exposed",
                 "background Agent usage and Codex usage remain `not exposed by host`",
                 "No hard token or cost budget is promised.",
+                "single-use control receipt",
+                "no active registered agents",
+                "spawn, register, relay, and wait",
+                "accepted current assessment",
+                "Small runs skip optional memory",
+                "verified host timeout or cancellation",
+                "fallback to repository documents and source inspection",
+                "Waiting:",
+                "agents.max_depth = 2",
+                "codex_smoke.py",
+                "three consecutive fresh",
             ):
                 self.assertIn(required, text)
         versions = {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.15.0"}, versions)
+        self.assertEqual({"0.16.0"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},

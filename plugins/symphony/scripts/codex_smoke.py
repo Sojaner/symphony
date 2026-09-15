@@ -38,11 +38,12 @@ def build_install_commands(codex, marketplace):
     ]
 
 
-def build_exec_command(codex, repo, prompt, *, model, effort):
+def build_exec_command(codex, repo, prompt, *, model, effort, persist=False):
     return [
         codex, "--ask-for-approval", "never", "--sandbox", "workspace-write",
-        "--cd", str(repo), "exec", "--json", "--ephemeral",
-        "--model", model, "--config", f'model_reasoning_effort="{effort}"', prompt,
+        "--cd", str(repo), "exec", "--json", *([] if persist else ["--ephemeral"]),
+        "--model", model, "--config", f'model_reasoning_effort="{effort}"',
+        "--config", "agents.max_depth=2", prompt,
     ]
 
 
@@ -114,7 +115,10 @@ def _agent_message_text(events):
     ]
 
 
-def assert_lifecycle(events, state, expected, *, require_completion=False):
+def assert_lifecycle(
+    events, state, expected, *, require_completion=False, expected_mode=None, min_workers=0,
+    agent_parents=None,
+):
     transcript = "\n".join(_agent_message_text(events))
     position = 0
     for fragment in expected:
@@ -126,6 +130,37 @@ def assert_lifecycle(events, state, expected, *, require_completion=False):
         position = found + len(fragment)
     if require_completion and state.get("active_run", object()) is not None:
         raise AssertionError("lifecycle state still has an active_run")
+    if expected_mode or min_workers:
+        history = state.get("run_history", [])
+        if not history or history[-1].get("status") != "completed":
+            raise AssertionError("missing completed run history")
+        run = history[-1]
+        if expected_mode and run.get("mode") != expected_mode:
+            raise AssertionError(f"expected mode {expected_mode}, got {run.get('mode')}")
+        records = run.get("agent_records", [])
+        leads = {record["id"] for record in records
+                 if record.get("registered_role") == "lead" and record.get("status") == "terminal"}
+        workers = {record["id"] for record in records
+                   if (agent_parents or {}).get(record["id"]) in leads
+                   and record.get("status") == "terminal"}
+        if len(workers) < min_workers:
+            raise AssertionError(f"expected {min_workers} terminal nested workers, got {len(workers)}")
+
+
+def load_agent_parents(codex_home):
+    """Codex hook session_id is the root; native metadata names the actual parent."""
+    parents = {}
+    for path in (Path(codex_home) / "sessions").rglob("*.jsonl"):
+        with path.open(encoding="utf-8") as session:
+            first = session.readline()
+        if not first:
+            continue
+        event = json.loads(first)
+        if event.get("type") == "session_meta":
+            payload = event.get("payload", {})
+            if payload.get("id") and payload.get("parent_thread_id"):
+                parents[payload["id"]] = payload["parent_thread_id"]
+    return parents
 
 
 def prepare_trial(root):
@@ -430,6 +465,8 @@ def run_trial(
     auth_file=None,
     allow_auth_skip=False,
     memory_fixture="absent",
+    expected_mode=None,
+    min_workers=0,
 ):
     started_at = time.monotonic()
     deadline = started_at + timeout
@@ -489,7 +526,9 @@ def run_trial(
                 raise RuntimeError("Codex authentication failed: " + auth.stderr.strip())
 
         stage = "execution"
-        command = build_exec_command(codex, paths.repo, prompt, model=model, effort=effort)
+        command = build_exec_command(
+            codex, paths.repo, prompt, model=model, effort=effort, persist=bool(min_workers),
+        )
         trial_started_at = time.monotonic()
         result = run_process(command, env=env, timeout=_remaining(deadline), cwd=paths.repo)
         raw = result.stdout
@@ -500,7 +539,12 @@ def run_trial(
         stage = "assertions"
         events = parse_jsonl(result.stdout)
         state, _ = _load_state(paths.plugin_data)
-        assert_lifecycle(events, state, expected, require_completion=require_completion)
+        agent_parents = load_agent_parents(paths.codex_home)
+        _write(paths.artifacts / "agent-parents.json", json.dumps(agent_parents, indent=2))
+        assert_lifecycle(
+            events, state, expected, require_completion=require_completion,
+            expected_mode=expected_mode, min_workers=min_workers, agent_parents=agent_parents,
+        )
     except Exception as error:
         if isinstance(error, ProcessTimeout):
             if trial_started_at is not None:
@@ -551,6 +595,8 @@ def parse_args(argv=None):
     parser.add_argument("--prompt", default="/symphony:help")
     parser.add_argument("--expect", action="append", default=[])
     parser.add_argument("--require-completion", action="store_true")
+    parser.add_argument("--expected-mode", choices=("small", "medium", "large"))
+    parser.add_argument("--min-workers", type=int, default=0)
     parser.add_argument("--model", default="gpt-5.6-luna")
     parser.add_argument("--effort", default="low")
     parser.add_argument("--timeout", type=float, default=120)
@@ -584,6 +630,8 @@ def main(argv=None):
             auth_file=auth_file,
             allow_auth_skip=args.allow_auth_skip,
             memory_fixture=args.memory_fixture,
+            expected_mode=args.expected_mode,
+            min_workers=args.min_workers,
         )
     except SmokeSkip as error:
         print(f"SKIP: {error}")
