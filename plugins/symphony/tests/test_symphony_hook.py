@@ -32,6 +32,27 @@ def load_codex_smoke_module():
 
 
 class SymphonyHookTests(unittest.TestCase):
+    def test_invalid_assessment_format_requests_corrected_assessor_receipt(self):
+        initial = self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.start_role("assessor", "assessor")
+        run = self.state()["active_run"]
+        malformed = (f"SYMPHONY_ASSESSMENT:{run['id']}:automatic:small\n"
+                     "SYMPHONY_ASSESSMENT_REASON:One unit")
+        self.hook.handle_event(self.event("SubagentStop", agent_id="assessor", last_assistant_message=malformed), self.data)
+        result = self.hook.handle_event(self.event("Stop", last_assistant_message=malformed), self.data, stop_wait_seconds=0)
+        self.assertTrue(result.block)
+        self.assertIn("Invalid assessment receipt", result.reason)
+        self.assertIn("small, medium, or large", result.reason)
+        self.assertIn("same assessor", result.reason)
+        self.assertIn("Do not implement", result.reason)
+        self.assertIn("automatic is a source", initial.context)
+        self.assertEqual(0, self.state()["active_run"]["mode_revision"])
+        corrected = malformed.replace(":automatic:small", ":small:small")
+        accepted = self.hook.handle_event(self.event("Stop", last_assistant_message=corrected), self.data, stop_wait_seconds=0)
+        self.assertTrue(accepted.block)
+        self.assertEqual("small", self.state()["active_run"]["mode"])
+        self.assertFalse(self.state()["active_run"]["strong_assessment_required"])
+
     def test_child_turn_events_do_not_apply_root_lifecycle_or_controls(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         self.hook.handle_event(self.event("SubagentStart", agent_id="worker"), self.data)

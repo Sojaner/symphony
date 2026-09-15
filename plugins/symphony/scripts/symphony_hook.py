@@ -422,7 +422,9 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
         f"`SYMPHONY_REGISTER:{run['id']}:lead:<agent-id>` as applicable. Relay exactly "
         f"`SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>` and "
         "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>` from the terminal assessor or same-mode "
-        "lead. Immediately call the host blocking wait/result operation after a spawn and continue "
+        "lead. Both receipt size fields must be small, medium, or large; automatic is a source, "
+        "not a project size, and must never appear in the receipt. "
+        "Immediately call the host blocking wait/result operation after a spawn and continue "
         "until every observed agent is terminal. Finish only with the accepted mode marker and "
         f"`<!-- {run['receipt']} -->`."
     )
@@ -1015,6 +1017,19 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             f"Symphony accepted assessment: mode={run['mode']}, mode revision={run['mode_revision']}. "
             if assessment_changed else ""
         )
+        if (run["assessment_due"] and "SYMPHONY_ASSESSMENT:" in message.upper()
+                and not ASSESSMENT_RE.search(message)):
+            if memory_changed:
+                write_project_state(data_dir, state, now)
+            role = "assessor" if run["strong_assessment_required"] else "lead"
+            return HookResult(block=True, reason=(
+                "Invalid assessment receipt: project-profile and run-mode must each be small, medium, or large; "
+                "automatic is a source, not a project size. "
+                f"Ask the same {role} for a corrected receipt and relay its actual corrected result: "
+                f"SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode> and "
+                "SYMPHONY_ASSESSMENT_REASON:<single bounded line>. "
+                "Do not implement in the root, invent a correction, or repeat the rejected receipt."
+            ))
         if background_tasks:
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
