@@ -193,7 +193,7 @@ def _normalize_assessment_state(state):
     run.setdefault("strong_assessment_required", not _has_accepted_assessment(run))
     run.setdefault("dry_run", False)
     run.setdefault("interrupted_at", None)
-    run.setdefault("interruption_recovery_eligible", run["interrupted_at"] is not None)
+    run.setdefault("interruption_recovery_eligible", False)
     run.setdefault("previous_owner_session_id", None)
     run.setdefault("ownership_transferred_at", None)
     if (
@@ -820,6 +820,8 @@ def _handle_prompt(payload, state, now):
         or _invalid_control_args(control, args)
     ):
         return HookResult(context="Invalid Symphony control. Use /symphony:help for valid commands.")
+    if control == "start" and not task:
+        return HookResult(context="Usage: /symphony:start [--dry-run] <task>")
 
     if control == "help":
         return HookResult()

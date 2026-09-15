@@ -413,6 +413,43 @@ class SymphonyHookTests(unittest.TestCase):
                         after_control, self.hook.read_project_state(data, str(self.project)),
                     )
 
+    def test_empty_start_is_terminal_usage_without_work_instructions_for_active_runs(self):
+        prompts = (
+            "/symphony:start",
+            "SYMPHONY_CONTROL: start\nSYMPHONY_TASK:",
+        )
+        forbidden = (
+            "Delegating:", "Reassessment is due", "read-only symphony_assessor",
+            "execution lead", "Continue Symphony run", "reconcile tracked agents",
+        )
+        for state_name in ("starting", "active", "stopping"):
+            for index, prompt in enumerate(prompts):
+                with self.subTest(state=state_name, prompt=prompt):
+                    data = Path(self.tmp.name) / f"empty-start-{state_name}-{index}"
+                    data.mkdir()
+                    self.hook.handle_event(
+                        self.event("UserPromptSubmit", prompt="/symphony:start task"), data,
+                    )
+                    if state_name == "active":
+                        self.hook.handle_event(
+                            self.event("SubagentStart", agent_id="worker"), data,
+                        )
+                    elif state_name == "stopping":
+                        state = self.hook.read_project_state(data, str(self.project))
+                        state["active_run"]["status"] = "stopping"
+                        self.hook.write_project_state(data, state)
+                    before = self.hook.read_project_state(data, str(self.project))
+
+                    response = self.hook.handle_event(
+                        self.event("UserPromptSubmit", prompt=prompt), data,
+                    )
+
+                    self.assertIn("Usage: /symphony:start [--dry-run] <task>", response.context)
+                    self.assertIn("SYMPHONY_CONTROL_HANDLED", response.context)
+                    for text in forbidden:
+                        self.assertNotIn(text, response.context)
+                    self.assertEqual(before, self.hook.read_project_state(data, str(self.project)))
+
     def test_control_receipt_is_consumed_and_next_prompt_invalidates_it(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
@@ -1921,6 +1958,29 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertEqual("session-2", run["owner_session_id"])
         self.assertFalse(run["interruption_recovery_eligible"])
 
+    def test_legacy_interrupted_timestamp_does_not_grant_takeover_eligibility(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+            now=1_000,
+        )
+        state = self.state()
+        state["active_run"]["interrupted_at"] = 1_001
+        state["active_run"].pop("interruption_recovery_eligible")
+        self.hook.write_project_state(self.data, state, now=1_001)
+
+        upgraded = self.state()
+        self.assertFalse(upgraded["active_run"]["interruption_recovery_eligible"])
+        response = self.hook.handle_event(
+            self.event("UserPromptSubmit", session_id="foreign", prompt="continue"),
+            self.data, now=1_002,
+        )
+
+        run = self.state()["active_run"]
+        self.assertEqual("session-1", run["owner_session_id"])
+        self.assertIsNone(run["previous_owner_session_id"])
+        self.assertIsNone(run["ownership_transferred_at"])
+        self.assertIn("inspection-only", response.context)
+
     def test_unknown_session_identity_cannot_interrupt_or_recover_a_run(self):
         for index, session_id in enumerate((None, "", "unknown")):
             with self.subTest(session_id=session_id):
@@ -2584,10 +2644,10 @@ Completed: symphony_lead — planned
             routing,
         )
         self.assertNotIn("legacy/dry-run marker fallback", skill)
-        self.assertIn(
-            "Dry-run completion remains blocked until explicit persisted dry-run state exists.",
-            skill,
-        )
+        self.assertNotIn("SYMPHONY_AGENTS_INSPECTED", skill)
+        self.assertIn("SYMPHONY_CONTROL_HANDLED", skill)
+        self.assertIn("/symphony:start [--dry-run] <task>", skill)
+        self.assertIn("Only a run persisted with `dry_run=true` may bypass accepted assessment", skill)
 
     @unittest.skipUnless(shutil.which("node"), "Hosted eval regex checks require Node")
     def test_eval_graders_compile_in_host_javascript_runtime(self):

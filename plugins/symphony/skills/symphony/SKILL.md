@@ -15,13 +15,13 @@ Before doing anything else, inspect the user prompt for an explicit `Orchestrato
 
 When injected context names a Symphony run, its run id, recovery instruction, and completion receipt are authoritative. Keep one run and at most one active execution lead. Recovery may replace the lead after reconciling workers and making the prior lead terminal; retain the run id and use bounded lifecycle/document memory for its replacement.
 
-Read-only inspection commands do not require an active run or a lead. For project work invoked without lifecycle context, state once that hook protection is not armed. Recommend `/symphony:start <task>` for a guarded one-off run or `/symphony:enable [task]` for persistent project activation. Continue manually only when the user explicitly accepts the weaker guarantee.
+Read-only inspection commands do not require an active run or a lead. For project work invoked without lifecycle context, state once that hook protection is not armed. Recommend `/symphony:start [--dry-run] <task>` for a guarded one-off run or `/symphony:enable [task]` for persistent project activation. Continue manually only when the user explicitly accepts the weaker guarantee.
 
 The user commands are:
 
 - `/symphony:enable [task]`: persistently enable this working tree and optionally start a run;
 - `/symphony:disable`: disable future activation and gracefully stop an active run;
-- `/symphony:start <task>`: start one guarded run without changing project policy;
+- `/symphony:start [--dry-run] <task>`: start one guarded run without changing project policy; `--dry-run` validates planned routing without spawning agents or writing project files;
 - `/symphony:status`: report project profile/source and assessment revision, run mode/revision and reassessment due, and partial final-request usage observations without changing lifecycle state;
 - `/symphony:assess [small|medium|large|auto]`: request fresh strong assessment, set a persistent manual project profile, or clear the override;
 - `/symphony:agents [--all]`: list all observed subagents in the active run, including terminal agents; `--all` also includes every retained historical run;
@@ -30,9 +30,9 @@ The user commands are:
 
 For `/symphony:agents`, the root must use a live host agent-listing tool when exposed and prefer its status and metadata over lifecycle observations. Use the persistent ledger as recovery evidence and as fallback for fields the live tool does not expose. Report run id, agent id, status, role, model, effort, final-request total/input/output/cache-creation/cache-read tokens, run duration/tool uses, and usage source/token scope; every unavailable field is exactly `not exposed by host`. Claude Agent `PostToolUse` token fields are final-request observations, never whole-agent totals; duration and tool uses describe the whole agent run. Never infer usage or cost. Report and return without enabling Symphony, starting a run, spawning a lead, or changing agent status. Retain metadata only, never prompts, transcripts, reasoning, or worker output. A force-stopped run may still contain agents last observed as active.
 
-For `/symphony:status`, report `Observed final-request tokens (partial)` plus agents lacking final-request totals. Do not present this observation as a complete agent total. End only that inspection response with the exact injected `SYMPHONY_AGENTS_INSPECTED` receipt on its own final line; it has the same single-use, run/session/turn-bound Stop authorization as `/symphony:agents`.
+For `/symphony:status`, report `Observed final-request tokens (partial)` plus agents lacking final-request totals. Do not present this observation as a complete agent total.
 
-End only that inspection response with the exact injected `SYMPHONY_AGENTS_INSPECTED` receipt on its own final line. It is a random, single-use authorization bound to the run, session, and host turn when exposed. The hook stores each session's pending authorization separately from lifecycle state, consumes it on matching Stop, and invalidates it on the next prompt in that same session. Other sessions keep their own authorizations. Never reuse this receipt for later project work or emit a run-completion receipt for inspection.
+End every terminal control response with the exact injected `SYMPHONY_CONTROL_HANDLED` receipt on its own final line. This includes help, status, agents, empty enable/start, assessment, stop/disable, and invalid control input. It is a random, single-use authorization bound to the run, session, and host turn when exposed. The hook stores each session's pending authorization separately from lifecycle state, consumes it on matching Stop, and invalidates it on the next prompt in that same session. Other sessions keep their own authorizations. Never reuse it for later project work or emit a run-completion receipt for a control.
 
 ## Bootstrap assessment, then execution
 
@@ -67,7 +67,7 @@ suggestion: <one missing material capability or none>
 
 Include `<!-- SYMPHONY_MODE:<small|medium|large> -->` with that record to report the accepted mode. Mode markers do not authorize mode changes; a changed mode requires a fresh authorized assessment receipt. Normal completion has no marker-only fallback.
 
-If the user explicitly requests a dry run, do not spawn or write files. Derive the planned strongest/high assessor and the separate execution lead from the selected mode and live catalog; do not hard-code the execution lead or mode. Report planned `Delegating:` and `Completed:` records for both roles, one mode, capability routing, and mode marker; do not ask a follow-up question. These are planned records only, not claims that agents ran. Dry-run completion remains blocked until explicit persisted dry-run state exists.
+If the user invokes `/symphony:start --dry-run <task>`, do not spawn agents or write project files. Derive the planned strongest/high assessor and the separate execution lead from the selected mode and live catalog; do not hard-code the execution lead or mode. Report planned `Delegating:` and `Completed:` records for both roles, one mode, capability routing, and mode marker; do not ask a follow-up question. These are planned records only, not claims that agents ran. Only a run persisted with `dry_run=true` may bypass accepted assessment; merely describing work as a dry run does not.
 
 Keep the execution lead id while its context remains bounded. On resume or compaction, reconcile tracked workers first, then start a fresh execution lead from bounded lifecycle/document memory rather than indefinitely resuming context.
 
