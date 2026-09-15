@@ -71,13 +71,14 @@ class SymphonyHookTests(unittest.TestCase):
             now=1_000,
         )
         run = self.state()["active_run"]
+        other_run_id = "a" * 16 if run["id"] != "a" * 16 else "b" * 16
 
         self.hook.handle_event(
             self.event(
                 "SubagentStop",
                 agent_id="lead-1",
                 last_assistant_message=(
-                    "<!-- SYMPHONY_MEMORY_CHECKPOINT:not-this-run:codebase-memory-mcp -->"
+                    f"<!-- SYMPHONY_MEMORY_CHECKPOINT:{other_run_id}:codebase-memory-mcp -->"
                 ),
             ),
             self.data,
@@ -99,6 +100,122 @@ class SymphonyHookTests(unittest.TestCase):
         memory = self.state()["active_run"]["memory"]
         self.assertTrue(memory["enabled"])
         self.assertEqual(1_002, memory["checkpoint_at"])
+
+        result = self.hook.handle_event(
+            self.event(
+                "Stop",
+                last_assistant_message=(
+                    f"<!-- SYMPHONY_MODE:small -->\n"
+                    f"<!-- SYMPHONY_MEMORY_CHECKPOINT:{other_run_id}:codebase-memory-mcp -->\n"
+                    f"<!-- {run['receipt']} -->"
+                ),
+            ),
+            self.data,
+            now=1_003,
+            stop_wait_seconds=0,
+        )
+        self.assertTrue(result.block)
+        self.assertIn("matching checkpoint receipt", result.reason)
+
+    def test_memory_marker_requires_exact_token_boundaries(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
+            self.data,
+            now=1_000,
+        )
+        run = self.state()["active_run"]
+        marker = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+
+        for malformed in (f"NOT_{marker}", f"{marker}-other"):
+            self.hook.handle_event(
+                self.event("SubagentStop", agent_id="lead-1", last_assistant_message=malformed),
+                self.data,
+                now=1_001,
+            )
+            self.assertFalse(self.state()["active_run"]["memory"]["enabled"])
+
+        self.hook.handle_event(
+            self.event(
+                "SubagentStop",
+                agent_id="lead-1",
+                last_assistant_message=f"Completed work <!-- {marker} --> in surrounding prose.",
+            ),
+            self.data,
+            now=1_002,
+        )
+        self.assertTrue(self.state()["active_run"]["memory"]["enabled"])
+
+    def test_background_task_stop_block_persists_memory_checkpoint(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
+            self.data,
+            now=1_000,
+        )
+        run = self.state()["active_run"]
+        marker = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+        message = f"<!-- SYMPHONY_MODE:small -->\n<!-- {marker} -->\n<!-- {run['receipt']} -->"
+
+        blocked = self.hook.handle_event(
+            self.event(
+                "Stop",
+                last_assistant_message=message,
+                background_tasks=[{"id": "shell-1", "status": "running"}],
+            ),
+            self.data,
+            now=1_001,
+            stop_wait_seconds=0,
+        )
+        self.assertTrue(blocked.block)
+        self.assertIn("background tasks", blocked.reason)
+        self.assertTrue(self.state()["active_run"]["memory"]["enabled"])
+
+        final = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"),
+            self.data,
+            now=1_002,
+            stop_wait_seconds=0,
+        )
+        self.assertTrue(final.block)
+        self.assertIn("matching checkpoint receipt", final.reason)
+
+    def test_tracked_agent_stop_block_persists_memory_checkpoint(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
+            self.data,
+            now=1_000,
+        )
+        run = self.state()["active_run"]
+        marker = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+        message = f"<!-- SYMPHONY_MODE:small -->\n<!-- {marker} -->\n<!-- {run['receipt']} -->"
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="worker-1", agent_type="worker"),
+            self.data,
+            now=1_001,
+        )
+
+        blocked = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=message),
+            self.data,
+            now=1_002,
+            stop_wait_seconds=0,
+        )
+        self.assertTrue(blocked.block)
+        self.assertIn("worker-1", blocked.reason)
+        self.assertTrue(self.state()["active_run"]["memory"]["enabled"])
+
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="worker-1", last_assistant_message="finished"),
+            self.data,
+            now=1_003,
+        )
+        final = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"),
+            self.data,
+            now=1_004,
+            stop_wait_seconds=0,
+        )
+        self.assertTrue(final.block)
+        self.assertIn("matching checkpoint receipt", final.reason)
 
     def test_active_memory_blocks_completion_when_current_document_is_missing(self):
         self.hook.handle_event(

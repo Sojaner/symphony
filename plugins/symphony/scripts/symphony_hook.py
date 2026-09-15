@@ -23,7 +23,7 @@ ARGS_RE = re.compile(r"SYMPHONY_ARGS:\s*([^\n]*)", re.IGNORECASE)
 SUGGESTION_RE = re.compile(r"SYMPHONY_SUGGESTED:([a-z0-9-]+)", re.IGNORECASE)
 MODE_RE = re.compile(r"SYMPHONY_MODE:\s*(small|medium|large)", re.IGNORECASE)
 MEMORY_CHECKPOINT_RE = re.compile(
-    r"SYMPHONY_MEMORY_CHECKPOINT:([a-f0-9]+):codebase-memory-mcp",
+    r"(?<![A-Za-z0-9_-])SYMPHONY_MEMORY_CHECKPOINT:([a-f0-9]+):codebase-memory-mcp(?![A-Za-z0-9_-])",
     re.IGNORECASE,
 )
 
@@ -348,22 +348,14 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
         for task in payload.get("background_tasks", [])
         if isinstance(task, dict) and task.get("status") in {"running", "pending"}
     ]
-    if background_tasks:
-        task_ids = [str(task.get("id") or task.get("task_id") or "unknown") for task in background_tasks]
-        return HookResult(
-            block=True,
-            reason=(
-                "Symphony detected active Claude background tasks: " + ", ".join(task_ids) +
-                ". Collect or stop them before ending the run."
-            ),
-        )
-    deadline = time.monotonic() + max(0, stop_wait_seconds)
-    while True:
-        state = read_project_state(data_dir, project_root)
-        agents = list((state.get("active_run") or {}).get("agents", []))
-        if not agents or time.monotonic() >= deadline:
-            break
-        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+    if not background_tasks:
+        deadline = time.monotonic() + max(0, stop_wait_seconds)
+        while True:
+            state = read_project_state(data_dir, project_root)
+            agents = list((state.get("active_run") or {}).get("agents", []))
+            if not agents or time.monotonic() >= deadline:
+                break
+            time.sleep(min(0.25, max(0, deadline - time.monotonic())))
 
     with project_lock(data_dir, project_root):
         state = read_project_state(data_dir, project_root)
@@ -372,8 +364,23 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
         run = state.get("active_run")
         if not run:
             return HookResult()
+        message = payload.get("last_assistant_message") or ""
+        memory_activated = _record_memory_checkpoint(run, message, now)
+        if background_tasks:
+            if memory_activated:
+                write_project_state(data_dir, state, now)
+            task_ids = [str(task.get("id") or task.get("task_id") or "unknown") for task in background_tasks]
+            return HookResult(
+                block=True,
+                reason=(
+                    "Symphony detected active Claude background tasks: " + ", ".join(task_ids) +
+                    ". Collect or stop them before ending the run."
+                ),
+            )
         agents = list(run.get("agents", []))
         if agents:
+            if memory_activated:
+                write_project_state(data_dir, state, now)
             return HookResult(
                 block=True,
                 reason=(
@@ -381,12 +388,10 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     ". Call the host's blocking wait/result tool and integrate every result before stopping."
                 ),
             )
-        message = payload.get("last_assistant_message") or ""
         if run.get("status") == "stopping":
             state["active_run"] = None
             write_project_state(data_dir, state, now)
             return HookResult()
-        memory_activated = _record_memory_checkpoint(run, message, now)
         if run["receipt"] not in message:
             if memory_activated:
                 write_project_state(data_dir, state, now)
