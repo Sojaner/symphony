@@ -64,6 +64,120 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIn("codebase-memory-mcp", result.context)
         self.assertFalse((self.project / ".symphony").exists())
 
+    def test_memory_marker_activates_only_for_the_current_run(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
+            self.data,
+            now=1_000,
+        )
+        run = self.state()["active_run"]
+
+        self.hook.handle_event(
+            self.event(
+                "SubagentStop",
+                agent_id="lead-1",
+                last_assistant_message=(
+                    "<!-- SYMPHONY_MEMORY_CHECKPOINT:not-this-run:codebase-memory-mcp -->"
+                ),
+            ),
+            self.data,
+            now=1_001,
+        )
+        self.assertFalse(self.state()["active_run"]["memory"]["enabled"])
+
+        self.hook.handle_event(
+            self.event(
+                "SubagentStop",
+                agent_id="lead-1",
+                last_assistant_message=(
+                    f"<!-- SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp -->"
+                ),
+            ),
+            self.data,
+            now=1_002,
+        )
+        memory = self.state()["active_run"]["memory"]
+        self.assertTrue(memory["enabled"])
+        self.assertEqual(1_002, memory["checkpoint_at"])
+
+    def test_active_memory_blocks_completion_when_current_document_is_missing(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
+            self.data,
+            now=1_000,
+        )
+        run = self.state()["active_run"]
+        marker = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+
+        result = self.hook.handle_event(
+            self.event(
+                "Stop",
+                last_assistant_message=(
+                    f"<!-- SYMPHONY_MODE:small -->\n<!-- {marker} -->\n<!-- {run['receipt']} -->"
+                ),
+            ),
+            self.data,
+            now=1_003,
+            stop_wait_seconds=0,
+        )
+
+        self.assertTrue(result.block)
+        self.assertIn("current.md", result.reason)
+        self.assertTrue(self.state()["active_run"]["memory"]["enabled"])
+
+    def test_active_memory_completes_with_fresh_nonempty_current_document(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
+            self.data,
+        )
+        run = self.state()["active_run"]
+        current = self.project / run["memory"]["current"]
+        current.parent.mkdir(parents=True)
+        current.write_text("# Symphony Current Memory\n\n## Run\nactive\n", encoding="utf-8")
+        marker = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+
+        result = self.hook.handle_event(
+            self.event(
+                "Stop",
+                last_assistant_message=(
+                    f"<!-- SYMPHONY_MODE:small -->\n<!-- {marker} -->\n<!-- {run['receipt']} -->"
+                ),
+            ),
+            self.data,
+            stop_wait_seconds=0,
+        )
+
+        self.assertFalse(result.block)
+        self.assertIsNone(self.state()["active_run"])
+
+    def test_active_memory_blocks_completion_when_current_document_is_stale(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
+            self.data,
+            now=1_000,
+        )
+        run = self.state()["active_run"]
+        current = self.project / run["memory"]["current"]
+        current.parent.mkdir(parents=True)
+        current.write_text("# Symphony Current Memory\n", encoding="utf-8")
+        os.utime(current, (1, 1))
+        marker = f"SYMPHONY_MEMORY_CHECKPOINT:{run['id']}:codebase-memory-mcp"
+
+        result = self.hook.handle_event(
+            self.event(
+                "Stop",
+                last_assistant_message=(
+                    f"<!-- SYMPHONY_MODE:small -->\n<!-- {marker} -->\n<!-- {run['receipt']} -->"
+                ),
+            ),
+            self.data,
+            now=1_003,
+            stop_wait_seconds=0,
+        )
+
+        self.assertTrue(result.block)
+        self.assertIn("stale", result.reason)
+
     def test_enable_persists_without_starting_when_task_is_empty(self):
         result = self.hook.handle_event(
             self.event(
@@ -210,6 +324,7 @@ class SymphonyHookTests(unittest.TestCase):
         )
         self.assertFalse(complete.block)
         self.assertIsNone(self.state()["active_run"])
+        self.assertFalse((self.project / ".symphony").exists())
 
     def test_claude_background_task_blocks_stop(self):
         self.hook.handle_event(

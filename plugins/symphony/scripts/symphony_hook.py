@@ -22,11 +22,42 @@ TASK_RE = re.compile(r"SYMPHONY_TASK:\s*([^\n]*)", re.IGNORECASE)
 ARGS_RE = re.compile(r"SYMPHONY_ARGS:\s*([^\n]*)", re.IGNORECASE)
 SUGGESTION_RE = re.compile(r"SYMPHONY_SUGGESTED:([a-z0-9-]+)", re.IGNORECASE)
 MODE_RE = re.compile(r"SYMPHONY_MODE:\s*(small|medium|large)", re.IGNORECASE)
+MEMORY_CHECKPOINT_RE = re.compile(
+    r"SYMPHONY_MEMORY_CHECKPOINT:([a-f0-9]+):codebase-memory-mcp",
+    re.IGNORECASE,
+)
 
 
 def memory_paths(project_root, run_id):
     root = Path(project_root)
     return root / MEMORY_ROOT / "current.md", root / MEMORY_ROOT / "history" / f"{run_id}.md"
+
+
+def _record_memory_checkpoint(run, message, now):
+    matches = MEMORY_CHECKPOINT_RE.findall(message or "")
+    if run["id"].lower() not in {value.lower() for value in matches}:
+        return False
+    run["memory"]["enabled"] = True
+    run["memory"]["checkpoint_at"] = int(now)
+    return True
+
+
+def _memory_checkpoint_error(run, project_root, final_message):
+    memory = run.get("memory") or {}
+    if not memory.get("enabled"):
+        return None
+    matches = {value.lower() for value in MEMORY_CHECKPOINT_RE.findall(final_message or "")}
+    if run["id"].lower() not in matches:
+        return "Symphony document memory is active; include its matching checkpoint receipt."
+    current = Path(project_root) / memory["current"]
+    try:
+        if not current.is_file() or current.stat().st_size == 0:
+            return f"Symphony document memory is missing or empty at {current}."
+        if current.stat().st_mtime < run["created_at"]:
+            return f"Symphony document memory is stale at {current}."
+    except OSError as error:
+        return f"Symphony could not validate document memory at {current}: {error}"
+    return None
 
 
 class HookResult:
@@ -355,7 +386,10 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             state["active_run"] = None
             write_project_state(data_dir, state, now)
             return HookResult()
+        memory_activated = _record_memory_checkpoint(run, message, now)
         if run["receipt"] not in message:
+            if memory_activated:
+                write_project_state(data_dir, state, now)
             return HookResult(
                 block=True,
                 reason=(
@@ -365,6 +399,8 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             )
         mode = MODE_RE.search(message)
         if not mode:
+            if memory_activated:
+                write_project_state(data_dir, state, now)
             return HookResult(
                 block=True,
                 reason=(
@@ -374,6 +410,10 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     "`<!-- SYMPHONY_MODE:<mode> -->`, and the exact run completion receipt."
                 ),
             )
+        memory_error = _memory_checkpoint_error(run, project_root, message)
+        if memory_error:
+            write_project_state(data_dir, state, now)
+            return HookResult(block=True, reason=memory_error)
         suggestions = SUGGESTION_RE.findall(message)
         if suggestions:
             capability = suggestions[0].lower()
@@ -438,6 +478,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 mode = MODE_RE.search(payload.get("last_assistant_message") or "")
                 if mode:
                     run["mode"] = mode.group(1).lower()
+                _record_memory_checkpoint(run, payload.get("last_assistant_message"), current)
                 result = HookResult(
                     context=(
                         f"Symphony agent {agent_id} is terminal. Collect and inspect its result, "
