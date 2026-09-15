@@ -17,6 +17,7 @@ import time
 SCHEMA_VERSION = 1
 MEMORY_ROOT = Path(".symphony") / "memory"
 SUGGESTION_COOLDOWN_SECONDS = 30 * 24 * 60 * 60
+MAX_MODE_HISTORY = 20
 RAW_CONTROL_RE = re.compile(
     r"\A/symphony:(enable|disable|start|stop|status|agents|assess|help)(?:\s+([\s\S]*))?\Z",
     re.IGNORECASE,
@@ -27,6 +28,14 @@ CONTROL_RE = re.compile(
 )
 SUGGESTION_RE = re.compile(r"SYMPHONY_SUGGESTED:([a-z0-9-]+)", re.IGNORECASE)
 MODE_RE = re.compile(r"SYMPHONY_MODE:\s*(small|medium|large)", re.IGNORECASE)
+ASSESSMENT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])SYMPHONY_ASSESSMENT:([a-f0-9]{16}):(small|medium|large):(small|medium|large)"
+    r"(?![A-Za-z0-9_-])",
+    re.IGNORECASE,
+)
+ASSESSMENT_REASON_RE = re.compile(
+    r"^[ \t]*SYMPHONY_ASSESSMENT_REASON:([^\r\n]*)\r?$", re.IGNORECASE | re.MULTILINE,
+)
 INSPECTION_RE = re.compile(r"(?:^|\n)<!-- SYMPHONY_AGENTS_INSPECTED:([a-f0-9]{32}) -->\s*\Z")
 MEMORY_CHECKPOINT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])SYMPHONY_MEMORY_CHECKPOINT:([a-f0-9]+):codebase-memory-mcp(?![A-Za-z0-9_-])",
@@ -156,10 +165,12 @@ def _normalize_assessment_state(state):
     run.setdefault("mode_revision", 0)
     run.setdefault("assessment_due", True)
     run.setdefault("mode_history", [])
+    run.setdefault("assessor_agent_id", None)
     if (
         type(run["mode_revision"]) is not int or run["mode_revision"] < 0
         or type(run["assessment_due"]) is not bool
         or not isinstance(run["mode_history"], list)
+        or (run["assessor_agent_id"] is not None and not isinstance(run["assessor_agent_id"], str))
     ):
         raise ValueError("invalid assessment run state")
 
@@ -289,6 +300,7 @@ def _new_run(payload, objective, now, project_root):
         "assessment_due": True,
         "mode_history": [],
         "lead_agent_id": None,
+        "assessor_agent_id": None,
         "agents": [],
         "agent_records": {},
         "objective": objective.strip()[:8000],
@@ -334,7 +346,10 @@ def _bootstrap_context(run, state, *, recovery=False, now=None):
         "marker, and completion receipt; do not ask a follow-up question. "
         "Explicit interrupts cannot be prevented; reconcile this run on resume. "
         f"Run status: {run['status']}; owner session: {run['owner_session_id']}; "
-        f"tracked agents: {agents}; recorded mode: {run.get('mode') or 'unselected'}. "
+        f"tracked agents: {agents}; recorded mode: {run.get('mode') or 'unselected'} "
+        f"(revision {run['mode_revision']}, reassessment due={str(run['assessment_due']).lower()}); "
+        f"project profile: {state['assessment']['profile'] or 'automatic'} "
+        f"(revision {state['assessment']['revision']}). "
         f"Capabilities currently under suggestion cooldown: {cooldowns}. "
         f"Memory candidates: current={current_memory}; history={history_memory}. "
         f"Extended memory: enabled={str(run['memory']['enabled']).lower()}; "
@@ -376,6 +391,52 @@ def _assessment_context(state):
         f"Symphony assessment requested. Project profile: {profile} ({source}, revision "
         f"{assessment['revision']}). {run_text} Use current objective and repository evidence; "
         "a manual profile is project context, not a forced run mode."
+    )
+
+
+def _record_assessment_receipt(state, run, message, now, agent_id=None):
+    matches = ASSESSMENT_RE.findall(message or "")
+    reasons = ASSESSMENT_REASON_RE.findall(message or "")
+    if len(matches) != 1 or len(reasons) != 1:
+        return False
+    receipt_run_id, profile, mode = matches[0]
+    if receipt_run_id.lower() != run.get("id", "").lower():
+        return False
+    if state.get("active_run") is not run or (
+        agent_id is not None and agent_id != run.get("assessor_agent_id")
+    ):
+        return False
+    reason = reasons[0].strip()[:500]
+    if not reason:
+        return False
+    assessment = state["assessment"]
+    if assessment["source"] != "manual":
+        assessment.update({
+            "profile": profile.lower(),
+            "source": "automatic",
+            "revision": assessment["revision"] + 1,
+            "reason": reason,
+            "assessed_at": int(now),
+        })
+    run["mode"] = mode.lower()
+    run["mode_revision"] += 1
+    run["mode_history"] = (run["mode_history"] + [{
+        "mode": run["mode"],
+        "profile": assessment["profile"],
+        "source": assessment["source"],
+        "reason": reason,
+        "revision": run["mode_revision"],
+        "assessed_at": int(now),
+    }])[-MAX_MODE_HISTORY:]
+    run["assessment_due"] = False
+    return True
+
+
+def _has_active_non_lead_agent(run):
+    excluded = {run.get("lead_agent_id"), run.get("assessor_agent_id")}
+    return any(
+        record["status"] == "active" and record["id"] not in excluded
+        for record in _agent_records(run)
     )
 
 
@@ -561,6 +622,8 @@ def _handle_prompt(payload, state, now):
             return HookResult(
                 context="Recovery required. " + _bootstrap_context(run, state, recovery=True, now=now)
             )
+        if control is None:
+            run["assessment_due"] = True
         if run.get("status") == "stopping":
             return HookResult(context="This Symphony run is stopping; reconcile tracked agents before continuing.")
         return HookResult(context=f"Continue Symphony run {run['id']}; do not launch a duplicate lead.")
@@ -620,8 +683,9 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             return HookResult()
         message = payload.get("last_assistant_message") or ""
         memory_changed = _record_memory_receipt(run, message, now)
+        assessment_changed = _record_assessment_receipt(state, run, message, now)
         if background_tasks:
-            if memory_changed:
+            if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             task_ids = [str(task.get("id") or task.get("task_id") or "unknown") for task in background_tasks]
             return HookResult(
@@ -633,7 +697,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             )
         agents = list(run.get("agents", []))
         if agents:
-            if memory_changed:
+            if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             return HookResult(
                 block=True,
@@ -648,7 +712,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             write_project_state(data_dir, state, now)
             return HookResult()
         if run["receipt"] not in message:
-            if memory_changed:
+            if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             return HookResult(
                 block=True,
@@ -659,7 +723,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             )
         mode = MODE_RE.search(message)
         if not mode:
-            if memory_changed:
+            if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             return HookResult(
                 block=True,
@@ -707,6 +771,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         if event == "SessionStart":
             run = state.get("active_run")
             if run:
+                run["assessment_due"] = True
                 result = HookResult(context=_bootstrap_context(run, state, recovery=True, now=current))
             elif state.get("enabled"):
                 result = HookResult(
@@ -740,7 +805,9 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 run.setdefault("agent_records", {})[agent_id] = _agent_record(payload, current)
                 run["last_event"] = event
                 run["status"] = "active"
-                if not run.get("lead_agent_id") and "symphony" in (payload.get("agent_type") or "").lower():
+                if (payload.get("agent_type") or "").lower() == "symphony_assessor":
+                    run["assessor_agent_id"] = agent_id
+                elif not run.get("lead_agent_id") and "symphony" in (payload.get("agent_type") or "").lower():
                     run["lead_agent_id"] = agent_id
                 result = HookResult(
                     context=(
@@ -771,11 +838,17 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     if mode:
                         run["mode"] = mode.group(1).lower()
                     _record_memory_receipt(run, payload.get("last_assistant_message"), current)
+                    _record_assessment_receipt(
+                        state, run, payload.get("last_assistant_message"), current, agent_id,
+                    )
+                    if agent_id not in {run.get("lead_agent_id"), run.get("assessor_agent_id")} and not _has_active_non_lead_agent(run):
+                        run["assessment_due"] = True
         elif event == "Interrupt":
             run = state.get("active_run")
             if run:
                 run["last_event"] = event
                 run["interrupted_at"] = current
+                run["assessment_due"] = True
         if json.dumps(state, sort_keys=True) != original_state:
             write_project_state(data_dir, state, current)
         return result

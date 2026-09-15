@@ -1267,6 +1267,125 @@ class SymphonyHookTests(unittest.TestCase):
                     self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data,
                 )
 
+    def test_assessment_receipts_are_authorized_and_versioned(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data, now=1_000,
+        )
+        state = self.state()
+        run = state["active_run"]
+        run["id"] = "0123456789abcdef"
+        run["receipt"] = "SYMPHONY_RUN_COMPLETE:0123456789abcdef"
+        self.hook.write_project_state(self.data, state, now=1_000)
+        receipt = (
+            "SYMPHONY_ASSESSMENT:0123456789abcdef:large:medium\n"
+            "SYMPHONY_ASSESSMENT_REASON:Long-running repository with two independent work units"
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor", agent_type="symphony_assessor"),
+            self.data, now=1_001,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt),
+            self.data, now=1_002,
+        )
+        state = self.state()
+        run = state["active_run"]
+        self.assertEqual(("large", "automatic", 1), (
+            state["assessment"]["profile"], state["assessment"]["source"], state["assessment"]["revision"],
+        ))
+        self.assertEqual(("medium", 1, False), (run["mode"], run["mode_revision"], run["assessment_due"]))
+        self.assertEqual([{
+            "mode": "medium", "profile": "large", "source": "automatic",
+            "reason": "Long-running repository with two independent work units",
+            "revision": 1, "assessed_at": 1_002,
+        }], run["mode_history"])
+
+        before = json.dumps(state, sort_keys=True)
+        for message, agent_id in (
+            (receipt.replace("0123456789abcdef", "fedcba9876543210", 1), "assessor"),
+            (receipt.replace(":large:medium", ":invalid:medium"), "assessor"),
+            (receipt, "unowned"),
+        ):
+            self.assertFalse(self.hook._record_assessment_receipt(state, run, message, 1_003, agent_id))
+            self.assertEqual(before, json.dumps(state, sort_keys=True))
+
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:assess small"), self.data, now=1_004,
+        )
+        state = self.state()
+        run = state["active_run"]
+        self.assertTrue(self.hook._record_assessment_receipt(state, run, receipt, 1_005, "assessor"))
+        self.assertEqual(("small", "manual", 2), (
+            state["assessment"]["profile"], state["assessment"]["source"], state["assessment"]["revision"],
+        ))
+        self.assertEqual((2, 2), (run["mode_revision"], len(run["mode_history"])))
+        self.assertLessEqual(len(state["assessment"]["reason"]), 500)
+        self.hook.write_project_state(self.data, state, now=1_005)
+
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:assess auto"), self.data, now=1_006,
+        )
+        state = self.state()
+        run = state["active_run"]
+        changed = receipt.replace(":large:medium", ":medium:large").replace(
+            "Long-running repository with two independent work units", "x" * 600,
+        ) + "\nnot retained"
+        self.assertTrue(self.hook._record_assessment_receipt(state, run, changed, 1_007, "assessor"))
+        self.assertEqual(("medium", "automatic", 4), (
+            state["assessment"]["profile"], state["assessment"]["source"], state["assessment"]["revision"],
+        ))
+        self.assertEqual(("large", 3), (run["mode"], run["mode_revision"]))
+        self.assertEqual("x" * 500, state["assessment"]["reason"])
+        self.assertEqual("x" * 500, run["mode_history"][-1]["reason"])
+
+    def test_reassessment_triggers_at_material_boundaries(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data, now=1_000,
+        )
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor", agent_type="symphony_assessor"), self.data,
+        )
+        run = self.state()["active_run"]
+        receipt = f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\nSYMPHONY_ASSESSMENT_REASON:Routine task"
+
+        def clear_due(now):
+            state = self.state()
+            self.assertTrue(self.hook._record_assessment_receipt(
+                state, state["active_run"], receipt, now, "assessor",
+            ))
+            self.hook.write_project_state(self.data, state, now=now)
+
+        clear_due(1_001)
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="continue with the parser"), self.data, now=1_002)
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
+        clear_due(1_003)
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:status"), self.data, now=1_004)
+        self.assertFalse(self.state()["active_run"]["assessment_due"])
+        self.hook.handle_event(self.event("SessionStart", source="compact"), self.data, now=1_005)
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
+        clear_due(1_006)
+        self.hook.handle_event(self.event("Interrupt"), self.data, now=1_007)
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
+
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="lead", agent_type="symphony_lead"), self.data, now=1_008,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="worker-a", agent_type="worker"), self.data, now=1_009,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="worker-b", agent_type="worker"), self.data, now=1_010,
+        )
+        clear_due(1_011)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="worker-a"), self.data, now=1_012)
+        self.assertFalse(self.state()["active_run"]["assessment_due"])
+        self.hook.handle_event(self.event("SubagentStop", agent_id="worker-b"), self.data, now=1_013)
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
+        clear_due(1_014)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="assessor"), self.data, now=1_015)
+        self.assertFalse(self.state()["active_run"]["assessment_due"])
+
     def test_suggestion_receipt_sets_thirty_day_cooldown(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
