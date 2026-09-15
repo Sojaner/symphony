@@ -100,9 +100,9 @@ When Codebase Memory MCP tools are available, use them before filesystem search 
 
 Activate this only after the root or strong lead verifies usable codebase-memory-mcp tools and a healthy index for the current project. Otherwise do not create `.symphony/memory/`; continue with compact lifecycle recovery.
 
-The strong lead is the only writer. It atomically replaces `.symphony/memory/current.md` and appends changed durable facts to `.symphony/memory/history/<run-id>.md` after mode selection, material decisions, worker-wave dispatch and integration, verification changes, and final checkpointing.
+The strong lead is the only writer. It atomically replaces `.symphony/memory/current.md` and appends changed durable facts to `.symphony/memory/history/<run-id>.md` after selecting or changing mode, after a material decision or discovery, before dispatching a worker wave, after integrating a worker wave, after verification changes the known state, and immediately before successful or graceful completion.
 
-`current.md` contains, in order: Run; Objective and acceptance criteria; Invariants and constraints; Decisions and rationale; Important discoveries; Completed work; Pending work; Verification evidence; Risks and blockers; Retrieval index.
+`current.md` is compact and bounded. It contains, in order: Run; Objective and acceptance criteria; Invariants and constraints; Decisions and rationale; Important discoveries; Completed work; Pending work; Verification evidence; Risks and blockers; Retrieval index.
 
 ```markdown
 # Symphony Current Memory
@@ -119,9 +119,11 @@ The strong lead is the only writer. It atomically replaces `.symphony/memory/cur
 ## Retrieval index
 ```
 
+Each history checkpoint records its timestamp, run id, mode, reason for the checkpoint, changed facts, decisions, evidence, and next action. The retrieval index contains short search terms and references to relevant history headings, qualified code symbols, graph generation, and evidence paths.
+
 On recovery, read `current.md` directly, check index status, query only relevant history sections, run `check_index_coverage` for every memory path used, and fall back to targeted direct reads for stale or uncovered sections. Give workers only relevant invariants, decisions, evidence references, and acceptance criteria.
 
-After a durable checkpoint include `<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->`. Never write secrets, environment values, unnecessary personal data, transcripts, or copied source bodies.
+After a durable checkpoint, the lead emits `<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->`. The root relays it in the root-final response alongside the exact completion receipt. Never write secrets, environment values, unnecessary personal data, transcripts, or copied source bodies.
 
 ## Dispatch and wait
 
@@ -162,6 +164,6 @@ For successful completion:
 2. Inspect and integrate their artifacts.
 3. Run the accepted verification in the current session.
 4. Report at most one missing capability whose absence materially affected this run and whose cooldown permits it. When reporting one, include `<!-- SYMPHONY_SUGGESTED:<capability-id> -->`.
-5. Include `<!-- SYMPHONY_RUN_COMPLETE:<run-id> -->` in the final assistant message using the exact injected receipt. The Stop hook clears the run only when that receipt matches.
+5. When extended memory is active, relay the lead's exact `<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->` marker in the root-final response alongside `<!-- SYMPHONY_RUN_COMPLETE:<run-id> -->` using the exact injected receipt. The Stop hook clears the run only when the receipt and checkpoint match.
 
 Do not promise that Symphony can prevent user interrupts or host-enforced Stop overrides. The guarantee is recovery plus normal-Stop protection while hooks remain trusted and Python 3 is available.

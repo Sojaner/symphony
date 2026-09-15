@@ -626,6 +626,18 @@ class HookDeclarationTests(unittest.TestCase):
             "## Objective and acceptance criteria",
             "## Verification evidence",
             "check_index_coverage",
+            "after selecting or changing mode",
+            "after a material decision or discovery",
+            "before dispatching a worker wave",
+            "immediately before successful or graceful completion",
+            "root relays it in the root-final response",
+            "`current.md` is compact and bounded",
+            "timestamp, run id, mode, reason for the checkpoint, changed facts, decisions, evidence, and next action",
+            "short search terms",
+            "relevant history headings",
+            "qualified code symbols",
+            "graph generation",
+            "evidence paths",
         )
         for text in required:
             self.assertIn(text, skill)
