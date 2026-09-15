@@ -18,6 +18,10 @@ SCHEMA_VERSION = 1
 MEMORY_ROOT = Path(".symphony") / "memory"
 SUGGESTION_COOLDOWN_SECONDS = 30 * 24 * 60 * 60
 MAX_MODE_HISTORY = 20
+USAGE_FIELDS = (
+    "total_tokens", "input_tokens", "output_tokens", "cache_creation_tokens",
+    "cache_read_tokens", "duration_ms", "tool_use_count",
+)
 RAW_CONTROL_RE = re.compile(
     r"\A/symphony:(enable|disable|start|stop|status|agents|assess|help)(?:\s+([\s\S]*))?\Z",
     re.IGNORECASE,
@@ -398,7 +402,12 @@ def _status_context(state):
             f"{run['id']} ({run['status']}), owner={run['owner_session_id']}, "
             f"mode={run.get('mode') or 'unselected'}, agents={','.join(run.get('agents', [])) or 'none'}"
         )
-    return f"Symphony project enabled: {str(state['enabled']).lower()}. Active run: {run_text}."
+    usage = _usage_aggregates(state)
+    return (
+        f"Symphony project enabled: {str(state['enabled']).lower()}. Active run: {run_text}. "
+        f"Known total tokens: {usage['total_tokens']}; "
+        f"agents lacking total tokens: {usage['missing_total_tokens']}."
+    )
 
 
 def _assessment_context(state):
@@ -487,6 +496,54 @@ def _agent_record(payload, started_at=None):
     }
 
 
+def _clean_usage(value):
+    if not isinstance(value, dict):
+        return {}
+    usage = {field: value[field] for field in USAGE_FIELDS
+             if type(value.get(field)) is int and value[field] >= 0}
+    if type(value.get("observed_at")) is int and value["observed_at"] >= 0:
+        usage["observed_at"] = value["observed_at"]
+    if isinstance(value.get("source"), str) and value["source"]:
+        usage["source"] = value["source"]
+    return usage
+
+
+def _usage_record(payload, now):
+    response = payload.get("tool_response")
+    if not isinstance(response, dict) or response.get("async_launched") is True:
+        return None
+    agent_id = response.get("agentId")
+    if not isinstance(agent_id, str) or not agent_id:
+        return None
+    raw_usage = response.get("usage", {})
+    if not isinstance(raw_usage, dict):
+        return None
+    locations = {
+        "total_tokens": (response, ("totalTokens", "total_tokens")),
+        "input_tokens": (raw_usage, ("inputTokens", "input_tokens")),
+        "output_tokens": (raw_usage, ("outputTokens", "output_tokens")),
+        "cache_creation_tokens": (raw_usage, ("cacheCreationInputTokens", "cache_creation_input_tokens")),
+        "cache_read_tokens": (raw_usage, ("cacheReadInputTokens", "cache_read_input_tokens")),
+        "duration_ms": (response, ("totalDurationMs", "total_duration_ms")),
+        "tool_use_count": (response, ("totalToolUseCount", "total_tool_use_count")),
+    }
+    usage = {}
+    for field, (container, names) in locations.items():
+        for name in names:
+            value = container.get(name)
+            if type(value) is int and value >= 0:
+                usage[field] = value
+                break
+    if not usage:
+        return None
+    return {
+        "id": agent_id,
+        **usage,
+        "observed_at": int(now),
+        "source": "claude-post-tool-use",
+    }
+
+
 def _agent_records(run):
     raw = run.get("agent_records")
     values = raw.values() if isinstance(raw, dict) else raw if isinstance(raw, list) else []
@@ -500,6 +557,9 @@ def _agent_records(run):
         for field in ("role", "model", "effort"):
             if not isinstance(record[field], str) or not record[field]:
                 record[field] = "not exposed by host"
+        usage = _clean_usage(value.get("usage"))
+        if usage:
+            record["usage"] = usage
         records[record["id"]] = record
     agents = run.get("agents")
     for agent_id in agents if isinstance(agents, list) else []:
@@ -534,6 +594,17 @@ def _archive_run(state, status, now):
         })
 
 
+def _usage_aggregates(state):
+    runs = ([state["active_run"]] if isinstance(state.get("active_run"), dict) else [])
+    runs.extend(run for run in state.get("run_history", []) if isinstance(run, dict))
+    records = [record for run in runs for record in _agent_records(run)]
+    totals = [record.get("usage", {}).get("total_tokens") for record in records]
+    return {
+        "total_tokens": sum(value for value in totals if type(value) is int),
+        "missing_total_tokens": sum(type(value) is not int for value in totals),
+    }
+
+
 def _agents_context(state, include_history=False):
     if state.get("corrupt"):
         return f"Symphony agent ledger unavailable: state is corrupt. {state.get('warning') or ''}"
@@ -549,10 +620,16 @@ def _agents_context(state, include_history=False):
         if not records:
             lines.append("No observed subagents.")
             continue
-        lines.extend(["| Run | Id | Status | Role | Model | Effort |", "| --- | --- | --- | --- | --- | --- |"])
+        lines.extend([
+            "| Run | Id | Status | Role | Model | Effort | Total tokens | Input tokens | Output tokens | Cache creation tokens | Cache read tokens | Duration (ms) | Tool uses | Usage source |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ])
         for record in records:
             values = [item["id"], record["id"], record["status"]]
             values.extend(record.get(field) or "not exposed by host" for field in ("role", "model", "effort"))
+            usage = _clean_usage(record.get("usage"))
+            values.extend(usage.get(field, "not exposed by host") for field in USAGE_FIELDS)
+            values.append(usage.get("source", "not exposed by host"))
             lines.append("| " + " | ".join(str(value).replace("|", "\\|").replace("\n", " ").replace("\r", " ") for value in values) + " |")
     return "\n".join(lines)
 
@@ -911,6 +988,28 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                         and not _has_active_non_lead_agent(run)
                     ):
                         run["assessment_due"] = True
+        elif event == "PostToolUse" and payload.get("tool_name") == "Agent":
+            observed = _usage_record(payload, current)
+            if observed:
+                active = state.get("active_run")
+                runs = ([active] if isinstance(active, dict) else []) + [
+                    run for run in state.get("run_history", []) if isinstance(run, dict)
+                ]
+                owners = [
+                    run for run in runs
+                    if any(record["id"] == observed["id"] for record in _agent_records(run))
+                ]
+                if len(owners) == 1:
+                    run = owners[0]
+                    records = {record["id"]: record for record in _agent_records(run)}
+                    record = records[observed["id"]]
+                    record["usage"] = {
+                        **_clean_usage(record.get("usage")),
+                        **{field: observed[field] for field in USAGE_FIELDS if field in observed},
+                        "observed_at": observed["observed_at"],
+                        "source": observed["source"],
+                    }
+                    run["agent_records"] = records if run is active else list(records.values())
         elif event == "Interrupt":
             run = state.get("active_run")
             if run:
