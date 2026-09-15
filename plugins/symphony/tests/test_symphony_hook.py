@@ -192,6 +192,11 @@ class SymphonyHookTests(unittest.TestCase):
             self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: agents"), self.data,
         )
         self.assertIn("corrupt", result.context.lower())
+        stopped = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=result.context.splitlines()[-1]),
+            self.data, stop_wait_seconds=0,
+        )
+        self.assertFalse(stopped.block)
         self.assertEqual("{broken", path.read_text(encoding="utf-8"))
         self.assertFalse(list(path.parent.glob("*.corrupt.*")))
 
@@ -216,8 +221,12 @@ class SymphonyHookTests(unittest.TestCase):
                         self.event("UserPromptSubmit", prompt=f"SYMPHONY_CONTROL: agents\nSYMPHONY_ARGS: {args}"),
                         self.data,
                     )
-                    receipt = f"<!-- SYMPHONY_AGENTS_INSPECTED:{run['id']} -->"
-                    self.assertIn(receipt, listing.context)
+                    receipt = listing.context.splitlines()[-1]
+                    self.assertNotIn(run["id"], receipt)
+                    pending_path = path.with_suffix(".inspection.json")
+                    self.assertTrue(pending_path.exists())
+                    self.assertEqual({"nonce", "run_id", "session_id", "turn_id"},
+                                     set(json.loads(pending_path.read_text(encoding="utf-8"))))
                     result = self.hook.handle_event(
                         self.event("Stop", last_assistant_message=f"Inspection report.\n{receipt}",
                                    background_tasks=[{"id": "background-1", "status": "running"}]),
@@ -225,6 +234,7 @@ class SymphonyHookTests(unittest.TestCase):
                     )
                     self.assertFalse(result.block)
                     self.assertEqual(before, path.read_bytes())
+                    self.assertFalse(pending_path.exists())
                     normal = self.hook.handle_event(
                         self.event("Stop", last_assistant_message="ordinary response"),
                         self.data, stop_wait_seconds=0,
@@ -234,6 +244,44 @@ class SymphonyHookTests(unittest.TestCase):
                         self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: stop\nSYMPHONY_ARGS: --force"),
                         self.data,
                     )
+
+    def test_inspection_requires_issued_nonce_and_rejects_replay_and_other_identity(self):
+        for attack in ("unissued", "consumed", "ordinary-prompt", "other-session", "other-turn"):
+            with self.subTest(attack=attack):
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"),
+                    self.data,
+                )
+                run = self.state()["active_run"]
+                receipt = f"<!-- SYMPHONY_AGENTS_INSPECTED:{'a' * 32} -->"
+                if attack != "unissued":
+                    listing = self.hook.handle_event(
+                        self.event("UserPromptSubmit", turn_id="inspection-turn",
+                                   prompt="SYMPHONY_CONTROL: agents"), self.data,
+                    )
+                    receipt = listing.context.splitlines()[-1]
+                if attack == "consumed":
+                    first = self.hook.handle_event(
+                        self.event("Stop", turn_id="inspection-turn", last_assistant_message=receipt),
+                        self.data, stop_wait_seconds=0,
+                    )
+                    self.assertFalse(first.block)
+                if attack == "ordinary-prompt":
+                    self.hook.handle_event(self.event("UserPromptSubmit", prompt="continue work"), self.data)
+                    pending_path = self.hook.project_state_path(self.data, str(self.project)).with_suffix(".inspection.json")
+                    self.assertFalse(pending_path.exists())
+                result = self.hook.handle_event(
+                    self.event("Stop", last_assistant_message=receipt,
+                               session_id="session-2" if attack == "other-session" else "session-1",
+                               turn_id="another-turn" if attack == "other-turn" else "inspection-turn"),
+                    self.data, stop_wait_seconds=0,
+                )
+                self.assertTrue(result.block)
+                self.assertEqual(run, self.state()["active_run"])
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: stop\nSYMPHONY_ARGS: --force"),
+                    self.data,
+                )
 
     def test_malformed_agent_ledgers_allow_listing_and_force_stop(self):
         for malformed in (None, "broken", 42, [None, "bad", {}], {"worker-1": None}):
@@ -286,8 +334,12 @@ class SymphonyHookTests(unittest.TestCase):
             self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: start\nSYMPHONY_TASK: task"), self.data,
         )
         run = self.state()["active_run"]
+        listing = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: agents"), self.data,
+        )
+        receipt = listing.context.splitlines()[-1]
         for message in ("<!-- SYMPHONY_AGENTS_INSPECTED:none -->",
-                        f"<!-- SYMPHONY_AGENTS_INSPECTED:{run['id']} -->\nNow doing project work."):
+                        receipt + "\nNow doing project work."):
             result = self.hook.handle_event(
                 self.event("Stop", last_assistant_message=message), self.data, stop_wait_seconds=0,
             )

@@ -22,7 +22,7 @@ TASK_RE = re.compile(r"SYMPHONY_TASK:\s*([^\n]*)", re.IGNORECASE)
 ARGS_RE = re.compile(r"SYMPHONY_ARGS:\s*([^\n]*)", re.IGNORECASE)
 SUGGESTION_RE = re.compile(r"SYMPHONY_SUGGESTED:([a-z0-9-]+)", re.IGNORECASE)
 MODE_RE = re.compile(r"SYMPHONY_MODE:\s*(small|medium|large)", re.IGNORECASE)
-INSPECTION_RE = re.compile(r"(?:^|\n)<!-- SYMPHONY_AGENTS_INSPECTED:([a-f0-9]+|none) -->\s*\Z")
+INSPECTION_RE = re.compile(r"(?:^|\n)<!-- SYMPHONY_AGENTS_INSPECTED:([a-f0-9]{32}) -->\s*\Z")
 MEMORY_CHECKPOINT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])SYMPHONY_MEMORY_CHECKPOINT:([a-f0-9]+):codebase-memory-mcp(?![A-Za-z0-9_-])",
     re.IGNORECASE,
@@ -376,13 +376,7 @@ def _handle_prompt(payload, state, now):
     if control == "status":
         return HookResult(context=_status_context(state))
     if control == "agents":
-        run_id = (state.get("active_run") or {}).get("id", "none")
-        return HookResult(context=(
-            _agents_context(state, include_history="--all" in args)
-            + "\nEnd only this inspection response with the following receipt; do not reuse it "
-            "for later project work or report run completion:\n"
-            f"<!-- SYMPHONY_AGENTS_INSPECTED:{run_id} -->"
-        ))
+        return HookResult(context=_agents_context(state, include_history="--all" in args))
     if control == "enable":
         state["enabled"] = True
         if not task:
@@ -444,9 +438,24 @@ def _handle_prompt(payload, state, now):
 
 def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
     inspection = INSPECTION_RE.search(payload.get("last_assistant_message") or "")
-    initial_state = read_project_state(data_dir, project_root, read_only=bool(inspection))
-    if inspection and inspection.group(1) == (initial_state.get("active_run") or {}).get("id", "none"):
-        return HookResult()
+    if inspection:
+        with project_lock(data_dir, project_root):
+            pending_path = project_state_path(data_dir, project_root).with_suffix(".inspection.json")
+            try:
+                pending = json.loads(pending_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pending = None
+            state = read_project_state(data_dir, project_root, read_only=True)
+            if (
+                isinstance(pending, dict)
+                and pending.get("nonce") == inspection.group(1)
+                and pending.get("run_id") == (state.get("active_run") or {}).get("id")
+                and pending.get("session_id") == payload.get("session_id")
+                and (pending.get("turn_id") is None or pending["turn_id"] == payload.get("turn_id"))
+            ):
+                pending_path.unlink()
+                return HookResult()
+    initial_state = read_project_state(data_dir, project_root)
     if initial_state.get("corrupt"):
         return HookResult(block=True, reason="Symphony state is corrupt; use /symphony:stop --force to recover.")
     if not initial_state.get("active_run"):
@@ -570,7 +579,22 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     )
                 )
         elif event == "UserPromptSubmit":
+            pending_path = project_state_path(data_dir, project_root).with_suffix(".inspection.json")
+            pending_path.unlink(missing_ok=True)
             result = _handle_prompt(payload, state, current)
+            if read_only:
+                nonce = secrets.token_hex(16)
+                _atomic_write(pending_path, {
+                    "nonce": nonce,
+                    "run_id": (state.get("active_run") or {}).get("id"),
+                    "session_id": payload.get("session_id"),
+                    "turn_id": payload.get("turn_id"),
+                })
+                result.context += (
+                    "\nEnd only this inspection response with the following single-use receipt; "
+                    "do not reuse it for later project work or report run completion:\n"
+                    f"<!-- SYMPHONY_AGENTS_INSPECTED:{nonce} -->"
+                )
         elif event == "SubagentStart":
             run = state.get("active_run")
             agent_id = payload.get("agent_id")
