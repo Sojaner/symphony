@@ -96,6 +96,7 @@ class SymphonyHookTests(unittest.TestCase):
         run = self.state()["active_run"]
         self.assertIsNotNone(run)
         self.assertEqual("session-1", run["owner_session_id"])
+        self.assertIn("Invoke the installed Symphony skill first", result.context)
         self.assertIn("strong execution lead", result.context)
         self.assertIn(run["receipt"], result.context)
 

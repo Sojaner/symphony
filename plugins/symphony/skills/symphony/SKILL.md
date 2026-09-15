@@ -9,6 +9,8 @@ Use a weak root safely by making it a thin session keeper. A strongest-available
 
 ## Honor lifecycle context first
 
+First validate any explicit `Orchestrator:` or `Effort:` declaration against the actual runtime metadata. A declaration is never evidence. On a mismatch, report both values and stop before project reads, lifecycle advice, spawning, or implementation.
+
 When injected context names a Symphony run, its run id, recovery instruction, and completion receipt are authoritative. Do not create another run or another lead for the same run.
 
 When the skill was invoked without lifecycle context, state once that hook protection is not armed. Recommend `/symphony:start <task>` for a guarded one-off run or `/symphony:enable [task]` for persistent project activation. Continue manually only when the user explicitly accepts the weaker guarantee.
@@ -27,7 +29,7 @@ The user commands are:
 The root may use any model or effort. Before project work, it must:
 
 1. Read the live subagent model, effort, and concurrency catalog. Never infer availability from cached examples.
-2. Determine the root's actual model and effort from injected runtime context or trusted session metadata. A user declaration is a value to verify, never evidence. If an explicit declaration contradicts the runtime, report the mismatch and stop before project work.
+2. Determine the root's actual model and effort from injected runtime context or trusted session metadata. Reuse the declaration check already completed above; never replace runtime evidence with the declaration.
 3. Inventory the effective skills and tools available to the root. Read [references/capability-routing.md](references/capability-routing.md).
 4. Spawn exactly one `symphony_lead` with no inherited turns, using the strongest available general reasoning model at `high`. If `high` is unavailable, use that model's highest available effort. If no stronger child can be spawned, fail closed and explain which capability is missing; do not pretend a weak root is protected.
 5. Give the lead:
@@ -54,6 +56,8 @@ suggestion: <one missing material capability or none>
 ```
 
 Include `<!-- SYMPHONY_MODE:<small|medium|large> -->` with that record so lifecycle state can retain the selected mode.
+
+If the user explicitly requests a dry run, do not spawn or write files. Derive the planned lead and mode from the live catalogs, then return only the root profile, planned strongest/high lead, one mode, capability routing, and exact completion receipt; do not ask a follow-up question.
 
 Keep the lead id. Reuse it for follow-up decisions when the host supports that; otherwise spawn a replacement with the current run record and a compact checkpoint.
 
