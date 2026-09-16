@@ -124,40 +124,142 @@ class SymphonyHookTests(unittest.TestCase):
         self.start_role("lead", "lead")
         self.hook.handle_event(self.event("SubagentStop", agent_id="lead"), self.data)
         run = self.state()["active_run"]
+        tail = f"\n<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
         terse = self.hook.handle_event(
-            self.event("Stop", last_assistant_message=(
-                f"small\n<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
-            )),
-            self.data,
-            stop_wait_seconds=0,
+            self.event("Stop", last_assistant_message="small" + tail), self.data, stop_wait_seconds=0,
         )
         self.assertTrue(terse.block)
         self.assertIn("self-contained final report", terse.reason)
         self.assertIn("both assessor and lead completion records", terse.reason)
         self.assertIn("Completed: assessor/assessor — <status>", terse.reason)
         self.assertIn("Completed: lead/lead — <status>", terse.reason)
+        self.assertIn("replacing only `<status>` with each agent's observed terminal status", terse.reason)
+        routing = ("Routing: mode small (lead executes directly) — One bounded unit; "
+                   "assessor assessor <model>/<effort>; lead lead <model>/<effort>; workers none")
+        self.assertIn(f"`{routing}`", terse.reason)
+        self.assertNotIn("still carried the literal", terse.reason)
+        self.assertNotIn("still contained", terse.reason)
+        filled_routing = routing.replace("<model>/<effort>", "claude-sonnet-5/medium").replace(
+            "assessor assessor claude-sonnet-5/medium", "assessor assessor claude-opus-5/high")
+        records = "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
+        verification = "Verification: result.txt contains the exact verified value.\n"
+
+        placeholder = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            "Completed: assessor/assessor — completed\nCompleted: lead/lead — <status>\n"
+            + filled_routing + "\n" + verification + tail
+        )), self.data, stop_wait_seconds=0)
+        self.assertTrue(placeholder.block)
+        self.assertIn("still carried the literal `<status>` placeholder for the lead record", placeholder.reason)
+
+        unfilled = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            records + routing + "\n" + verification + tail
+        )), self.data, stop_wait_seconds=0)
+        self.assertTrue(unfilled.block)
+        self.assertIn("Your last `Routing:` line still contained `<...>` placeholders", unfilled.reason)
+
+        no_routing = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            records + verification + tail
+        )), self.data, stop_wait_seconds=0)
+        self.assertTrue(no_routing.block)
+        self.assertIn("Include this routing disclosure", no_routing.reason)
+
         bypass = self.hook.handle_event(
             self.event("Stop", last_assistant_message=(
                 "Not completed: assessor/assessor\n"
                 "Not completed: lead/lead\n"
-                "Verification:\n"
-                f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
+                + filled_routing + "\n"
+                "Verification:\n" + tail
             )),
             self.data,
             stop_wait_seconds=0,
         )
         self.assertTrue(bypass.block)
+        self.assertIsNotNone(self.state()["active_run"])
+
         complete = self.hook.handle_event(
             self.event("Stop", last_assistant_message=(
-                "- **Completed:** `assessor` / `assessor` — completed\n"
-                "- **Completed:** `lead` / `lead` — completed\n"
-                "**Verification:** result.txt contains the exact verified value.\n"
-                f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
+                "- **Completed:** `assessor` / `assessor` - completed — tokens 10\n"
+                "- **Completed:** `lead` / `lead` – completed\n"
+                "**Routing:**\n"
+                "- mode small (lead executes directly) — One bounded unit\n"
+                "- assessor assessor claude-opus-5/high; lead lead claude-sonnet-5/medium; workers none\n"
+                "\n"
+                "**Verification:** result.txt contains the exact verified value." + tail
             )),
             self.data,
             stop_wait_seconds=0,
         )
-        self.assertFalse(complete.block)
+        self.assertFalse(complete.block, complete.reason)
+        self.assertIsNone(self.state()["active_run"])
+
+    def test_routing_visibility_reports_strategy_models_and_workers(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.hook.handle_event(self.event(
+            "SubagentStart", agent_id="assessor", model="gpt-6-astra", reasoning_effort="high",
+        ), self.data)
+        run = self.state()["active_run"]
+        child = self.hook.handle_event(self.event("SubagentStop", agent_id="assessor"), self.data)
+        self.assertFalse(child.block)
+        relay = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            f"SYMPHONY_REGISTER:{run['id']}:assessor:assessor\n"
+            f"SYMPHONY_ASSESSMENT:{run['id']}:medium:medium\n"
+            "SYMPHONY_ASSESSMENT_REASON:Two independent modules"
+        )), self.data, stop_wait_seconds=0)
+        self.assertTrue(relay.block)
+        self.assertIn(
+            "Symphony accepted assessment: mode=medium (lead plus at most two bounded independent workers), "
+            "mode revision=1, reason: Two independent modules.",
+            relay.reason,
+        )
+        self.assertIn(
+            "Announce `Mode: medium — lead plus at most two bounded independent workers — Two independent modules` "
+            "visibly before `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — "
+            "selected medium execution`",
+            relay.reason,
+        )
+        status = self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:status"), self.data)
+        self.assertIn("mode=medium (lead plus at most two bounded independent workers)", status.context)
+
+        lead = self.hook.handle_event(self.event(
+            "SubagentStart", agent_id="lead", model="gpt-5.6-luna", reasoning_effort="low",
+        ), self.data)
+        self.assertIn("ends its result with `Delegation summary:`", lead.context)
+        self.assertIn("<agent id> — <model>/<effort> — <assigned job> — <outcome>", lead.context)
+        self.assertLess(len(lead.context), 4096)
+        self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            f"SYMPHONY_REGISTER:{run['id']}:lead:lead"
+        )), self.data, stop_wait_seconds=0)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="worker-a", model="gpt-5.6-luna"), self.data)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="worker-a"), self.data)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="lead"), self.data)
+        run = self.state()["active_run"]
+        self.assertTrue(run["assessment_due"])
+        reassessed = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            f"SYMPHONY_ASSESSMENT:{run['id']}:medium:medium\n"
+            "SYMPHONY_ASSESSMENT_REASON:Two independent modules"
+        )), self.data, stop_wait_seconds=0)
+        self.assertTrue(reassessed.block)
+        self.assertIn("Symphony accepted assessment: mode=medium", reassessed.reason)
+        tail = f"\n<!-- SYMPHONY_MODE:medium -->\n<!-- {run['receipt']} -->"
+        blocked = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
+            "Verification: 12 tests pass" + tail
+        )), self.data, stop_wait_seconds=0)
+        self.assertTrue(blocked.block)
+        self.assertIn(
+            "`Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
+            "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; "
+            "workers worker-a gpt-5.6-luna/<effort> — <assigned job>`",
+            blocked.reason,
+        )
+        complete = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
+            "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
+            "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; "
+            "workers worker-a gpt-5.6-luna/low — parser module\n"
+            "Verification: 12 tests pass" + tail
+        )), self.data, stop_wait_seconds=0)
+        self.assertFalse(complete.block, complete.reason)
         self.assertIsNone(self.state()["active_run"])
 
     def test_synchronous_lead_worker_wave_still_requires_reassessment(self):
@@ -2292,6 +2394,8 @@ class SymphonyHookTests(unittest.TestCase):
             "Waiting: <role or wave> — <bounded in-progress fact>",
             "Completed: <agent id/role> — <status>",
             "followed only when exposed",
+            "Mode: <mode> — <strategy> — <reason>",
+            "a `Routing:` line naming the mode strategy plus each agent's actual model/effort and assigned job",
             f"SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>",
             f"SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>",
             run["receipt"],
@@ -4168,6 +4272,10 @@ for (const [name, graders, good, bad] of JSON.parse(fs.readFileSync(0, 'utf8')))
             "Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>",
             "Waiting: <role or wave> — <bounded in-progress fact>",
             "Completed: <agent id/role> — <status>",
+            "Mode: <mode> — <strategy> — <reason>",
+            "Delegation summary:",
+            "Routing: mode <mode> (<strategy>) — <reason>; assessor <agent id> <model>/<effort>; lead <agent id> <model>/<effort>",
+            "one `Routing:` line with the mode strategy and every agent's actual model/effort and assigned job",
             "append token or duration segments only for values the host exposed",
             "`Waiting:` may report only observed lifecycle state",
             "fresh execution lead from bounded lifecycle/document memory",
@@ -4320,7 +4428,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.17.0"}, versions)
+        self.assertEqual({"0.18.0"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},

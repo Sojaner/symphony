@@ -129,9 +129,9 @@ For a small task, the selected lead continues directly as the implementer. The a
 
 Usage is authoritative host observations only; Symphony never estimates usage or cost. Claude synchronous Agent usage may be exposed; unavailable background or Codex usage is omitted. Token fields describe the final request only; host duration and tool count describe the agent run, while lifecycle duration is observed wall time. No hard token or cost budget is promised.
 
-Visible records use `Delegating: <role> — <objective> — <model>/<effort> — <reason>`, `Waiting: <role or wave> — <observed in-progress fact>`, and `Completed: <agent id/role> — <status>`. Completion adds token or duration segments only when exposed. Waiting reports observed lifecycle state only.
+Visible records use `Delegating: <role> — <objective> — <model>/<effort> — <reason>`, `Waiting: <role or wave> — <observed in-progress fact>`, and `Completed: <agent id/role> — <status>`. Completion adds token or duration segments only when exposed. Waiting reports observed lifecycle state only. After an accepted assessment the root announces `Mode: <mode> — <strategy> — <reason>`, so the user sees whether the lead executes directly, adds bounded workers, or runs dependency-aware waves.
 
-The final completion response is self-contained: it repeats the integrated deliverable, assessor and lead completion records, authoritative verification, selected mode, and completion receipt.
+The final completion response is self-contained: it repeats the integrated deliverable, assessor and lead completion records, one `Routing:` line naming the mode strategy plus every agent's actual model/effort and assigned job, authoritative verification, selected mode, and completion receipt.
 
 ## Workflow and evidence capabilities
 

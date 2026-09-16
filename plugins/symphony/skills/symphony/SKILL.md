@@ -60,9 +60,9 @@ SYMPHONY_ASSESSMENT:<run-id>:<project-profile>:<run-mode>
 SYMPHONY_ASSESSMENT_REASON:<single bounded line>
 ```
 
-Bind `<run-id>` to the current run. The current run's root must relay both lines in an owner control response and wait for the Stop hook to persist the accepted assessment before execution. Immediately end that response after the registration and assessment lines for a synchronous assessor. Never spawn the lead in the same response. After the hook confirms acceptance, emit `Completed: <agent id/role> — <status>` and append token or duration segments only for values the host exposed, then continue.
+Bind `<run-id>` to the current run. The current run's root must relay both lines in an owner control response and wait for the Stop hook to persist the accepted assessment before execution. Immediately end that response after the registration and assessment lines for a synchronous assessor. Never spawn the lead in the same response. After the hook confirms acceptance, emit `Completed: <agent id/role> — <status>` and append token or duration segments only for values the host exposed, then announce `Mode: <mode> — <strategy> — <reason>` using the strategy and reason from the hook acknowledgment, then continue.
 
-3. Spawn the separate execution lead selected by the accepted assessment. Emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution` first and give it the assessor result plus the bounded objective, run id, registration and completion receipts. For the initial execution lead and each recovery lead, immediately end a final-channel response containing its exact `SYMPHONY_REGISTER:<run-id>:lead:<agent-id>` line, without run completion. Commentary does not persist registration. After the hook acknowledges registration, call the blocking wait for that same lead. The execution lead owns implementation and authoritative verification. After it is terminal, emit `Completed: <agent id/role> — <status>` and append token or duration segments only for values the host exposed.
+3. Spawn the separate execution lead selected by the accepted assessment. Emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution` first, naming the actual model and effort you pass to the spawn call, and give it the assessor result plus the bounded objective, run id, registration and completion receipts. For the initial execution lead and each recovery lead, immediately end a final-channel response containing its exact `SYMPHONY_REGISTER:<run-id>:lead:<agent-id>` line, without run completion. Commentary does not persist registration. After the hook acknowledges registration, call the blocking wait for that same lead. The execution lead owns implementation and authoritative verification. After it is terminal, emit `Completed: <agent id/role> — <status>` and append token or duration segments only for values the host exposed.
 
 Only after the assessor is terminal and its assessment is accepted may optional memory work begin. Small runs skip optional memory probing. For medium and large runs, the execution lead may dispatch at most one disposable memory-probe worker, and only when trusted host configuration proves a verified host tool-timeout or cancellation path will make that worker terminal inside the stated bound. If that path cannot be verified, skip optional memory. On memory capability failure, timeout, or hang, ensure the memory-probe worker is terminal before continuing, record the fallback to repository documents and source inspection, and complete the project through that fallback. Never add a monitor, daemon, or retrying probe.
 
@@ -77,7 +77,10 @@ assignments: <direct work and delegated units with model/effort>
 schedule: <serial work or parallel waves>
 verification: <authoritative checks>
 suggestion: <one missing material capability or none>
+delegation summary: <agent id> — <model>/<effort> — <assigned job> — <outcome>, one per worker, or none
 ```
+
+The delegation summary is the only place the root learns which model and effort ran each delegated unit and what that unit was assigned; report the values actually used, never the ones planned.
 
 Include `<!-- SYMPHONY_MODE:<small|medium|large> -->` with that record to report the accepted mode. Mode markers do not authorize mode changes; a changed mode requires a fresh authorized assessment receipt. Normal completion has no marker-only fallback.
 
@@ -102,7 +105,9 @@ If the host exposes no child lifecycle events, role registration is unavailable;
 
 ## Delegation visibility
 
-Before every assessor, lead, worker, or reviewer spawn, its dispatcher emits `Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>`. While blocked on active agents, it may emit `Waiting: <role or wave> — <bounded in-progress fact>`. `Waiting:` may report only observed lifecycle state; never speculate about checks, blockers, or results. After each completion, it emits `Completed: <agent id/role> — <status>`. Append ` — tokens <observed value>` or ` — duration <observed value>` only when exposed. These commentary records complement the persistent agent ledger; never invent or announce missing usage.
+Before every assessor, lead, worker, or reviewer spawn, its dispatcher emits `Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>`, naming the model and effort actually passed to the spawn call. While blocked on active agents, it may emit `Waiting: <role or wave> — <bounded in-progress fact>`. `Waiting:` may report only observed lifecycle state; never speculate about checks, blockers, or results. After each completion, it emits `Completed: <agent id/role> — <status>`. Append ` — tokens <observed value>` or ` — duration <observed value>` only when exposed. These commentary records complement the persistent agent ledger; never invent or announce missing usage.
+
+The user must be able to see why a run costs what it costs. After the hook accepts an assessment, the root announces `Mode: <mode> — <strategy> — <reason>`: small means the lead executes directly, medium means the lead plus at most two bounded independent workers, and large means dependency-aware parallel worker waves. The lead ends its result with `Delegation summary:` listing each worker as `<agent id> — <model>/<effort> — <assigned job> — <outcome>`, or `Delegation summary: none`. The root's final report carries one `Routing:` line: `Routing: mode <mode> (<strategy>) — <reason>; assessor <agent id> <model>/<effort>; lead <agent id> <model>/<effort>; workers <agent id> <model>/<effort> — <assigned job>, … or none`. The Stop hook offers a copy-ready `Routing:` line from its ledger with `<...>` placeholders for values the host did not expose; fill every placeholder from your own spawn calls and the lead's delegation summary. A `Routing:` line that still contains a placeholder, or a `Completed:` record whose status is a placeholder, does not complete the run.
 
 ## Ordinary reassessment
 
@@ -207,7 +212,7 @@ For successful completion:
 
 1. Ensure all tracked agents are terminal.
 2. Require the execution lead's integrated artifacts and authoritative verification result.
-3. Make the root-final response self-contained: repeat the integrated deliverable, both assessor and lead `Completed: <agent-id>/<role> — <status>` records, a `Verification:` line with authoritative evidence, the selected mode, and the exact completion receipt. Add token or duration segments only when exposed.
+3. Make the root-final response self-contained: repeat the integrated deliverable, both assessor and lead `Completed: <agent-id>/<role> — <status>` records with each agent's observed terminal status, one `Routing:` line with the mode strategy and every agent's actual model/effort and assigned job, a `Verification:` line with authoritative evidence, the selected mode, and the exact completion receipt. Add token or duration segments only when exposed.
 4. Report at most one missing capability whose absence materially affected this run and whose cooldown permits it. When reporting one, include `<!-- SYMPHONY_SUGGESTED:<capability-id> -->`.
 5. Include `<!-- SYMPHONY_RUN_COMPLETE:<run-id> -->` in the root-final response using the exact injected receipt for every successful run. When extended memory is active, also relay the lead's exact `<!-- SYMPHONY_MEMORY_CHECKPOINT:<run-id>:codebase-memory-mcp -->` marker in that response. The Stop hook clears the run only when the required receipt and checkpoint match.
 

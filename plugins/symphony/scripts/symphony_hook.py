@@ -34,6 +34,15 @@ AGENT_MEASUREMENT_FIELDS = (
     ("Duration (ms)", "duration_ms"),
     ("Run tool uses", "tool_uses"),
 )
+MODE_STRATEGIES = {
+    "small": "lead executes directly",
+    "medium": "lead plus at most two bounded independent workers",
+    "large": "dependency-aware parallel worker waves",
+}
+NOT_EXPOSED = "not exposed by host"
+RECORD_SEPARATOR_RE = re.compile(r"[ \t]+(?:—|–|-{1,2})[ \t]+")
+PLACEHOLDER_RE = re.compile(r"<(?!!--)[^<>\r\n]*>")
+ROUTING_LINE_RE = re.compile(r"^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?routing:(?:\*\*)?[ \t]*([^\r\n]*)$", re.IGNORECASE | re.MULTILINE)
 AUTHORITY_CONTEXT = (
     "Symphony is the orchestration authority for this active run. Supporting workflow skills are "
     "bounded techniques: they return artifacts and control to the Symphony lead, must not start a "
@@ -404,6 +413,82 @@ def _host_reports_child_lifecycle():
     return True if len(configured) == 2 else None
 
 
+def _strategy(mode):
+    return MODE_STRATEGIES.get((mode or "").lower(), "mode-appropriate execution")
+
+
+def _mode_announcement(mode, reason=None):
+    return f"`Mode: {mode} — {_strategy(mode)} — {reason or '<reason>'}`"
+
+
+def _completion_record_state(message, agent_id, role):
+    """Classify the visible `Completed:` record for one registered role holder.
+
+    Returns "valid", "placeholder" (only a literal `<...>` status was reported), or "missing".
+    Any dash variant separates the segments so a copied record is not rejected on punctuation.
+    """
+    pattern = re.compile(
+        rf"^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?completed:(?:\*\*)?[ \t]*"
+        rf"`?{re.escape(agent_id)}`?[ \t]*/[ \t]*`?(?:symphony_)?{role}`?"
+        rf"[ \t]+(?:—|–|-{{1,2}})[ \t]+([^\r\n]*)$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    outcome = "missing"
+    for match in pattern.finditer(message):
+        status = RECORD_SEPARATOR_RE.split(match.group(1).strip(), maxsplit=1)[0].strip().strip("*` \t")
+        if not re.search(r"[A-Za-z0-9]", status):
+            continue
+        if PLACEHOLDER_RE.fullmatch(status):
+            outcome = "placeholder"
+            continue
+        return "valid"
+    return outcome
+
+
+def _routing_line(state, run):
+    """Copy-ready routing disclosure from the ledger; unknown values stay as `<...>` placeholders."""
+    records = {record["id"]: record for record in _agent_records(run)}
+
+    def describe(agent_id):
+        record = records.get(agent_id) or {}
+        model = record.get("model") if record.get("model") not in (None, "", NOT_EXPOSED) else "<model>"
+        effort = record.get("effort") if record.get("effort") not in (None, "", NOT_EXPOSED) else "<effort>"
+        return f"{agent_id} {model}/{effort}"
+
+    history = [entry for entry in run.get("mode_history") or [] if isinstance(entry, dict)]
+    reason = (history[-1].get("reason") if history else None) or state.get("assessment", {}).get("reason") or "<reason>"
+    workers = [
+        f"{describe(record['id'])} — <assigned job>"
+        for record in records.values()
+        if record["id"] not in {run.get("assessor_agent_id"), run.get("lead_agent_id")}
+        and not record.get("registered_role")
+    ]
+    return (
+        f"Routing: mode {run['mode']} ({_strategy(run['mode'])}) — {reason}; "
+        f"assessor {describe(run['assessor_agent_id'])}; lead {describe(run['lead_agent_id'])}; "
+        f"workers {', '.join(workers) if workers else 'none'}"
+    )
+
+
+def _routing_state(message):
+    """Classify the visible `Routing:` disclosure: "valid", "placeholder", or "missing"."""
+    outcome = "missing"
+    for match in ROUTING_LINE_RE.finditer(message):
+        block = match.group(1)
+        # A bulleted or indented continuation belongs to the disclosure; any other line ends it.
+        for line in message[match.end():].splitlines()[1:]:
+            if not re.match(r"[ \t]*[-*][ \t]+\S|[ \t]+\S", line):
+                break
+            block += "\n" + line
+        if not re.search(r"[A-Za-z0-9]", block):
+            continue
+        if PLACEHOLDER_RE.search(block):
+            outcome = "placeholder"
+            continue
+        return "valid"
+    return outcome
+
+
 def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, now=None):
     action = "Recover" if recovery else "Start"
     if run["dry_run"]:
@@ -417,20 +502,21 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
             f"`<!-- {run['receipt']} -->`."
         )
     route = (
-        "Reconcile observed agents, then emit `Delegating: symphony_lead — <bounded objective> — "
-        "<model>/<effort> — accepted-mode reassessment`, spawn a fresh separate mode-appropriate "
-        "execution lead, register it, and wait. "
+        f"Reconcile observed agents, announce {_mode_announcement(run['mode'])}, then emit "
+        "`Delegating: symphony_lead — <bounded objective> — <model>/<effort> — accepted-mode "
+        "reassessment`, spawn a fresh separate mode-appropriate execution lead, register it, and wait. "
         if recovery and accepted_recovery else
         "Emit `Delegating: symphony_assessor — <bounded objective> — <model>/<effort> — initial or "
         "required reassessment`, spawn one strongest-available general reasoning model at high effort "
         "with no inherited turns as read-only symphony_assessor, register it, and wait. After its "
-        "accepted receipt, emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — "
+        "accepted receipt, announce `Mode: <mode> — <strategy> — <reason>` from the hook acknowledgment, "
+        "emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — "
         "selected <mode> execution`, spawn a separate mode-appropriate execution lead, register it, "
         "and wait. The assessor must not implement or become the lead. "
         if run["assessment_due"] else
-        "Reconcile observed agents, then emit `Delegating: symphony_lead — <bounded objective> — "
-        "<model>/<effort> — selected <mode> execution`, spawn a fresh separate mode-appropriate "
-        "execution lead, register it, and wait. "
+        f"Reconcile observed agents, announce {_mode_announcement(run['mode'])}, then emit "
+        "`Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution`, "
+        "spawn a fresh separate mode-appropriate execution lead, register it, and wait. "
     )
     return (
         f"{action} Symphony run. Run id: {run['id']}. "
@@ -440,10 +526,12 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
         "Use these exact visible record forms: `Delegating: <role> — <bounded objective> — "
         "<model>/<effort> — <reason>`; `Waiting: <role or wave> — <bounded in-progress fact>`; "
         "`Completed: <agent id/role> — <status>`, followed only when exposed by ` — tokens "
-        "<observed value>` and/or ` — duration <observed value>`. `Waiting:` may contain only observed "
+        "<observed value>` and/or ` — duration <observed value>`; `Mode: <mode> — <strategy> — <reason>` "
+        "once the hook accepts an assessment. `Waiting:` may contain only observed "
         "lifecycle state. The final completion response must be self-contained: repeat the integrated "
-        "deliverable, both assessor and lead completion records, a `Verification:` line, the selected "
-        "mode, and the exact completion receipt. "
+        "deliverable, both assessor and lead completion records, a `Routing:` line naming the mode "
+        "strategy plus each agent's actual model/effort and assigned job from the lead's delegation "
+        "summary, a `Verification:` line, the selected mode, and the exact completion receipt. "
         f"After the host exposes an id, emit `SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>` or "
         f"`SYMPHONY_REGISTER:{run['id']}:lead:<agent-id>` as applicable. "
         "For the initial execution lead and each recovery lead, immediately end a final-channel response "
@@ -467,7 +555,9 @@ def _status_context(state):
     else:
         run_text = (
             f"{run['id']} ({run['status']}), owner={run['owner_session_id']}, "
-            f"mode={run.get('mode') or 'unselected'}, agents={','.join(run.get('agents', [])) or 'none'}"
+            f"mode={run.get('mode') or 'unselected'}"
+            + (f" ({_strategy(run['mode'])})" if run.get("mode") else "")
+            + f", agents={','.join(run.get('agents', [])) or 'none'}"
         )
     usage = _usage_aggregates(state)
     assessment = state["assessment"]
@@ -1128,7 +1218,10 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             f"Symphony registered roles: assessor={run.get('assessor_agent_id')}, lead={run.get('lead_agent_id')}. "
             if registration_changed else ""
         ) + (
-            f"Symphony accepted assessment: mode={run['mode']}, mode revision={run['mode_revision']}. "
+            f"Symphony accepted assessment: mode={run['mode']} ({_strategy(run['mode'])}), "
+            f"mode revision={run['mode_revision']}, reason: {run['mode_history'][-1]['reason']}. "
+            f"Announce {_mode_announcement(run['mode'], run['mode_history'][-1]['reason'])} visibly before "
+            f"`Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected {run['mode']} execution`. "
             if assessment_changed else ""
         )
         if (run["assessment_due"] and "SYMPHONY_ASSESSMENT:" in message.upper()
@@ -1294,27 +1387,42 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 ),
             )
         if not run["dry_run"] and run.get("assessor_agent_id") and run.get("lead_agent_id"):
-            visible_records = all(re.search(
-                rf"(?mi)^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?completed:(?:\*\*)?[ \t]*"
-                rf"`?{re.escape(run[f'{role}_agent_id'])}`?[ \t]*/[ \t]*"
-                rf"`?(?:symphony_)?{role}`?[ \t]+—[ \t]+[^\r\n]*[A-Za-z0-9][^\r\n]*$",
-                message,
-            ) for role in ("assessor", "lead"))
+            record_states = {
+                role: _completion_record_state(message, run[f"{role}_agent_id"], role)
+                for role in ("assessor", "lead")
+            }
+            routing_state = _routing_state(message)
             visible_verification = re.search(
                 r"(?mi)^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?verification:(?:\*\*)?"
                 r"[^\r\n]*[A-Za-z0-9][^\r\n]*$",
                 message,
             )
-            if not visible_records or not visible_verification:
+            if (any(value != "valid" for value in record_states.values())
+                    or routing_state != "valid" or not visible_verification):
                 if memory_changed or assessment_changed:
                     write_project_state(data_dir, state, now)
+                placeholder_roles = [role for role, value in record_states.items() if value == "placeholder"]
                 return HookResult(block=True, reason=(
                     "Symphony completion requires one self-contained final report. Repeat the integrated "
                     "deliverable and both assessor and lead completion records. Use these exact registered "
-                    "identities without editing them: "
+                    "identities without editing them, replacing only `<status>` with each agent's observed "
+                    "terminal status: "
                     f"`Completed: {run['assessor_agent_id']}/assessor — <status>` and "
-                    f"`Completed: {run['lead_agent_id']}/lead — <status>`. Add token or duration segments only "
-                    "when exposed, then include a `Verification:` line with authoritative evidence, the "
+                    f"`Completed: {run['lead_agent_id']}/lead — <status>`. "
+                    + (
+                        "Your last report still carried the literal `<status>` placeholder for the "
+                        f"{' and '.join(placeholder_roles)} record; a placeholder is not a status. "
+                        if placeholder_roles else ""
+                    )
+                    + "Add token or duration segments only when exposed. Include this routing disclosure, "
+                    "replacing every `<...>` placeholder with the actual model, effort, reason, or assigned "
+                    "job used, taken from your spawn calls and the lead's delegation summary: "
+                    f"`{_routing_line(state, run)}`. "
+                    + (
+                        "Your last `Routing:` line still contained `<...>` placeholders. "
+                        if routing_state == "placeholder" else ""
+                    )
+                    + "Then include a `Verification:` line with authoritative evidence, the "
                     "selected mode, and the exact run completion receipt."
                 ))
         memory_error = _memory_checkpoint_error(run, project_root, message)
@@ -1496,7 +1604,9 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                         f"You are an assigned child in Symphony run {run['id']}; inherited root bootstrap does not apply. "
                         f"Perform your assigned role directly. {AUTHORITY_CONTEXT} A symphony_assessor is read-only and does not need spawn or wait tools: "
                         "inspect the repository and return its assessment, never delegate another assessor or lead. "
-                        "A symphony_lead executes and verifies its assignment. Follow explicitly assigned skills; "
+                        "A symphony_lead executes and verifies its assignment and ends its result with "
+                        "`Delegation summary:` listing each delegated worker as `<agent id> — <model>/<effort> — "
+                        "<assigned job> — <outcome>`, or `Delegation summary: none`. Follow explicitly assigned skills; "
                         "return the requested receipts, capability receipt, changed files, checks, and blockers. "
                         "Assessment project-profile and run-mode fields must each be small, medium, or large."
                     )

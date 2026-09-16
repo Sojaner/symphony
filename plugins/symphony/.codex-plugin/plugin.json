@@ -1,6 +1,6 @@
 {
   "name": "symphony",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Persistent, recoverable project routing through a strong execution lead and task-aware workflow capabilities.",
   "author": {
     "name": "Sojaner"
