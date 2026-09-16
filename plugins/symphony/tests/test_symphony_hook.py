@@ -3624,6 +3624,14 @@ UTF-8 CSV produces a JSON array of objects; reject duplicate headers and field c
 Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: field count rejection.
 <!-- SYMPHONY_MODE:small -->
 <!-- SYMPHONY_RUN_COMPLETE:1e27fbb8b95b15c2 -->"""
+        heading_report = """**Agents:**
+- **Assessor:** acae72eeb92357e91
+- **Lead:** a6032276286cc99b8
+
+**Completed:**
+- acae72eeb92357e91/symphony_assessor — assessment complete — tokens 10715 — duration 19.4s
+- a6032276286cc99b8/symphony_lead — contract delivered — tokens 10267 — duration 11.6s
+""" + report.split("\n", 2)[2]
         refusal = "Orchestrator mismatch\nDeclared: gpt-5.6-terra/medium; actual: claude-haiku-4-5-20251001/unverified\nStart a task configured with the actual model and effort."
         stats = {"spawned": 2, "completed": 2, "spawned_by_subagents": 0, "failed": 0}
         terminal = {"type": "result", "subtype": "success", "subagent_stats": stats}
@@ -3647,6 +3655,11 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 report.replace("UTF-8", "ASCII"), report.replace("JSON array", "JSON string"),
                 report.replace("duplicate header", "repeated column"),
                 report.replace("field count", "record sizes"), report.replace("Example 3", "Omitted"),
+                heading_report.replace("/symphony_assessor", "/worker"),
+                heading_report.replace("/symphony_lead", "/worker"),
+                heading_report.replace("tokens 10267", "usage unknown"),
+                heading_report.replace("duration 19.4s", "elapsed unknown"),
+                heading_report.replace("**Completed:**", "**Planned:**"),
         ]
         bad_refusals = [
                 refusal.replace("Orchestrator mismatch", "No mismatch; proceeding"),
@@ -3667,6 +3680,7 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 {**smoke, "calls": [smoke["calls"][0], lead_with_assessor_context, lead_with_assessor_context]},
                 {**smoke, "last_message": report.replace("duplicate header", "duplicate column name").replace("field count", "row-width")},
                 {**smoke, "last_message": report.replace("field count", "field-count")},
+                {**smoke, "last_message": heading_report},
             ], [
                 *[{**smoke, "last_message": text} for text in bad_reports],
                 *[{**smoke, "trace": json.dumps({**terminal, "subagent_stats": {**stats, field: value}})}
