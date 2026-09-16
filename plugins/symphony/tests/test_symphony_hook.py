@@ -4751,6 +4751,31 @@ class CodexSmokeTests(unittest.TestCase):
 
 
 class HookDeclarationTests(unittest.TestCase):
+    def test_hook_launchers_fall_forward_after_marketplace_upgrade(self):
+        for filename in ("codex.json", "hooks.json"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
+                declaration = json.loads((PLUGIN_ROOT / "hooks" / filename).read_text(encoding="utf-8"))
+                command = declaration["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+                cache = Path(temporary) / "symphony"
+                stale_root = cache / "0.20.3"
+                current_script = cache / "0.21.0" / "scripts" / "symphony_hook.py"
+                marker = Path(temporary) / "ran"
+                current_script.parent.mkdir(parents=True)
+                current_script.write_text(
+                    "from pathlib import Path\nPath(" + repr(str(marker)) + ").write_text('ok')\n",
+                    encoding="utf-8",
+                )
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    text=True,
+                    capture_output=True,
+                    env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(stale_root)},
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("ok", marker.read_text(encoding="utf-8"))
+
     def test_hosted_eval_prompts_preserve_registration_and_refusal_contracts(self):
         prompt = (PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "prompt.md").read_text(encoding="utf-8")
         for required in (
@@ -5206,7 +5231,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.21.0"}, versions)
+        self.assertEqual({"0.21.1"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},
@@ -5279,7 +5304,8 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             self.assertTrue(commands)
             self.assertTrue(
                 all(
-                    '${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py' in command
+                    '${CLAUDE_PLUGIN_ROOT}' in command
+                    and "*/scripts/symphony_hook.py" in command
                     for command in commands
                 )
             )

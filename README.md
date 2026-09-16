@@ -176,6 +176,7 @@ Claude Code:
 ```
 
 Start a new task after updating so the host reloads hooks and skills.
+Already-running sessions retain their loaded hook declarations; if an upgrade replaces their versioned cache, the hook launcher falls forward to the newest installed Symphony version.
 
 ## Development and testing
 

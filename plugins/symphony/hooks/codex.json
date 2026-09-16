@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"",
+            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "timeout": 10
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"",
+            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "timeout": 10
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"",
+            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "timeout": 10,
             "additionalContextLimit": 8192
           }
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"",
+            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "timeout": 10,
             "additionalContextLimit": 4096
           }
@@ -53,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"",
+            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "timeout": 10
           }
         ]
@@ -64,7 +64,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"",
+            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "timeout": 65,
             "statusMessage": "Symphony is reconciling active work"
           }
@@ -76,7 +76,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"",
+            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
             "timeout": 3
           }
         ]
