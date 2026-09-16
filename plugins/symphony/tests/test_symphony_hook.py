@@ -2578,6 +2578,17 @@ class SymphonyHookTests(unittest.TestCase):
             self.assertIn("`Capability routing:`", result.reason)
             self.assertIsNotNone(self.state()["active_run"])
 
+        host_report = report.replace(
+            "Completed: symphony_", "Completed: planned symphony_"
+        )
+        result = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=host_report),
+            self.data,
+            stop_wait_seconds=0,
+        )
+        self.assertFalse(result.block)
+        self.assertIsNone(self.state()["active_run"])
+
     def test_interrupted_run_transfers_once_after_passive_foreign_startup_and_control(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
@@ -4077,6 +4088,9 @@ Completed: symphony_lead — planned
 <!-- SYMPHONY_MODE:medium -->"""
         implementation_adversarial = passing.replace("bounded read-only assessment", "implement the task")
         self.assertIsNotNone(re.search(pattern, passing))
+        self.assertIsNotNone(re.search(
+            pattern, passing.replace("Completed: symphony_", "Completed: planned symphony_")
+        ))
         self.assertIsNone(re.search(pattern, adversarial))
         self.assertIsNone(re.search(pattern, implementation_adversarial))
         lines = passing.splitlines()
@@ -4172,7 +4186,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.16.0"}, versions)
+        self.assertEqual({"0.16.1"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},

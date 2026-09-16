@@ -1187,7 +1187,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 write_project_state(data_dir, state, now)
             return HookResult(block=True, reason="Symphony completion must come from the owning root and match the accepted assessment mode.")
         if run["dry_run"]:
-            normalized = message.lower()
+            normalized = message.lower().replace("completed: planned symphony_", "completed: symphony_")
             records = (
                 "root profile:",
                 "capability routing:",
