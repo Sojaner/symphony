@@ -45,6 +45,29 @@ class PackageContractTests(unittest.TestCase):
             {"SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "SubagentStop", "PostToolUse", "Stop"},
         )
 
+    def test_provider_help_uses_only_native_command_syntax(self):
+        codex = (PLUGIN / "skills/symphony/SKILL.md").read_text(encoding="utf-8")
+        claude = (PLUGIN / "commands/help.md").read_text(encoding="utf-8")
+        self.assertIn("`$symphony:symphony ...`", codex)
+        self.assertIn("Codex does not support `/symphony:*`", codex)
+        self.assertIn("`/symphony:help`", claude)
+        self.assertNotIn("$symphony", claude)
+
+    def test_all_control_wrappers_exist(self):
+        expected = {"agents", "bypass", "disable", "enable", "help", "reassess", "start", "status", "stop"}
+        self.assertEqual({path.stem for path in (PLUGIN / "commands").glob("*.md")}, expected)
+
+    def test_role_contracts_classify_each_actionable_packet(self):
+        roles = (PLUGIN / "skills/symphony/references/role-contracts.md").read_text(encoding="utf-8")
+        self.assertIn("size", roles)
+        self.assertIn("complexity", roles)
+        self.assertIn("Each consultant decision is classified separately", roles)
+
+    def test_capability_routing_assigns_supporting_workflows(self):
+        routing = (PLUGIN / "skills/symphony/references/capability-routing.md").read_text(encoding="utf-8")
+        for capability in ("Ponytail", "Context7", "Compound Engineering", "Superpowers"):
+            self.assertIn(capability, routing)
+
 
 if __name__ == "__main__":
     unittest.main()
