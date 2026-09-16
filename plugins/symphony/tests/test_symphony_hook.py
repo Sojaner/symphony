@@ -653,32 +653,41 @@ class SymphonyHookTests(unittest.TestCase):
             last_assistant_message=receipt.replace(":large:medium", ":large:large")), self.data)
         self.assertEqual("large", self.state()["active_run"]["mode"])
 
-    def test_owner_registration_accepts_inline_markdown_code(self):
-        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
-        run = self.state()["active_run"]
-        receipt = (
-            f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
-            "SYMPHONY_ASSESSMENT_REASON:Bounded task"
-        )
-        self.hook.handle_event(
-            self.event("SubagentStart", agent_id="assessor", agent_type="general-purpose"), self.data,
-        )
-        self.hook.handle_event(
-            self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data,
-        )
+    def test_owner_registration_accepts_harmless_markdown_wrappers(self):
+        for index, wrapper in enumerate(("`", "**")):
+            with self.subTest(wrapper=wrapper):
+                self.data = Path(self.tmp.name) / f"registration-wrapper-{index}"
+                self.data.mkdir()
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+                )
+                run = self.state()["active_run"]
+                receipt = (
+                    f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
+                    "SYMPHONY_ASSESSMENT_REASON:Bounded task"
+                )
+                self.hook.handle_event(
+                    self.event("SubagentStart", agent_id="assessor", agent_type="general-purpose"),
+                    self.data,
+                )
+                self.hook.handle_event(
+                    self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt),
+                    self.data,
+                )
 
-        result = self.hook.handle_event(
-            self.event("Stop", last_assistant_message=(
-                f"`SYMPHONY_REGISTER:{run['id']}:assessor:assessor`\n{receipt}"
-            )),
-            self.data,
-            stop_wait_seconds=0,
-        )
+                result = self.hook.handle_event(
+                    self.event("Stop", last_assistant_message=(
+                        f"{wrapper}SYMPHONY_REGISTER:{run['id']}:assessor:assessor{wrapper}\n"
+                        f"{receipt}"
+                    )),
+                    self.data,
+                    stop_wait_seconds=0,
+                )
 
-        self.assertIn("Symphony registered roles", result.reason)
-        self.assertIn("Symphony accepted assessment", result.reason)
-        self.assertEqual("assessor", self.state()["active_run"]["assessor_agent_id"])
-        self.assertFalse(self.state()["active_run"]["assessment_due"])
+                self.assertIn("Symphony registered roles", result.reason)
+                self.assertIn("Symphony accepted assessment", result.reason)
+                self.assertEqual("assessor", self.state()["active_run"]["assessor_agent_id"])
+                self.assertFalse(self.state()["active_run"]["assessment_due"])
 
     def test_status_reports_assessment_fields_without_lifecycle_writes(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess large"), self.data)

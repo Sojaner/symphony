@@ -49,7 +49,8 @@ ASSESSMENT_REASON_RE = re.compile(
     r"^[ \t]*SYMPHONY_ASSESSMENT_REASON:([^\r\n]*)\r?$", re.IGNORECASE | re.MULTILINE,
 )
 REGISTRATION_RE = re.compile(
-    r"^[ \t]*`?SYMPHONY_REGISTER:([a-f0-9]{16}):(assessor|lead):([A-Za-z0-9_-]{1,128})[ \t]*`?[ \t]*$",
+    r"^[ \t]*(?:`|\*\*)?SYMPHONY_REGISTER:([a-f0-9]{16}):(assessor|lead):"
+    r"([A-Za-z0-9_-]{1,128})[ \t]*(?:`|\*\*)?[ \t]*$",
     re.MULTILINE,
 )
 CONTROL_RECEIPT_RE = re.compile(r"(?:^|\n)<!-- SYMPHONY_CONTROL_HANDLED:([a-f0-9]{32}) -->\s*\Z")
