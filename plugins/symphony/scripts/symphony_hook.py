@@ -446,13 +446,13 @@ def _completion_record_state(message, agent_id, role):
 
 
 def _routing_line(state, run):
-    """Copy-ready routing disclosure from the ledger; unknown values stay as `<...>` placeholders."""
+    """Copy-ready routing disclosure from the ledger; unavailable identity values are explicit."""
     records = {record["id"]: record for record in _agent_records(run)}
 
     def describe(agent_id):
         record = records.get(agent_id) or {}
-        model = record.get("model") if record.get("model") not in (None, "", NOT_EXPOSED) else "<model>"
-        effort = record.get("effort") if record.get("effort") not in (None, "", NOT_EXPOSED) else "<effort>"
+        model = record.get("model") if record.get("model") not in (None, "", NOT_EXPOSED) else "unknown"
+        effort = record.get("effort") if record.get("effort") not in (None, "", NOT_EXPOSED) else "unknown"
         return f"{agent_id} {model}/{effort}"
 
     history = [entry for entry in run.get("mode_history") or [] if isinstance(entry, dict)]
@@ -488,42 +488,56 @@ def _routing_state(message):
         if PLACEHOLDER_RE.search(block):
             outcome, kept = "placeholder", block
             continue
-        return "valid", block
+        outcome, kept = "valid", block
     return outcome, kept
 
 
 def _routing_mismatches(block, run):
-    """Compare the reported assessor and lead routing with host-observed ledger values."""
+    """Compare the structured routing disclosure with the run and host ledger."""
     records = {record["id"]: record for record in _agent_records(run)}
     mismatches = []
+    plain = re.sub(r"[`*]", "", block)
+    segments = [
+        re.sub(r"^[ \t]*[-*][ \t]+", "", segment).strip()
+        for segment in re.split(r"[;\r\n]+", plain)
+        if segment.strip()
+    ]
+    expected_mode = f"mode {run['mode']} ({_strategy(run['mode'])})"
+    if not any(segment.lower().startswith(expected_mode.lower() + " ") for segment in segments):
+        mismatches.append(f"mode must read {run['mode']} ({_strategy(run['mode'])})")
+
     for role in ("assessor", "lead"):
         agent_id = run.get(f"{role}_agent_id")
         record = records.get(agent_id) or {}
-        known = {
-            field: record.get(field)
+        expected = "/".join(
+            record.get(field) if record.get(field) not in (None, "", NOT_EXPOSED) else "unknown"
             for field in ("model", "effort")
-            if record.get(field) not in (None, "", NOT_EXPOSED)
-        }
-        if not known:
-            continue
-        expected = f"{known.get('model', '<model>')}/{known.get('effort', '<effort>')}"
-        # The id may also occur in prose (a short id such as "lead" appears in the strategy),
-        # so every whole-token occurrence is a candidate segment up to the next `;` or line end.
-        segments = [
-            match.group(1).lower() for match in re.finditer(
-                rf"(?<![A-Za-z0-9_-]){re.escape(agent_id)}(?![A-Za-z0-9_-])`?([^\r\n;]*)", block,
-            )
-        ]
-        routed = [segment for segment in segments if re.search(r"\S+/\S+", segment)]
-        if not routed:
+        )
+        routed = next((segment for segment in segments if segment.lower().startswith(role + " ")), None)
+        if routed is None:
             mismatches.append(f"{role} {agent_id} {expected} is missing")
             continue
-        if not any(
-            ("model" not in known or known["model"].lower() in segment)
-            and ("effort" not in known or f"/{known['effort'].lower()}" in segment)
-            for segment in routed
-        ):
+        if routed.lower() != f"{role} {agent_id} {expected}".lower():
             mismatches.append(f"{role} {agent_id} must read {expected}")
+
+    workers = [
+        record for record in records.values()
+        if record["id"] not in {run.get("assessor_agent_id"), run.get("lead_agent_id")}
+        and not record.get("registered_role")
+    ]
+    worker_segment = next((segment for segment in segments if segment.lower().startswith("workers ")), "")
+    for record in workers:
+        expected = "/".join(
+            record.get(field) if record.get(field) not in (None, "", NOT_EXPOSED) else "unknown"
+            for field in ("model", "effort")
+        )
+        if not re.search(
+            rf"(?<![A-Za-z0-9_-]){re.escape(record['id'])}(?![A-Za-z0-9_-])[ \t]+"
+            rf"{re.escape(expected)}[ \t]+(?:—|–|-{{1,2}})[ \t]+[^,;\r\n]*[A-Za-z0-9]",
+            worker_segment,
+            re.IGNORECASE,
+        ):
+            mismatches.append(f"worker {record['id']} is missing")
     return mismatches
 
 

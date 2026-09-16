@@ -135,12 +135,12 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIn("Completed: lead/lead — <status>", terse.reason)
         self.assertIn("replacing only `<status>` with each agent's observed terminal status", terse.reason)
         routing = ("Routing: mode small (lead executes directly) — One bounded unit; "
-                   "assessor assessor <model>/<effort>; lead lead <model>/<effort>; workers none")
+                   "assessor assessor unknown/unknown; lead lead unknown/unknown; workers none")
         self.assertIn(f"`{routing}`", terse.reason)
         self.assertNotIn("still carried the literal", terse.reason)
         self.assertNotIn("still contained", terse.reason)
-        filled_routing = routing.replace("<model>/<effort>", "claude-sonnet-5/medium").replace(
-            "assessor assessor claude-sonnet-5/medium", "assessor assessor claude-opus-5/high")
+        filled_routing = routing
+        placeholder_routing = routing.replace("unknown/unknown", "<model>/<effort>")
         records = "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
         verification = "Verification: result.txt contains the exact verified value.\n"
 
@@ -152,7 +152,7 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIn("still carried the literal `<status>` placeholder for the lead record", placeholder.reason)
 
         unfilled = self.hook.handle_event(self.event("Stop", last_assistant_message=(
-            records + routing + "\n" + verification + tail
+            records + placeholder_routing + "\n" + verification + tail
         )), self.data, stop_wait_seconds=0)
         self.assertTrue(unfilled.block)
         self.assertIn("Your last `Routing:` line still contained `<...>` placeholders", unfilled.reason)
@@ -182,7 +182,7 @@ class SymphonyHookTests(unittest.TestCase):
                 "- **Completed:** `lead` / `lead` – completed\n"
                 "**Routing:**\n"
                 "- mode small (lead executes directly) — One bounded unit\n"
-                "- assessor assessor claude-opus-5/high; lead lead claude-sonnet-5/medium; workers none\n"
+                "- assessor assessor unknown/unknown; lead lead unknown/unknown; workers none\n"
                 "\n"
                 "**Verification:** result.txt contains the exact verified value." + tail
             )),
@@ -249,14 +249,14 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIn(
             "`Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
             "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; "
-            "workers worker-a gpt-5.6-luna/<effort> — <assigned job>`",
+            "workers worker-a gpt-5.6-luna/unknown — <assigned job>`",
             blocked.reason,
         )
         misreported = self.hook.handle_event(self.event("Stop", last_assistant_message=(
             "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
             "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
             "assessor assessor gpt-6-astra/high; lead lead gpt-6-astra/high; "
-            "workers worker-a gpt-5.6-luna/low — parser module\n"
+            "workers worker-a gpt-5.6-luna/unknown — parser module\n"
             "Verification: 12 tests pass" + tail
         )), self.data, stop_wait_seconds=0)
         self.assertTrue(misreported.block)
@@ -273,11 +273,57 @@ class SymphonyHookTests(unittest.TestCase):
         )), self.data, stop_wait_seconds=0)
         self.assertTrue(omitted.block)
         self.assertIn("lead lead gpt-5.6-luna/low is missing", omitted.reason)
+        for bad_routing, expected in (
+            (
+                "Routing: mode small (lead executes directly) — Two independent modules; "
+                "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; "
+                "workers worker-a gpt-5.6-luna/unknown — parser module",
+                "mode must read medium (lead plus at most two bounded independent workers)",
+            ),
+            (
+                "Routing: mode medium (lead executes directly) — Two independent modules; "
+                "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; "
+                "workers worker-a gpt-5.6-luna/unknown — parser module",
+                "mode must read medium (lead plus at most two bounded independent workers)",
+            ),
+            (
+                "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
+                "assessor assessor not-gpt-6-astra/highish; lead lead fake-gpt-5.6-luna/lowest; "
+                "workers worker-a gpt-5.6-luna/unknown — parser module",
+                "assessor assessor must read gpt-6-astra/high",
+            ),
+            (
+                "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
+                "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; workers none",
+                "worker worker-a is missing",
+            ),
+            (
+                "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
+                "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; "
+                "workers worker-a gpt-5.6-luna/unknown",
+                "worker worker-a is missing",
+            ),
+            (
+                "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
+                "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; "
+                "workers worker-a gpt-5.6-luna/unknown — parser module\n"
+                "Routing: mode small (lead executes directly) — false final disclosure; "
+                "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; workers none",
+                "mode must read medium (lead plus at most two bounded independent workers)",
+            ),
+        ):
+            with self.subTest(bad_routing=bad_routing):
+                rejected = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+                    "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
+                    + bad_routing + "\nVerification: 12 tests pass" + tail
+                )), self.data, stop_wait_seconds=0)
+                self.assertTrue(rejected.block)
+                self.assertIn(expected, rejected.reason)
         complete = self.hook.handle_event(self.event("Stop", last_assistant_message=(
             "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
             "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
             "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; "
-            "workers worker-a gpt-5.6-luna/low — parser module\n"
+            "workers worker-a gpt-5.6-luna/unknown — parser module\n"
             "Verification: 12 tests pass" + tail
         )), self.data, stop_wait_seconds=0)
         self.assertFalse(complete.block, complete.reason)
@@ -315,7 +361,7 @@ class SymphonyHookTests(unittest.TestCase):
         )), self.data, stop_wait_seconds=0)
         self.assertIn(
             "`Routing: mode small (lead executes directly) — One bounded unit; "
-            "assessor assessor opus/<effort>; lead lead claude-sonnet-5/medium; workers none`",
+            "assessor assessor opus/unknown; lead lead claude-sonnet-5/medium; workers none`",
             blocked.reason,
         )
         wrong = self.hook.handle_event(self.event("Stop", last_assistant_message=(
@@ -325,11 +371,11 @@ class SymphonyHookTests(unittest.TestCase):
             "Verification: checked" + tail
         )), self.data, stop_wait_seconds=0)
         self.assertTrue(wrong.block)
-        self.assertIn("assessor assessor must read opus/<effort>", wrong.reason)
+        self.assertIn("assessor assessor must read opus/unknown", wrong.reason)
         complete = self.hook.handle_event(self.event("Stop", last_assistant_message=(
             "- **Completed:** assessor/assessor — completed\n- **Completed:** lead/lead — completed\n"
             "**Routing:**\n- mode small (lead executes directly) — One bounded unit\n"
-            "- assessor `assessor` opus/high\n- lead `lead` claude-sonnet-5/medium\n- workers none\n\n"
+            "- assessor `assessor` opus/unknown\n- lead `lead` claude-sonnet-5/medium\n- workers none\n\n"
             "Verification: checked" + tail
         )), self.data, stop_wait_seconds=0)
         self.assertFalse(complete.block, complete.reason)
@@ -4212,6 +4258,11 @@ three independently verifiable cases cover the happy path and both failures.
             "Example 1: valid conversion.",
             "Rows that pass validation are included in the output array.",
         )
+        happy_path_report = report.replace(
+            "Example 1: valid conversion.",
+            'Case 1 (Happy Path): input "name,age\\nAda,36\\n" → returns exactly '
+            '[{"name":"Ada","age":"36"}].',
+        )
         refusal = "Orchestrator mismatch\nDeclared: gpt-5.6-terra/medium; actual: claude-haiku-4-5-20251001/unverified\nStart a task configured with the actual model and effort."
         stats = {"spawned": 2, "completed": 2, "spawned_by_subagents": 0, "failed": 0}
         terminal = {"type": "result", "subtype": "success", "subagent_stats": stats}
@@ -4242,6 +4293,27 @@ three independently verifiable cases cover the happy path and both failures.
                 pass_validation_report.replace(
                     "pass validation are included in the output array",
                     "pass validation but are not included in output",
+                ),
+                report.replace(
+                    "Example 1: valid conversion.",
+                    "Case 1 (Happy Path): returns an error instead of the JSON array.",
+                ),
+                report.replace(
+                    "Example 1: valid conversion.",
+                    "Case 1 (Happy Path): does not return output as a JSON array.",
+                ),
+                report.replace(
+                    "Example 1: valid conversion.",
+                    'Case 1 (Happy Path): never returns exactly [{"error":"failed"}].',
+                ),
+                report.replace(
+                    "Example 1: valid conversion.",
+                    'Case 1 (Happy Path): fails and the error returns exactly [{"error":"failed"}].',
+                ),
+                report.replace(
+                    "Example 1: valid conversion.",
+                    'Case 1 (Happy Path): input never converts successfully → returns exactly '
+                    '[{"error":"failed"}].',
                 ),
                 heading_report.replace("/symphony_assessor", "/worker"),
                 heading_report.replace("/symphony_lead", "/worker"),
@@ -4289,6 +4361,7 @@ three independently verifiable cases cover the happy path and both failures.
                 {**smoke, "last_message": heading_report},
                 {**smoke, "last_message": prose_report},
                 {**smoke, "last_message": pass_validation_report},
+                {**smoke, "last_message": happy_path_report},
                 {**smoke, "last_message": spaced_report},
                 {**smoke, "last_message": code_report},
                 {**smoke, "last_message": report + "\nModel: not exposed by host"},
@@ -4514,7 +4587,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.19.0"}, versions)
+        self.assertEqual({"0.19.1"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},
