@@ -4751,6 +4751,8 @@ three independently verifiable cases cover the happy path and both failures.
                 {**smoke, "calls": [smoke["calls"][0], lead_with_assessor_context, lead_with_assessor_context]},
                 {**smoke, "last_message": report.replace("duplicate header", "duplicate column name").replace("field count", "row-width")},
                 {**smoke, "last_message": report.replace("field count", "field-count")},
+                {**smoke, "last_message": report.replace("field count rejection", "row arity mismatch rejection")},
+                {**smoke, "last_message": report.replace("field count rejection", "row has 3 fields, expected 2")},
                 {**smoke, "last_message": heading_report},
                 {**smoke, "last_message": prose_report},
                 {**smoke, "last_message": pass_validation_report},
