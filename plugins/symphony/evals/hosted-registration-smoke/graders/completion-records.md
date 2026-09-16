@@ -1,6 +1,6 @@
 ---
 type: regex
-pattern: '^[ \t]*(?:-[ \t]*)?(?:\*\*)?(?:Completed:[ \t]*)?`?([a-f0-9]+)[ \t]*/[ \t]*(?:symphony_)?assessor`?[ \t]+—[^—\r\n]*[A-Za-z0-9][^—\r\n]*—[ \t]*tokens[ \t]+(?:[0-9]+|not exposed by host)[ \t]+—[ \t]*duration[ \t]+(?:[0-9]+(?:\.[0-9]+)?(?:ms|s)?|not exposed by host)(?:\*\*)?[ \t]*\r?$[\s\S]*?^[ \t]*(?:-[ \t]*)?(?:\*\*)?(?:Completed:[ \t]*)?`?(?!\1[ \t]*/)([a-f0-9]+)[ \t]*/[ \t]*(?:symphony_)?lead`?[ \t]+—[^—\r\n]*[A-Za-z0-9][^—\r\n]*—[ \t]*tokens[ \t]+(?:[0-9]+|not exposed by host)[ \t]+—[ \t]*duration[ \t]+(?:[0-9]+(?:\.[0-9]+)?(?:ms|s)?|not exposed by host)(?:\*\*)?[ \t]*\r?$'
+pattern: '^[ \t]*(?:-[ \t]*)?(?:\*\*)?(?:Completed:[ \t]*)?`?([a-f0-9]+)`?[ \t]*/[ \t]*`?(?:symphony_)?assessor`?[ \t]+—[^—\r\n]*[A-Za-z0-9][^—\r\n]*—[ \t]*tokens[ \t]+(?:[0-9]+|not exposed by host)[ \t]+—[ \t]*duration[ \t]+(?:[0-9]+(?:\.[0-9]+)?(?:ms|s)?|not exposed by host)(?:\*\*)?[ \t]*\r?$[\s\S]*?^[ \t]*(?:-[ \t]*)?(?:\*\*)?(?:Completed:[ \t]*)?`?(?!\1`?[ \t]*/)([a-f0-9]+)`?[ \t]*/[ \t]*`?(?:symphony_)?lead`?[ \t]+—[^—\r\n]*[A-Za-z0-9][^—\r\n]*—[ \t]*tokens[ \t]+(?:[0-9]+|not exposed by host)[ \t]+—[ \t]*duration[ \t]+(?:[0-9]+(?:\.[0-9]+)?(?:ms|s)?|not exposed by host)(?:\*\*)?[ \t]*\r?$'
 flags: im
 target: last_message
 ---

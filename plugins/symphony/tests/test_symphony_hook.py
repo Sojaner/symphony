@@ -82,15 +82,25 @@ class SymphonyHookTests(unittest.TestCase):
         self.hook.handle_event(self.event("SubagentStart", agent_id="synchronous-lead", agent_type="general-purpose"), self.data)
         self.hook.handle_event(self.event("SubagentStop", agent_id="synchronous-lead"), self.data)
         run = self.state()["active_run"]
+        incomplete = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                f"SYMPHONY_MODE:small\n{run['receipt']}"
+            )),
+            self.data,
+            stop_wait_seconds=0,
+        )
         correction = self.hook.handle_event(
             self.event("PreToolUse", tool_name="Agent", tool_input={
                 "description": "symphony_lead: request assessment receipt",
             }),
             self.data,
         )
-        self.assertTrue(correction.block)
-        self.assertIn("register the existing terminal lead", correction.reason)
-        self.assertIn("do not spawn", correction.reason.lower())
+        for result in (incomplete, correction):
+            self.assertTrue(result.block)
+            self.assertIn("full integrated deliverable rather than a summary", result.reason)
+            self.assertIn("both assessor and lead completion records", result.reason)
+            self.assertIn("role, status, tokens, and duration", result.reason)
+            self.assertIn("do not spawn", result.reason.lower())
         accepted = self.hook.handle_event(self.event("Stop", last_assistant_message=(
             f"SYMPHONY_REGISTER:{run['id']}:lead:synchronous-lead\n"
             f"SYMPHONY_MODE:small\n{run['receipt']}"
@@ -3838,6 +3848,14 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
 """ + report.split("\n", 2)[2].replace(
             "Example 1: valid conversion.", "Example 1: output is a valid JSON array."
         )
+        compact_report = """**Agents:**
+- `acae72eeb92357e91` / symphony_assessor — success — tokens 10715 — duration 19.4s
+- `a6032276286cc99b8` / symphony_lead — success — tokens 10267 — duration 11.6s
+
+CSV-to-JSON contract with duplicate header error and field-count mismatch error;
+three independently verifiable cases cover the happy path and both failures.
+<!-- SYMPHONY_MODE:small -->
+<!-- SYMPHONY_RUN_COMPLETE:1e27fbb8b95b15c2 -->"""
         prose_report = report.replace(
             "Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: field count rejection.",
             "A valid CSV produces the expected objects. A duplicate header fails validation. "
@@ -3882,6 +3900,13 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 code_report.replace("assessment complete", ""),
                 code_report.replace("tokens 10267", "usage unknown"),
                 code_report.replace("duration 19.4s", "elapsed unknown"),
+                compact_report.replace("a6032276286cc99b8", "acae72eeb92357e91"),
+                compact_report.replace("symphony_assessor", "worker"),
+                compact_report.replace("symphony_lead", "worker"),
+                compact_report.replace("— success —", "— —", 1),
+                compact_report.replace("tokens 10267", "usage unknown"),
+                compact_report.replace("duration 19.4s", "elapsed unknown"),
+                compact_report,
         ]
         bad_refusals = [
                 refusal.replace("Orchestrator mismatch", "No mismatch; proceeding"),

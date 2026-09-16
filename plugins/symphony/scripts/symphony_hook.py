@@ -1222,7 +1222,9 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                         "Symphony is waiting only for the initial synchronous lead registration. "
                         f"Register the existing terminal lead with `SYMPHONY_REGISTER:{run['id']}:lead:"
                         f"{pending_lead}` in the owning root's next final-channel self-contained report, "
-                        "including the selected mode and exact run completion receipt. Do not spawn, "
+                        "repeating the full integrated deliverable rather than a summary, both assessor "
+                        "and lead completion records with role, status, tokens, and duration, the selected "
+                        "mode, and the exact run completion receipt. Do not spawn, "
                         "resume, or call Agent for a correction; no additional assessment receipt is "
                         "required for this lead's own synchronous stop."
                     ),
@@ -1311,8 +1313,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 result = HookResult(block=True, reason=(
                     "Symphony must register the existing terminal lead before another spawn. "
                     f"End the owning root's next final-channel self-contained report with "
-                    f"`SYMPHONY_REGISTER:{run['id']}:lead:{pending_lead}`, the selected mode, and the "
-                    "exact run completion receipt. Do not spawn, resume, or call Agent for a correction; "
+                    f"`SYMPHONY_REGISTER:{run['id']}:lead:{pending_lead}`, the full integrated deliverable "
+                    "rather than a summary, both assessor and lead completion records with role, status, "
+                    "tokens, and duration, the selected mode, and the exact run completion receipt. Do not "
+                    "spawn, resume, or call Agent for a correction; "
                     "no additional assessment receipt is required."
                 ))
             elif run and _owns_run(run, payload.get("session_id")) and run["strong_assessment_required"]:
