@@ -76,7 +76,7 @@ class SymphonyHookTests(unittest.TestCase):
                 self.assertEqual("lead", records["fresh-lead"]["registered_role"])
                 self.assertEqual("lead", records["original-lead"]["registered_role"])
 
-    def test_initial_synchronous_lead_registration_remains_supported(self):
+    def test_initial_synchronous_lead_registration_does_not_create_false_reassessment(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         self.set_current_assessment()
         self.hook.handle_event(self.event("SubagentStart", agent_id="synchronous-lead", agent_type="general-purpose"), self.data)
@@ -84,13 +84,94 @@ class SymphonyHookTests(unittest.TestCase):
         run = self.state()["active_run"]
         accepted = self.hook.handle_event(self.event("Stop", last_assistant_message=(
             f"SYMPHONY_REGISTER:{run['id']}:lead:synchronous-lead\n"
-            f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
-            "SYMPHONY_ASSESSMENT_REASON:Synchronous lead verified the task\n"
             f"SYMPHONY_MODE:small\n{run['receipt']}"
         )), self.data, stop_wait_seconds=0)
         self.assertFalse(accepted.block)
         self.assertIsNone(self.state()["active_run"])
         self.assertEqual("lead", self.state()["run_history"][-1]["agent_records"][0]["registered_role"])
+
+    def test_synchronous_lead_worker_wave_still_requires_reassessment(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.set_current_assessment()
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="synchronous-lead", agent_type="general-purpose"),
+            self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="worker", agent_type="general-purpose"), self.data,
+        )
+        self.hook.handle_event(self.event("SubagentStop", agent_id="worker"), self.data)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="synchronous-lead"), self.data)
+        run = self.state()["active_run"]
+
+        blocked = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                f"SYMPHONY_REGISTER:{run['id']}:lead:synchronous-lead\n"
+                f"SYMPHONY_MODE:small\n{run['receipt']}"
+            )),
+            self.data,
+            stop_wait_seconds=0,
+        )
+
+        self.assertTrue(blocked.block)
+        self.assertIn("accepted current assessment", blocked.reason)
+        self.assertIsNotNone(self.state()["active_run"])
+
+    def test_sequential_child_invalidates_initial_lead_stop_clearance(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.set_current_assessment()
+        for agent_id in ("synchronous-lead", "later-child"):
+            self.hook.handle_event(self.event("SubagentStart", agent_id=agent_id), self.data)
+            self.hook.handle_event(self.event("SubagentStop", agent_id=agent_id), self.data)
+        run = self.state()["active_run"]
+
+        blocked = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                f"SYMPHONY_REGISTER:{run['id']}:lead:synchronous-lead\n"
+                f"SYMPHONY_MODE:small\n{run['receipt']}"
+            )),
+            self.data,
+            stop_wait_seconds=0,
+        )
+
+        self.assertTrue(blocked.block)
+        self.assertIn("accepted current assessment", blocked.reason)
+
+    def test_owner_lifecycle_event_invalidates_initial_lead_stop_clearance(self):
+        events = (
+            ("UserPromptSubmit", {"prompt": "continue project work"}),
+            ("UserPromptSubmit", {"prompt": "/symphony:assess"}),
+            ("SessionStart", {"source": "resume"}),
+            ("Interrupt", {}),
+        )
+        for index, (event_name, values) in enumerate(events):
+            with self.subTest(event_name=event_name):
+                self.data = Path(self.tmp.name) / f"lead-clearance-{index}"
+                self.data.mkdir()
+                self.hook.handle_event(
+                    self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+                )
+                self.set_current_assessment()
+                self.hook.handle_event(
+                    self.event("SubagentStart", agent_id="synchronous-lead"), self.data,
+                )
+                self.hook.handle_event(
+                    self.event("SubagentStop", agent_id="synchronous-lead"), self.data,
+                )
+                self.hook.handle_event(self.event(event_name, **values), self.data)
+                run = self.state()["active_run"]
+
+                blocked = self.hook.handle_event(
+                    self.event("Stop", last_assistant_message=(
+                        f"SYMPHONY_REGISTER:{run['id']}:lead:synchronous-lead\n"
+                        f"SYMPHONY_MODE:small\n{run['receipt']}"
+                    )),
+                    self.data,
+                    stop_wait_seconds=0,
+                )
+
+                self.assertTrue(blocked.block)
+                self.assertIn("accepted current assessment", blocked.reason)
 
     def test_completion_guidance_names_only_authorized_current_lead(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
@@ -643,7 +724,10 @@ class SymphonyHookTests(unittest.TestCase):
                 f"SYMPHONY_REGISTER:{run['id']}:{role}:{role}\n" + receipt
             )), self.data, stop_wait_seconds=0)
             self.assertIn("Symphony registered roles", result.reason)
-            self.assertIn("Symphony accepted assessment", result.reason)
+            if role == "assessor":
+                self.assertIn("Symphony accepted assessment", result.reason)
+            else:
+                self.assertNotIn("Symphony accepted assessment", result.reason)
             self.assertEqual(role, self.state()["active_run"][f"{role}_agent_id"])
             self.assertEqual("medium", self.state()["active_run"]["mode"])
             self.assertFalse(self.state()["active_run"]["assessment_due"])

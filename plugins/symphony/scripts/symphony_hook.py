@@ -368,6 +368,16 @@ def _has_accepted_assessment(run):
     )
 
 
+def _require_reassessment(run, records=None):
+    """Set reassessment due and invalidate any narrower synchronous-lead clearance."""
+    records = records or {record["id"]: record for record in _agent_records(run)}
+    for record in records.values():
+        record.pop("initial_lead_stop_reassessment", None)
+    run["agent_records"] = records
+    run["assessment_due"] = True
+    return records
+
+
 def _host_reports_child_lifecycle():
     """Read the installed host declaration; prompts and event payloads are not authority."""
     try:
@@ -565,7 +575,7 @@ def _register_roles(state, run, message):
         ):
             continue
         if role == "assessor" and current_id != agent_id:
-            run["assessment_due"] = True
+            records = _require_reassessment(run, records)
             run["strong_assessment_required"] = True
         if role == "lead" and current_id != agent_id:
             # Registration may follow child dispatch or even synchronous
@@ -575,6 +585,8 @@ def _register_roles(state, run, message):
                 if (candidate["id"] != agent_id and not candidate.get("registered_role")
                         and agent_id in candidate.get("active_agent_ids_at_start", [])):
                     candidate["lead_ineligible"] = True
+            if records[agent_id].pop("initial_lead_stop_reassessment", False):
+                run["assessment_due"] = False
         run[key] = agent_id
         records[agent_id]["role"] = f"symphony_{role}"
         records[agent_id]["registered_role"] = role
@@ -588,6 +600,7 @@ def _has_active_non_lead_agent(run):
     excluded = {run.get("lead_agent_id"), run.get("assessor_agent_id")}
     return any(
         record["status"] == "active" and record["id"] not in excluded
+        and not record.get("initial_lead_candidate")
         for record in _agent_records(run)
     )
 
@@ -679,6 +692,10 @@ def _agent_records(run):
             record["assessment_superseded"] = True
         if value.get("lead_ineligible") is True:
             record["lead_ineligible"] = True
+        if value.get("initial_lead_candidate") is True:
+            record["initial_lead_candidate"] = True
+        if value.get("initial_lead_stop_reassessment") is True:
+            record["initial_lead_stop_reassessment"] = True
         active_at_start = value.get("active_agent_ids_at_start")
         if isinstance(active_at_start, list):
             record["active_agent_ids_at_start"] = sorted({
@@ -894,7 +911,7 @@ def _handle_prompt(payload, state, now):
                 "assessed_at": None,
             }
         if state.get("active_run"):
-            state["active_run"]["assessment_due"] = True
+            _require_reassessment(state["active_run"])
             state["active_run"]["strong_assessment_required"] = True
             state["active_run"]["assessor_agent_id"] = None
             for record in state["active_run"].get("agent_records", {}).values():
@@ -949,7 +966,7 @@ def _handle_prompt(payload, state, now):
         if project_request and _owns_run(run, payload.get("session_id")):
             run["interruption_recovery_eligible"] = False
         if control is None:
-            run["assessment_due"] = True
+            _require_reassessment(run)
         if foreign_run:
             return HookResult(context=_bootstrap_context(
                 run, state, recovery=True,
@@ -1297,7 +1314,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     accepted_recovery = (
                         _has_accepted_assessment(run) and not run["strong_assessment_required"]
                     )
-                    run["assessment_due"] = True
+                    _require_reassessment(run)
                     result = HookResult(context=_bootstrap_context(
                         run, state, recovery=True, accepted_recovery=accepted_recovery, now=current,
                     ))
@@ -1345,6 +1362,18 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     active_at_start = sorted(record["id"] for record in records.values() if record["status"] == "active")
                     if active_at_start:
                         record["active_agent_ids_at_start"] = active_at_start
+                    if (
+                        _has_accepted_assessment(run)
+                        and not run.get("strong_assessment_required")
+                        and not run.get("lead_agent_id")
+                        and not active_at_start
+                        and not any(candidate.get("initial_lead_candidate") for candidate in records.values())
+                    ):
+                        # A synchronous initial lead has no host id until its call returns.
+                        # Mark the first post-assessment top-level child as a candidate so
+                        # its own stop is not mistaken for a completed worker wave. Root
+                        # registration remains the only role authorization.
+                        record["initial_lead_candidate"] = True
                     # A replacement lead must be a fresh dispatch after the
                     # prior lead is terminal, not a child from its active wave.
                     if records.get(run.get("lead_agent_id"), {}).get("status") == "active":
@@ -1399,7 +1428,11 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                         and agent_id not in {run.get("lead_agent_id"), run.get("assessor_agent_id")}
                         and not _has_active_non_lead_agent(run)
                     ):
-                        run["assessment_due"] = True
+                        if record.get("initial_lead_candidate") and not run["assessment_due"]:
+                            record["initial_lead_stop_reassessment"] = True
+                            run["assessment_due"] = True
+                        else:
+                            _require_reassessment(run)
                     if (run.get("status") == "stopping" and run.get("stop_acknowledged")
                             and not _active_agent_ids(run)):
                         _archive_run(state, "stopped", current)
@@ -1433,7 +1466,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 run["last_event"] = event
                 run["interrupted_at"] = current
                 run["interruption_recovery_eligible"] = True
-                run["assessment_due"] = True
+                _require_reassessment(run)
         if json.dumps(state, sort_keys=True) != original_state:
             write_project_state(data_dir, state, current)
         return result
