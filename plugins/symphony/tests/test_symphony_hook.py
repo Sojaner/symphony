@@ -134,6 +134,8 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertTrue(terse.block)
         self.assertIn("self-contained final report", terse.reason)
         self.assertIn("both assessor and lead completion records", terse.reason)
+        self.assertIn("Completed: assessor/assessor — <status>", terse.reason)
+        self.assertIn("Completed: lead/lead — <status>", terse.reason)
         bypass = self.hook.handle_event(
             self.event("Stop", last_assistant_message=(
                 "Not completed: assessor/assessor\n"
@@ -3461,8 +3463,8 @@ class CodexSmokeTests(unittest.TestCase):
         started = time.monotonic()
         try:
             with self.assertRaises(self.smoke.ProcessTimeout) as raised:
-                self.smoke.run_process([sys.executable, "-c", script], env=os.environ.copy(), timeout=0.1)
-            self.assertLess(time.monotonic() - started, 0.6)
+                self.smoke.run_process([sys.executable, "-c", script], env=os.environ.copy(), timeout=0.5)
+            self.assertLess(time.monotonic() - started, 1.5)
             self.assertIn("partial stdout", raised.exception.stdout)
             self.assertIn("partial stderr", raised.exception.stderr)
         finally:

@@ -1310,9 +1310,12 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     write_project_state(data_dir, state, now)
                 return HookResult(block=True, reason=(
                     "Symphony completion requires one self-contained final report. Repeat the integrated "
-                    "deliverable, both assessor and lead completion records as `Completed: <agent-id>/<role> "
-                    "— <status>` with token or duration segments only when exposed, a `Verification:` line "
-                    "with authoritative evidence, the selected mode, and the exact run completion receipt."
+                    "deliverable and both assessor and lead completion records. Use these exact registered "
+                    "identities without editing them: "
+                    f"`Completed: {run['assessor_agent_id']}/assessor — <status>` and "
+                    f"`Completed: {run['lead_agent_id']}/lead — <status>`. Add token or duration segments only "
+                    "when exposed, then include a `Verification:` line with authoritative evidence, the "
+                    "selected mode, and the exact run completion receipt."
                 ))
         memory_error = _memory_checkpoint_error(run, project_root, message)
         if memory_error:
