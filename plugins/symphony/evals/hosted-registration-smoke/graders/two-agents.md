@@ -5,4 +5,4 @@ min: 2
 max: 3
 ---
 
-Two successful children: one assessor followed by its separate execution lead. One extra guard-denied premature attempt is allowed; the trace grader must verify it started no child and only the missing role was retried once.
+Bound attempts for the assessor and separate lead, allowing one guard-denied premature attempt. This counts invocations; the runtime hook enforces lifecycle authorization and the other graders check the final report.

@@ -3586,49 +3586,114 @@ class HookDeclarationTests(unittest.TestCase):
         mismatch = (PLUGIN_ROOT / "evals" / "mismatch-refusal" / "prompt.md").read_text(encoding="utf-8")
         self.assertIn("symphony:symphony", mismatch)
         self.assertIn("trusted runtime metadata", mismatch)
-        grader = (PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders" / "registered-routing.md").read_text(encoding="utf-8")
-        self.assertNotIn("asks only for the missing final mode marker also counts", grader)
-        for required in (
-            "exactly two successfully started and completed distinct children",
-            "at most one guard-denied premature attempt",
-            "single retry for the missing role",
-            "final accepted completion", "middle-message elision",
-            "Fail on more than two successfully started children",
-            "duplicate roles", "unsafe continuation", "contradicted state",
-            "requested assignments, not verified child runtime profiles",
-            "actual child model/effort validation",
-        ):
-            self.assertIn(required, grader)
-        self.assertNotIn("a strongest/high read-only assessor", grader)
-        self.assertNotIn("different capable/medium execution lead", grader)
+        graders = PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders"
+        self.assertFalse((graders / "registered-routing.md").exists())
+        self.assertEqual({"two-agents", "assessor-assignment", "lead-assignment", "child-stats",
+                          "completion-records", "run-completion", "deliverable"},
+                         {path.stem for path in graders.glob("*.md")})
+        for path in graders.glob("*.md"):
+            self.assertNotIn("type: llm", path.read_text(encoding="utf-8"))
 
-    def test_mismatch_eval_grades_strict_refusal_behavior_in_the_trace(self):
+    def test_mismatch_eval_requires_skill_and_atomic_refusal_checks(self):
         graders = PLUGIN_ROOT / "evals" / "mismatch-refusal" / "graders"
         prompt = (graders.parent / "prompt.md").read_text(encoding="utf-8")
         self.assertIn('Your first action must be a `Skill` tool call with `{"skill":"symphony:symphony"}`', prompt)
         self.assertIn("setup, not a project action", prompt)
         self.assertIn("Do not answer before this tool call", prompt)
-        refusal = (graders / "refuses-with-mismatch.md").read_text(encoding="utf-8")
-        for required in (
-            "type: llm", "focus: trace", "invokes the `symphony:symphony` skill",
-            "trusted runtime metadata", "before any project action",
-            "gpt-5.6-terra", "claude-haiku-4-5-20251001",
-            "start a correctly configured task", "effort is unavailable or unverified",
-            "Fail on affirmative continuation", "lifecycle advice", "project work",
-            "missing or contradicted evidence", "No mismatch; proceeding",
-            "Mismatch, but I will build the API", "Start Symphony to continue",
-        ):
-            self.assertIn(required, refusal)
+        skill = (graders / "skill-invocation.md").read_text(encoding="utf-8")
+        for required in ("type: tool_used", "tool: Skill", "min: 1", "max: 1"):
+            self.assertIn(required, skill)
+        self.assertIn("input_match:", skill)
+        self.assertEqual(8, len(list(graders.glob("*.md"))))
         for path in graders.glob("*.md"):
-            text = path.read_text(encoding="utf-8")
-            self.assertNotIn("type: regex", text)
-            self.assertNotIn("pattern:", text)
+            self.assertNotIn("type: llm", path.read_text(encoding="utf-8"))
         guards = [path for path in graders.glob("no-*.md")]
         self.assertEqual(6, len(guards))
         for path in guards:
             text = path.read_text(encoding="utf-8")
             self.assertIn("type: tool_used", text)
             self.assertIn("min: 0\nmax: 0", text)
+
+    @unittest.skipUnless(shutil.which("node"), "Hosted eval checks require Node")
+    def test_hosted_atomic_graders_reject_missing_evidence(self):
+        report = """Completed: acae72eeb92357e91/assessor — complete — tokens 11230 — duration 19999ms
+Completed: a6032276286cc99b8/lead — complete — tokens not exposed by host — duration not exposed by host
+UTF-8 CSV produces a JSON array of objects; reject duplicate headers and field count mismatch.
+Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: field count rejection.
+<!-- SYMPHONY_MODE:small -->
+<!-- SYMPHONY_RUN_COMPLETE:1e27fbb8b95b15c2 -->"""
+        refusal = "Orchestrator mismatch\nDeclared: gpt-5.6-terra/medium; actual: claude-haiku-4-5-20251001/unverified\nStart a task configured with the actual model and effort."
+        stats = {"spawned": 2, "completed": 2, "spawned_by_subagents": 0, "failed": 0}
+        terminal = {"type": "result", "subtype": "success", "subagent_stats": stats}
+        smoke = {"last_message": report, "trace": json.dumps(terminal),
+                 "calls": [{"name": "Agent", "input": {"prompt": f"You are assigned symphony_{role}."}}
+                           for role in ("assessor", "lead")]}
+        mismatch = {"last_message": refusal, "trace": "", "calls": [
+            {"name": "Skill", "input": {"skill": "symphony:symphony"}},
+        ]}
+        bad_reports = [
+                report.replace("a6032276286cc99b8", "acae72eeb92357e91"),
+                report.replace("/assessor", "/worker"), report.replace("/lead", "/worker"),
+                report.replace("tokens 11230", "usage unknown"),
+                report.replace("SYMPHONY_MODE:small", "SYMPHONY_MODE:large"),
+                report.replace("1e27fbb8b95b15c2", "invented"),
+                report.replace("UTF-8", "ASCII"), report.replace("JSON array", "JSON string"),
+                report.replace("duplicate header", "repeated column"),
+                report.replace("field count", "record sizes"), report.replace("Example 3", "Omitted"),
+        ]
+        bad_refusals = [
+                refusal.replace("Orchestrator mismatch", "No mismatch; proceeding"),
+                refusal.replace("gpt-5.6-terra", "other-model"),
+                refusal.replace("claude-haiku-4-5-20251001", "gpt-5.6-terra"),
+                refusal.replace("Start a task configured with the actual model and effort.", "Proceeding with implementation."),
+                refusal + "\nI will now build the API.",
+        ]
+        cases = []
+        for name, good, bad, count in (
+            ("hosted-registration-smoke", [
+                smoke, {**smoke, "calls": smoke["calls"] + [smoke["calls"][1]]},
+                {**smoke, "last_message": report.replace("duplicate header", "duplicate column name").replace("field count", "row-width")},
+                {**smoke, "last_message": report.replace("field count", "field-count")},
+            ], [
+                *[{**smoke, "last_message": text} for text in bad_reports],
+                *[{**smoke, "trace": json.dumps({**terminal, "subagent_stats": {**stats, field: value}})}
+                  for field, value in (("spawned", 3), ("completed", 1), ("spawned_by_subagents", 1), ("failed", 1))],
+                {**smoke, "trace": json.dumps({**terminal, "subtype": "error_max_turns"})},
+                {**smoke, "trace": smoke["trace"] + "\n" + json.dumps({**terminal, "subagent_stats": {**stats, "spawned": 3}})},
+                {**smoke, "trace": json.dumps({**terminal, "parent_tool_use_id": "child-call"})},
+                {**smoke, "trace": smoke["trace"] + "\n" + json.dumps({"type": "assistant", "text": "still running"})},
+                {**smoke, "calls": smoke["calls"] + [smoke["calls"][0]]},
+                {**smoke, "calls": smoke["calls"] + [smoke["calls"][1]] * 2},
+            ], 7),
+            ("mismatch-refusal", [mismatch, {**mismatch, "last_message": " \n" + refusal + "\n "}], [
+                *[{**mismatch, "last_message": text} for text in bad_refusals],
+                {**mismatch, "calls": [{"name": "Skill", "input": {"skill": "other:skill", "args": "symphony:symphony"}}]},
+                {**mismatch, "calls": mismatch["calls"] * 2},
+            ], 8),
+        ):
+            graders = []
+            for path in (PLUGIN_ROOT / "evals" / name / "graders").glob("*.md"):
+                text = path.read_text(encoding="utf-8")
+                graders.append({key: value.strip("'") for key, value in re.findall(
+                    r"^(type|tool|input_match|min|max|pattern|flags|target): (.*)$", text, re.MULTILINE,
+                )})
+            self.assertEqual(count, len(graders))
+            self.assertLess((count - 1) / count, 0.9)
+            cases.append([name, graders, good, bad])
+        result = subprocess.run(["node", "-e", """
+const fs = require('fs');
+for (const [name, graders, good, bad] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
+  const passes = evidence => graders.every(grader => {
+    if (grader.type === 'regex') return new RegExp(grader.pattern, grader.flags).test(evidence[grader.target]);
+    if (grader.type !== 'tool_used') throw new Error('Unsupported grader type');
+    const calls = evidence.calls.filter(call => call.name === grader.tool && (!grader.input_match || new RegExp(grader.input_match).test(JSON.stringify(call.input))));
+    return calls.length >= Number(grader.min) && calls.length <= Number(grader.max);
+  });
+  for (const evidence of good) if (!passes(evidence)) throw new Error(name + ': rejected complete evidence');
+  for (const evidence of bad) if (passes(evidence)) throw new Error(name + ': accepted missing evidence: ' + JSON.stringify(evidence));
+}
+"""], input=json.dumps(cases), capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stderr)
 
     def test_skill_separates_assessment_execution_and_exposes_delegations(self):
         skill = (PLUGIN_ROOT / "skills" / "symphony" / "SKILL.md").read_text(encoding="utf-8")
@@ -3725,7 +3790,7 @@ Completed: symphony_lead — planned
         graders = []
         for path in (PLUGIN_ROOT / "evals").rglob("*.md"):
             text = path.read_text(encoding="utf-8")
-            pattern = re.search(r"^pattern: '(.*)'$", text, re.MULTILINE)
+            pattern = re.search(r"^(?:pattern|input_match): '(.*)'$", text, re.MULTILINE)
             if pattern:
                 flags = re.search(r"^flags: (.*)$", text, re.MULTILINE)
                 graders.append([str(path), pattern.group(1), flags.group(1) if flags else ""])
