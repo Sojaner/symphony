@@ -471,8 +471,11 @@ def _routing_line(state, run):
 
 
 def _routing_state(message):
-    """Classify the visible `Routing:` disclosure: "valid", "placeholder", or "missing"."""
-    outcome = "missing"
+    """Classify the visible `Routing:` disclosure and return (state, block).
+
+    The state is "valid", "placeholder", or "missing"; the block is the disclosure text.
+    """
+    outcome, kept = "missing", ""
     for match in ROUTING_LINE_RE.finditer(message):
         block = match.group(1)
         # A bulleted or indented continuation belongs to the disclosure; any other line ends it.
@@ -483,10 +486,64 @@ def _routing_state(message):
         if not re.search(r"[A-Za-z0-9]", block):
             continue
         if PLACEHOLDER_RE.search(block):
-            outcome = "placeholder"
+            outcome, kept = "placeholder", block
             continue
-        return "valid"
-    return outcome
+        return "valid", block
+    return outcome, kept
+
+
+def _routing_mismatches(block, run):
+    """Compare the reported assessor and lead routing with host-observed ledger values."""
+    records = {record["id"]: record for record in _agent_records(run)}
+    mismatches = []
+    for role in ("assessor", "lead"):
+        agent_id = run.get(f"{role}_agent_id")
+        record = records.get(agent_id) or {}
+        known = {
+            field: record.get(field)
+            for field in ("model", "effort")
+            if record.get(field) not in (None, "", NOT_EXPOSED)
+        }
+        if not known:
+            continue
+        expected = f"{known.get('model', '<model>')}/{known.get('effort', '<effort>')}"
+        # The id may also occur in prose (a short id such as "lead" appears in the strategy),
+        # so every whole-token occurrence is a candidate segment up to the next `;` or line end.
+        segments = [
+            match.group(1).lower() for match in re.finditer(
+                rf"(?<![A-Za-z0-9_-]){re.escape(agent_id)}(?![A-Za-z0-9_-])`?([^\r\n;]*)", block,
+            )
+        ]
+        routed = [segment for segment in segments if re.search(r"\S+/\S+", segment)]
+        if not routed:
+            mismatches.append(f"{role} {agent_id} {expected} is missing")
+            continue
+        if not any(
+            ("model" not in known or known["model"].lower() in segment)
+            and ("effort" not in known or f"/{known['effort'].lower()}" in segment)
+            for segment in routed
+        ):
+            mismatches.append(f"{role} {agent_id} must read {expected}")
+    return mismatches
+
+
+def _requested_routing(payload):
+    """Model and effort the root actually requested for a Claude Agent call, keyed by the returned id."""
+    response = payload.get("tool_response")
+    arguments = payload.get("tool_input")
+    if not isinstance(response, dict) or not isinstance(arguments, dict):
+        return None
+    agent_id = response.get("agentId")
+    if not isinstance(agent_id, str) or not agent_id:
+        return None
+    requested = {}
+    model = arguments.get("model")
+    if isinstance(model, str) and model.strip():
+        requested["model"] = model.strip()
+    effort = arguments.get("reasoning_effort") or arguments.get("effort")
+    if isinstance(effort, str) and effort.strip():
+        requested["effort"] = effort.strip()
+    return (agent_id, requested) if requested else None
 
 
 def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, now=None):
@@ -1391,14 +1448,15 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 role: _completion_record_state(message, run[f"{role}_agent_id"], role)
                 for role in ("assessor", "lead")
             }
-            routing_state = _routing_state(message)
+            routing_state, routing_block = _routing_state(message)
+            routing_mismatches = _routing_mismatches(routing_block, run) if routing_state == "valid" else []
             visible_verification = re.search(
                 r"(?mi)^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?verification:(?:\*\*)?"
                 r"[^\r\n]*[A-Za-z0-9][^\r\n]*$",
                 message,
             )
             if (any(value != "valid" for value in record_states.values())
-                    or routing_state != "valid" or not visible_verification):
+                    or routing_state != "valid" or routing_mismatches or not visible_verification):
                 if memory_changed or assessment_changed:
                     write_project_state(data_dir, state, now)
                 placeholder_roles = [role for role, value in record_states.items() if value == "placeholder"]
@@ -1421,6 +1479,11 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     + (
                         "Your last `Routing:` line still contained `<...>` placeholders. "
                         if routing_state == "placeholder" else ""
+                    )
+                    + (
+                        "Your last `Routing:` line disagrees with the host ledger: "
+                        + "; ".join(routing_mismatches) + ". Report the ledger values exactly. "
+                        if routing_mismatches else ""
                     )
                     + "Then include a `Verification:` line with authoritative evidence, the "
                     "selected mode, and the exact run completion receipt."
@@ -1655,19 +1718,25 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                         state["active_run"] = None
         elif event == "PostToolUse" and payload.get("tool_name") == "Agent":
             observed = _usage_record(payload, current)
-            if observed:
-                active = state.get("active_run")
-                runs = ([active] if isinstance(active, dict) else []) + [
-                    run for run in state.get("run_history", []) if isinstance(run, dict)
-                ]
+            requested = _requested_routing(payload)
+            active = state.get("active_run")
+            runs = ([active] if isinstance(active, dict) else []) + [
+                run for run in state.get("run_history", []) if isinstance(run, dict)
+            ]
+            for agent_id, observation in ((observed["id"], observed) if observed else (None, None),
+                                          requested or (None, None)):
+                if agent_id is None:
+                    continue
                 owners = [
                     run for run in runs
-                    if any(record["id"] == observed["id"] for record in _agent_records(run))
+                    if any(record["id"] == agent_id for record in _agent_records(run))
                 ]
-                if len(owners) == 1:
-                    run = owners[0]
-                    records = {record["id"]: record for record in _agent_records(run)}
-                    record = records[observed["id"]]
+                if len(owners) != 1:
+                    continue
+                run = owners[0]
+                records = {record["id"]: record for record in _agent_records(run)}
+                record = records[agent_id]
+                if observation is observed:
                     record["usage"] = {
                         **_clean_usage(record.get("usage")),
                         **{field: observed[field] for field in USAGE_FIELDS if field in observed},
@@ -1675,7 +1744,13 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                         "source": observed["source"],
                         "scope": observed["scope"],
                     }
-                    run["agent_records"] = records if run is active else list(records.values())
+                else:
+                    # The request parameters are the root's own routing decision; a value the
+                    # host exposed on the child's lifecycle events keeps precedence.
+                    for field, value in observation.items():
+                        if record.get(field) in (None, "", NOT_EXPOSED):
+                            record[field] = value
+                run["agent_records"] = records if run is active else list(records.values())
         elif event == "Interrupt":
             run = state.get("active_run")
             if run and _owns_run(run, payload.get("session_id")):

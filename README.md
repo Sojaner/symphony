@@ -131,7 +131,7 @@ Usage is authoritative host observations only; Symphony never estimates usage or
 
 Visible records use `Delegating: <role> — <objective> — <model>/<effort> — <reason>`, `Waiting: <role or wave> — <observed in-progress fact>`, and `Completed: <agent id/role> — <status>`. Completion adds token or duration segments only when exposed. Waiting reports observed lifecycle state only. After an accepted assessment the root announces `Mode: <mode> — <strategy> — <reason>`, so the user sees whether the lead executes directly, adds bounded workers, or runs dependency-aware waves.
 
-The final completion response is self-contained: it repeats the integrated deliverable, assessor and lead completion records, one `Routing:` line naming the mode strategy plus every agent's actual model/effort and assigned job, authoritative verification, selected mode, and completion receipt.
+The final completion response is self-contained: it repeats the integrated deliverable, assessor and lead completion records, one `Routing:` line naming the mode strategy plus every agent's actual model/effort and assigned job, authoritative verification, selected mode, and completion receipt. The hook checks the assessor and lead routing against host-observed or root-requested values, so those two entries cannot be misreported.
 
 ## Workflow and evidence capabilities
 

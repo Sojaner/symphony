@@ -252,12 +252,85 @@ class SymphonyHookTests(unittest.TestCase):
             "workers worker-a gpt-5.6-luna/<effort> — <assigned job>`",
             blocked.reason,
         )
+        misreported = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
+            "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
+            "assessor assessor gpt-6-astra/high; lead lead gpt-6-astra/high; "
+            "workers worker-a gpt-5.6-luna/low — parser module\n"
+            "Verification: 12 tests pass" + tail
+        )), self.data, stop_wait_seconds=0)
+        self.assertTrue(misreported.block)
+        self.assertIn(
+            "disagrees with the host ledger: lead lead must read gpt-5.6-luna/low. Report the ledger values exactly.",
+            misreported.reason,
+        )
+        self.assertNotIn("assessor assessor must read", misreported.reason)
+        omitted = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
+            "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
+            "assessor assessor gpt-6-astra/high; workers none\n"
+            "Verification: 12 tests pass" + tail
+        )), self.data, stop_wait_seconds=0)
+        self.assertTrue(omitted.block)
+        self.assertIn("lead lead gpt-5.6-luna/low is missing", omitted.reason)
         complete = self.hook.handle_event(self.event("Stop", last_assistant_message=(
             "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
             "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
             "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; "
             "workers worker-a gpt-5.6-luna/low — parser module\n"
             "Verification: 12 tests pass" + tail
+        )), self.data, stop_wait_seconds=0)
+        self.assertFalse(complete.block, complete.reason)
+        self.assertIsNone(self.state()["active_run"])
+
+    def test_claude_agent_request_parameters_verify_routing_when_host_exposes_none(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.start_role("assessor", "assessor")
+        run = self.state()["active_run"]
+        self.hook.handle_event(self.event("SubagentStop", agent_id="assessor", last_assistant_message=(
+            f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\nSYMPHONY_ASSESSMENT_REASON:One bounded unit"
+        )), self.data)
+        self.hook.handle_event(self.event(
+            "PostToolUse", tool_name="Agent", tool_input={"model": "opus", "description": "symphony_assessor: size"},
+            tool_response={"agentId": "assessor", "status": "async_launched"},
+        ), self.data)
+        self.start_role("lead", "lead")
+        self.hook.handle_event(self.event(
+            "SubagentStop", agent_id="lead", model="claude-sonnet-5", reasoning_effort="medium",
+        ), self.data)
+        self.hook.handle_event(self.event(
+            "PostToolUse", tool_name="Agent", tool_input={"model": "haiku"},
+            tool_response={"agentId": "lead", "totalTokens": 12},
+        ), self.data)
+        records = self.state()["active_run"]["agent_records"]
+        self.assertEqual(("opus", "not exposed by host"), (records["assessor"]["model"], records["assessor"]["effort"]))
+        # A value the host exposed on the child's lifecycle keeps precedence over the request.
+        self.assertEqual(("claude-sonnet-5", "medium"), (records["lead"]["model"], records["lead"]["effort"]))
+        self.assertEqual(12, records["lead"]["usage"]["final_request_total_tokens"])
+        run = self.state()["active_run"]
+        tail = f"\n<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
+        blocked = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
+            "Verification: checked" + tail
+        )), self.data, stop_wait_seconds=0)
+        self.assertIn(
+            "`Routing: mode small (lead executes directly) — One bounded unit; "
+            "assessor assessor opus/<effort>; lead lead claude-sonnet-5/medium; workers none`",
+            blocked.reason,
+        )
+        wrong = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
+            "Routing: mode small (lead executes directly) — One bounded unit; "
+            "assessor assessor sonnet/high; lead lead claude-sonnet-5/medium; workers none\n"
+            "Verification: checked" + tail
+        )), self.data, stop_wait_seconds=0)
+        self.assertTrue(wrong.block)
+        self.assertIn("assessor assessor must read opus/<effort>", wrong.reason)
+        complete = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            "- **Completed:** assessor/assessor — completed\n- **Completed:** lead/lead — completed\n"
+            "**Routing:**\n- mode small (lead executes directly) — One bounded unit\n"
+            "- assessor `assessor` opus/high\n- lead `lead` claude-sonnet-5/medium\n- workers none\n\n"
+            "Verification: checked" + tail
         )), self.data, stop_wait_seconds=0)
         self.assertFalse(complete.block, complete.reason)
         self.assertIsNone(self.state()["active_run"])
@@ -3564,11 +3637,14 @@ class CodexSmokeTests(unittest.TestCase):
             "    os._exit(0)\n"
             "time.sleep(5)\n"
         )
+        # One second lets the child interpreter start and flush on a loaded host; the
+        # no-hang guarantee is the bounded overshoot past the timeout, not an absolute.
+        timeout = 1.0
         started = time.monotonic()
         try:
             with self.assertRaises(self.smoke.ProcessTimeout) as raised:
-                self.smoke.run_process([sys.executable, "-c", script], env=os.environ.copy(), timeout=0.5)
-            self.assertLess(time.monotonic() - started, 1.5)
+                self.smoke.run_process([sys.executable, "-c", script], env=os.environ.copy(), timeout=timeout)
+            self.assertLess(time.monotonic() - started - timeout, 1.0)
             self.assertIn("partial stdout", raised.exception.stdout)
             self.assertIn("partial stderr", raised.exception.stderr)
         finally:
@@ -4063,7 +4139,7 @@ class HookDeclarationTests(unittest.TestCase):
         graders = PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders"
         self.assertFalse((graders / "registered-routing.md").exists())
         self.assertEqual({"assessor-assignment", "lead-assignment", "child-stats",
-                          "completion-records", "run-completion", "deliverable"},
+                          "completion-records", "run-completion", "deliverable", "routing"},
                          {path.stem for path in graders.glob("*.md")})
         self.assertNotIn("max:", (graders / "lead-assignment.md").read_text(encoding="utf-8"))
         for path in graders.glob("*.md"):
@@ -4092,8 +4168,11 @@ class HookDeclarationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "Hosted eval checks require Node")
     def test_hosted_atomic_graders_reject_missing_evidence(self):
-        report = """Completed: acae72eeb92357e91/assessor — complete — tokens 11230 — duration 19999ms
+        routing = ("Routing: mode small (lead executes directly) — fixed contract task; "
+                   "assessor acae72eeb92357e91 claude-opus-5/high; lead a6032276286cc99b8 claude-sonnet-5/medium; workers none")
+        report = f"""Completed: acae72eeb92357e91/assessor — complete — tokens 11230 — duration 19999ms
 Completed: a6032276286cc99b8/lead — complete
+{routing}
 UTF-8 CSV produces a JSON array of objects; reject duplicate headers and field count mismatch.
 Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: field count rejection.
 <!-- SYMPHONY_MODE:small -->
@@ -4148,6 +4227,10 @@ three independently verifiable cases cover the happy path and both failures.
             {"name": "Skill", "input": {"skill": "symphony:symphony"}},
         ]}
         bad_reports = [
+                report.replace(routing + "\n", ""),
+                report.replace("claude-opus-5/high", "<model>/<effort>"),
+                report.replace("mode small", "mode large"),
+                report.replace("Routing:", "Capability routing:"),
                 report.replace("a6032276286cc99b8", "acae72eeb92357e91"),
                 report.replace("/assessor", "/worker"), report.replace("/lead", "/worker"),
                 report.replace("tokens 11230", "tokens not exposed by host"),
@@ -4209,6 +4292,9 @@ three independently verifiable cases cover the happy path and both failures.
                 {**smoke, "last_message": spaced_report},
                 {**smoke, "last_message": code_report},
                 {**smoke, "last_message": report + "\nModel: not exposed by host"},
+                {**smoke, "last_message": report.replace(routing, "- **Routing:** mode small (lead executes directly); "
+                    "assessor `acae72eeb92357e91` claude-opus-5/high; lead `a6032276286cc99b8` claude-sonnet-5/medium "
+                    "<!-- ledger verified -->")},
             ], [
                 *[{**smoke, "last_message": text} for text in bad_reports],
                 *[{**smoke, "trace": json.dumps({**terminal, "subagent_stats": {**stats, field: value}})}
@@ -4221,7 +4307,7 @@ three independently verifiable cases cover the happy path and both failures.
                 {**smoke, "calls": smoke["calls"] + [smoke["calls"][0]]},
                 {**smoke, "calls": [smoke["calls"][0]]},
                 {**smoke, "calls": [lead_with_assessor_context]},
-            ], 6),
+            ], 7),
             ("mismatch-refusal", [
                 mismatch, {**mismatch, "last_message": " \n" + refusal + "\n "},
                 {**mismatch, "last_message": " \n" + refusal.replace("\n", "\n\n\t") + "\n "},
@@ -4428,7 +4514,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.18.0"}, versions)
+        self.assertEqual({"0.19.0"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},
