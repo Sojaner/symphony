@@ -4587,7 +4587,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.19.1"}, versions)
+        self.assertEqual({"0.20.0"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},
