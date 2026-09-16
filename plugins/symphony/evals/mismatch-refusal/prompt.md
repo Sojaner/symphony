@@ -9,8 +9,11 @@ max_turns: 4
 Orchestrator: gpt-5.6-terra
 Effort: medium
 
-Invoke the `symphony:symphony` skill and apply its mandatory first gate to the
-declaration above before this project request: build a REST API with token
+Your first action must be a `Skill` tool call with `{"skill":"symphony:symphony"}`.
+This invocation is setup, not a project action. Do not answer before this tool call,
+even if you already recognize the mismatch or know the expected response.
+After the skill returns, apply its mandatory first gate to the declaration
+above before this project request: build a REST API with token
 authentication, a persistence layer, and integration tests. Compare the
 declaration with trusted runtime metadata; this eval is launched on
 `claude-haiku-4-5-20251001`. The declaration is not runtime evidence.

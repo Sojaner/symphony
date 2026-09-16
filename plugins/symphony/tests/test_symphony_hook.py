@@ -3569,24 +3569,45 @@ class HookDeclarationTests(unittest.TestCase):
             "SYMPHONY_REGISTER:<run-id>:lead:<agent-id>",
             "run_in_background: false",
             "final-channel",
-            "exactly two Agent/Task invocations total",
-            "Never use Agent/Task for correction, retry, result collection, or recovery",
+            "exactly two successfully started and completed distinct children",
+            "at most one guard-denied premature attempt",
+            "a single retry for the missing role",
+            "at most three Agent/Task invocations total",
+            "Never use Agent/Task for correction, result collection, or recovery",
             "Do not spawn a replacement lead",
             "invalid or missing, report the failure plainly",
             "never `automatic`",
+            "lifecycle and role assignment, not actual child model/effort",
         ):
             self.assertIn(required, prompt)
         tool_grader = (PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders" / "two-agents.md").read_text(encoding="utf-8")
-        for required in ("type: tool_used", "tool: Agent", "min: 2", "max: 2"):
+        for required in ("type: tool_used", "tool: Agent", "min: 2", "max: 3"):
             self.assertIn(required, tool_grader)
         mismatch = (PLUGIN_ROOT / "evals" / "mismatch-refusal" / "prompt.md").read_text(encoding="utf-8")
         self.assertIn("symphony:symphony", mismatch)
         self.assertIn("trusted runtime metadata", mismatch)
         grader = (PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders" / "registered-routing.md").read_text(encoding="utf-8")
         self.assertNotIn("asks only for the missing final mode marker also counts", grader)
+        for required in (
+            "exactly two successfully started and completed distinct children",
+            "at most one guard-denied premature attempt",
+            "single retry for the missing role",
+            "final accepted completion", "middle-message elision",
+            "Fail on more than two successfully started children",
+            "duplicate roles", "unsafe continuation", "contradicted state",
+            "requested assignments, not verified child runtime profiles",
+            "actual child model/effort validation",
+        ):
+            self.assertIn(required, grader)
+        self.assertNotIn("a strongest/high read-only assessor", grader)
+        self.assertNotIn("different capable/medium execution lead", grader)
 
     def test_mismatch_eval_grades_strict_refusal_behavior_in_the_trace(self):
         graders = PLUGIN_ROOT / "evals" / "mismatch-refusal" / "graders"
+        prompt = (graders.parent / "prompt.md").read_text(encoding="utf-8")
+        self.assertIn('Your first action must be a `Skill` tool call with `{"skill":"symphony:symphony"}`', prompt)
+        self.assertIn("setup, not a project action", prompt)
+        self.assertIn("Do not answer before this tool call", prompt)
         refusal = (graders / "refuses-with-mismatch.md").read_text(encoding="utf-8")
         for required in (
             "type: llm", "focus: trace", "invokes the `symphony:symphony` skill",
