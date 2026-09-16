@@ -605,6 +605,19 @@ def _has_active_non_lead_agent(run):
     )
 
 
+def _pending_initial_lead_id(run):
+    if not run or run.get("lead_agent_id"):
+        return None
+    candidates = [
+        record["id"] for record in _agent_records(run)
+        if record["status"] == "terminal"
+        and record.get("initial_lead_candidate")
+        and record.get("initial_lead_stop_reassessment")
+        and not record.get("lead_ineligible")
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _agent_record(payload, started_at=None):
     return {
         "id": payload["agent_id"],
@@ -1201,6 +1214,19 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
         ):
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
+            pending_lead = _pending_initial_lead_id(run)
+            if pending_lead:
+                return HookResult(
+                    block=True,
+                    reason=(
+                        "Symphony is waiting only for the initial synchronous lead registration. "
+                        f"Register the existing terminal lead with `SYMPHONY_REGISTER:{run['id']}:lead:"
+                        f"{pending_lead}` in the owning root's next final-channel self-contained report, "
+                        "including the selected mode and exact run completion receipt. Do not spawn, "
+                        "resume, or call Agent for a correction; no additional assessment receipt is "
+                        "required for this lead's own synchronous stop."
+                    ),
+                )
             role = "assessor" if run["strong_assessment_required"] else "lead"
             current_role_id = run.get(f"{role}_agent_id")
             terminal_ids = [record["id"] for record in _agent_records(run)
@@ -1280,7 +1306,16 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         result = HookResult()
         if event == "PreToolUse" and payload.get("tool_name") in {"Agent", "spawn_agent"}:
             run = state.get("active_run")
-            if run and _owns_run(run, payload.get("session_id")) and run["strong_assessment_required"]:
+            pending_lead = _pending_initial_lead_id(run)
+            if run and _owns_run(run, payload.get("session_id")) and pending_lead:
+                result = HookResult(block=True, reason=(
+                    "Symphony must register the existing terminal lead before another spawn. "
+                    f"End the owning root's next final-channel self-contained report with "
+                    f"`SYMPHONY_REGISTER:{run['id']}:lead:{pending_lead}`, the selected mode, and the "
+                    "exact run completion receipt. Do not spawn, resume, or call Agent for a correction; "
+                    "no additional assessment receipt is required."
+                ))
+            elif run and _owns_run(run, payload.get("session_id")) and run["strong_assessment_required"]:
                 pending = [record["id"] for record in _agent_records(run)
                            if record.get("parent_session_id") in {None, run["owner_session_id"]}
                            and (record["status"] == "active" or (

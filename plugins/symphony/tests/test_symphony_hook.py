@@ -82,6 +82,15 @@ class SymphonyHookTests(unittest.TestCase):
         self.hook.handle_event(self.event("SubagentStart", agent_id="synchronous-lead", agent_type="general-purpose"), self.data)
         self.hook.handle_event(self.event("SubagentStop", agent_id="synchronous-lead"), self.data)
         run = self.state()["active_run"]
+        correction = self.hook.handle_event(
+            self.event("PreToolUse", tool_name="Agent", tool_input={
+                "description": "symphony_lead: request assessment receipt",
+            }),
+            self.data,
+        )
+        self.assertTrue(correction.block)
+        self.assertIn("register the existing terminal lead", correction.reason)
+        self.assertIn("do not spawn", correction.reason.lower())
         accepted = self.hook.handle_event(self.event("Stop", last_assistant_message=(
             f"SYMPHONY_REGISTER:{run['id']}:lead:synchronous-lead\n"
             f"SYMPHONY_MODE:small\n{run['receipt']}"
@@ -447,7 +456,7 @@ class SymphonyHookTests(unittest.TestCase):
         blocked = self.hook.handle_event(self.event("Stop", last_assistant_message=message),
                                          self.data, stop_wait_seconds=0)
         self.assertTrue(blocked.block)
-        self.assertIn(f"SYMPHONY_REGISTER:{run['id']}:lead:<agent-id>", blocked.reason)
+        self.assertIn(f"SYMPHONY_REGISTER:{run['id']}:lead:recovery-lead", blocked.reason)
         self.assertIn("recovery-lead", blocked.reason)
         self.assertIn("final", blocked.reason)
         self.assertTrue(self.state()["active_run"]["assessment_due"])
