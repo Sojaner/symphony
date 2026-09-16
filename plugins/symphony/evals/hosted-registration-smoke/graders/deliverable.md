@@ -1,6 +1,6 @@
 ---
 type: regex
-pattern: '(?=[\s\S]*JSON array)(?=[\s\S]*duplicate (?:headers?|column names?)[^\r\n]*(?:fail|reject|error))(?=[\s\S]*(?:field[- ]count|row[- ]width)[^\r\n]*(?:fail|reject|error))(?=[\s\S]*\bvalid\b[^\r\n]*(?:produce|convert|conversion|output))[\s\S]*'
+pattern: '(?=[\s\S]*JSON array)(?=[\s\S]*duplicate (?:headers?|column names?)[^\r\n]*(?:fail|reject|error))(?=[\s\S]*(?:field[- ]count|row[- ]width)[^\r\n]*(?:fail|reject|error))(?=[\s\S]*(?:\bvalid\b[^\r\n]*(?:produce|convert|conversion|output)|(?:produce|convert|conversion|output)[^\r\n]*\bvalid\b))[\s\S]*'
 flags: i
 target: last_message
 ---

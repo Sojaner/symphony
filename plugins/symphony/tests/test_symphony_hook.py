@@ -3823,6 +3823,12 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
 - acae72eeb92357e91 / symphony_assessor — assessment complete — tokens 10715 — duration 19.4s
 - a6032276286cc99b8 / symphony_lead — contract delivered — tokens 10267 — duration 11.6s
 """ + report.split("\n", 2)[2]
+        code_report = """**Completed:**
+- `acae72eeb92357e91/assessor` — assessment complete — tokens 10715 — duration 19.4s
+- `a6032276286cc99b8/lead` — contract delivered — tokens 10267 — duration 11.6s
+""" + report.split("\n", 2)[2].replace(
+            "Example 1: valid conversion.", "Example 1: output is a valid JSON array."
+        )
         prose_report = report.replace(
             "Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: field count rejection.",
             "A valid CSV produces the expected objects. A duplicate header fails validation. "
@@ -3861,6 +3867,12 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 spaced_report.replace("assessment complete", ""),
                 spaced_report.replace("tokens 10267", "usage unknown"),
                 spaced_report.replace("duration 19.4s", "elapsed unknown"),
+                code_report.replace("a6032276286cc99b8", "acae72eeb92357e91"),
+                code_report.replace("/assessor`", "/worker`"),
+                code_report.replace("/lead`", "/worker`"),
+                code_report.replace("assessment complete", ""),
+                code_report.replace("tokens 10267", "usage unknown"),
+                code_report.replace("duration 19.4s", "elapsed unknown"),
         ]
         bad_refusals = [
                 refusal.replace("Orchestrator mismatch", "No mismatch; proceeding"),
@@ -3884,6 +3896,7 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 {**smoke, "last_message": heading_report},
                 {**smoke, "last_message": prose_report},
                 {**smoke, "last_message": spaced_report},
+                {**smoke, "last_message": code_report},
             ], [
                 *[{**smoke, "last_message": text} for text in bad_reports],
                 *[{**smoke, "trace": json.dumps({**terminal, "subagent_stats": {**stats, field: value}})}
