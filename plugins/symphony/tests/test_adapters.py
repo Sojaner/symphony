@@ -44,8 +44,30 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout), {"decision": "block", "reason": "Worker remains active."})
 
     def test_claude_context_uses_additional_context(self):
-        result = render("claude", (Action("inject_context", {"text": "Assess this task."}),))
-        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"], "Assess this task.")
+        result = render(
+            "claude",
+            (Action("inject_context", {"text": "Recover this task."}),),
+            "SessionStart",
+        )
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "SessionStart")
+        self.assertEqual(output["additionalContext"], "Recover this task.")
+
+    def test_registered_lifecycle_events_normalize(self):
+        expected = {
+            "SessionStart": "session_heartbeat",
+            "UserPromptSubmit": "user_prompt",
+            "PreToolUse": "pre_tool_use",
+            "SubagentStart": "subagent_started",
+            "SubagentStop": "subagent_stopped",
+            "PostToolUse": "post_tool_use",
+            "Stop": "stop_requested",
+            "Interrupt": "interrupt",
+        }
+        for hook_name, kind in expected.items():
+            with self.subTest(hook_name=hook_name):
+                event = event_from_payload("codex", {"hook_event_name": hook_name})
+                self.assertEqual(event.kind, kind)
 
     def test_malformed_payload_is_a_nonblocking_fault(self):
         event = event_from_payload("codex", {"hook_event_name": "Unknown"})

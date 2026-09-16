@@ -251,22 +251,28 @@ class LifecycleReducerTests(unittest.TestCase):
         self.assertTrue(state.needs_reassessment)
         self.assertEqual(actions, (Action("request_assessment", {"run_id": "run-1"}),))
 
-    def test_disable_stops_then_archives_before_disabling(self):
+    def test_disable_waits_for_observed_agents_before_archiving(self):
         original = running_state(delegations=[delegation("worker-1")])
 
         state, actions = reduce(original, event("disable"))
 
         self.assertFalse(state.enabled)
-        self.assertIsNone(state.active_run)
-        self.assertEqual(state.recent_runs[-1].status, "disabled")
+        self.assertEqual(state.active_run.status, "stopping")
         self.assertEqual(
             actions,
             (
                 Action("stop_delegations", {"active": ["worker-1"]}),
-                Action("archive_run", {"run_id": "run-1"}),
                 Action("project_disabled"),
             ),
         )
+
+        stopped, stop_actions = reduce(
+            state,
+            event("delegation_updated", identity="worker-1", state="completed"),
+        )
+        self.assertIsNone(stopped.active_run)
+        self.assertEqual(stopped.recent_runs[-1].status, "disabled")
+        self.assertEqual(stop_actions, (Action("archive_run", {"run_id": "run-1"}),))
 
     def test_force_stop_archives_without_disabling_the_project(self):
         original = running_state(delegations=[delegation("worker-1")])

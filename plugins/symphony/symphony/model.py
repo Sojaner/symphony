@@ -40,8 +40,6 @@ class RunState:
     lead_identity: str | None = None
     assessment: Mapping[str, Any] = field(default_factory=dict)
     delegations: tuple[Delegation, ...] = ()
-    events: tuple[Event, ...] = ()
-    pending_actions: tuple[Action, ...] = ()
     outcome: Mapping[str, Any] | None = None
     started_at: str = ""
     updated_at: str = ""

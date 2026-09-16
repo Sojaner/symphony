@@ -1,12 +1,12 @@
 import json
 import os
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from plugins.symphony.symphony.model import (
-    Action,
     CapabilitySnapshot,
     Delegation,
     Event,
@@ -34,7 +34,6 @@ class StateStoreTests(unittest.TestCase):
 
     def test_round_trips_the_complete_domain_model_as_json(self):
         event = Event("event-1", "task_received", "2026-09-17T10:00:00+00:00", {"task": "ship"})
-        action = Action("spawn_lead", {"tier": "capable"})
         delegation = Delegation(
             identity="agent-1",
             role="lead",
@@ -54,8 +53,6 @@ class StateStoreTests(unittest.TestCase):
             lead_identity="agent-1",
             assessment={"size": "medium", "complexity": "mixed"},
             delegations=(delegation,),
-            events=(event,),
-            pending_actions=(action,),
             started_at="2026-09-17T10:00:00+00:00",
             updated_at="2026-09-17T10:01:00+00:00",
         )
@@ -163,6 +160,40 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(state.event_history, ())
         self.assertTrue(state.needs_reassessment)
         self.assertEqual(len(list(path.parent.glob(path.name + ".pre-1.0-*"))), 1)
+
+    def test_update_serializes_parallel_read_modify_write(self):
+        workers = 12
+
+        def increment():
+            def transition(state):
+                configuration = dict(state.configuration)
+                configuration["count"] = int(configuration.get("count", 0)) + 1
+                return ProjectState(**{**state.__dict__, "configuration": configuration}), None
+
+            self.store.update(self.project, transition)
+
+        threads = [threading.Thread(target=increment) for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(self.store.load(self.project).configuration["count"], workers)
+
+    def test_persistence_redacts_secret_values_and_credential_text(self):
+        state = ProjectState(
+            enabled=True,
+            configuration={"api_key": "sk-secret", "note": "password=hunter2"},
+            active_run=RunState("run", "Authorization: Bearer abcdefghijklmnop"),
+        )
+
+        self.store.save(self.project, state)
+
+        contents = self.state_path().read_text(encoding="utf-8")
+        self.assertNotIn("sk-secret", contents)
+        self.assertNotIn("hunter2", contents)
+        self.assertNotIn("abcdefghijklmnop", contents)
+        self.assertIn("[REDACTED]", contents)
 
 
 if __name__ == "__main__":

@@ -50,8 +50,11 @@ def _disable(state: ProjectState, event: Event):
         active = _active_identities(state.active_run)
         if active:
             actions.append(Action("stop_delegations", {"active": active}))
-        actions.append(Action("archive_run", {"run_id": state.active_run.run_id}))
-        next_state = _archive(state, state.active_run, "disabled", event.observed_at)
+            stopping = replace(state.active_run, status="stopping", updated_at=event.observed_at)
+            next_state = replace(state, active_run=stopping)
+        else:
+            actions.append(Action("archive_run", {"run_id": state.active_run.run_id}))
+            next_state = _archive(state, state.active_run, "disabled", event.observed_at)
     if next_state.enabled:
         actions.append(Action("project_disabled"))
     return replace(next_state, enabled=False), tuple(actions)
@@ -137,11 +140,9 @@ def _delegation_updated(state: ProjectState, event: Event):
         role=str(event.payload.get("role") or (current.role if current else "worker")),
         objective=str(event.payload.get("objective") or (current.objective if current else "")),
         state=str(event.payload.get("state") or (current.state if current else "pending")),
-        requested_tier=str(
-            event.payload.get("requested_tier") or (current.requested_tier if current else "balanced")
-        ),
+        requested_tier=str(event.payload.get("requested_tier") or (current.requested_tier if current else "")),
         requested_effort=str(
-            event.payload.get("requested_effort") or (current.requested_effort if current else "medium")
+            event.payload.get("requested_effort") or (current.requested_effort if current else "")
         ),
         updated_at=event.observed_at,
         tokens=event.payload.get("tokens", current.tokens if current else None),
@@ -150,7 +151,12 @@ def _delegation_updated(state: ProjectState, event: Event):
         ),
     )
     delegations = tuple(existing for existing in run.delegations if existing.identity != identity) + (item,)
-    return replace(state, active_run=replace(run, delegations=delegations, updated_at=event.observed_at)), ()
+    updated = replace(run, delegations=delegations, updated_at=event.observed_at)
+    if updated.status == "stopping" and not _active_identities(updated):
+        return _archive(state, updated, "disabled", event.observed_at), (
+            Action("archive_run", {"run_id": updated.run_id}),
+        )
+    return replace(state, active_run=updated), ()
 
 
 def _lead_completed(state: ProjectState, event: Event):
@@ -172,6 +178,16 @@ def _lead_completed(state: ProjectState, event: Event):
         return replace(state, active_run=completed), (Action("wait_for_delegations", {"active": active}),)
     next_state = _archive(state, completed, "completed", event.observed_at)
     return next_state, (Action("permit_completion", {"run_id": run.run_id}),)
+
+
+def _lead_failed(state: ProjectState, event: Event):
+    run = state.active_run
+    if not run or event.payload.get("identity") != run.lead_identity:
+        return state, ()
+    recovering = replace(run, status="recovering", updated_at=event.observed_at)
+    return replace(state, active_run=recovering), (
+        Action("replace_lead", {"owner_generation": run.owner_generation + 1}),
+    )
 
 
 def _interrupt(state: ProjectState, event: Event):
@@ -252,6 +268,7 @@ _HANDLERS: dict[str, _Handler] = {
     "lead_started": _lead_started,
     "delegation_updated": _delegation_updated,
     "lead_completed": _lead_completed,
+    "lead_failed": _lead_failed,
     "interrupt": _interrupt,
     "resume_reconciled": _resume_reconciled,
     "reassess": _reassess,

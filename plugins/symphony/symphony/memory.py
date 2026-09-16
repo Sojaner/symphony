@@ -25,8 +25,19 @@ _SECRET_PATTERNS = (
         r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token)\b\s*[:=]\s*\S+"
     ),
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{12,}"),
+    re.compile(
+        r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z]+ )?PRIVATE KEY-----",
+        re.DOTALL,
+    ),
     re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"),
 )
+
+
+def redact_secrets(text: str) -> str:
+    """Redact credential-shaped text before durable storage."""
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return text
 
 
 def context_update_path(project: str | Path, status: MemoryStatus = MemoryStatus()) -> Path | None:

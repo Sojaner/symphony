@@ -14,7 +14,14 @@ SCRIPT = ROOT / "plugins" / "symphony" / "scripts" / "package_smoke.py"
 
 
 class PackageSmokeTests(unittest.TestCase):
-    def make_candidate(self, root: Path, *, broken: bool = False, absolute: bool = False) -> Path:
+    def make_candidate(
+        self,
+        root: Path,
+        *,
+        broken: bool = False,
+        absolute: bool = False,
+        heartbeat: bool = True,
+    ) -> Path:
         plugin = root / "plugins" / "symphony"
         for relative in (".codex-plugin", ".claude-plugin", "hooks", "scripts"):
             (plugin / relative).mkdir(parents=True, exist_ok=True)
@@ -74,16 +81,21 @@ class PackageSmokeTests(unittest.TestCase):
                         state["active_children"] = [payload["agent_id"]]
                     elif payload["hook_event_name"] == "SubagentStop":
                         state["active_children"] = []
-                    state["heartbeat"] = {
-                        "session_id": payload["session_id"],
-                        "plugin_version": os.environ["SYMPHONY_PLUGIN_VERSION"],
-                        "plugin_root": os.environ["SYMPHONY_PLUGIN_ROOT"],
-                    }
+                    if __HEARTBEAT__:
+                        provider = os.environ["SYMPHONY_SMOKE_PROVIDER"]
+                        state.setdefault("activation", {})[provider] = {
+                            "state": "guarded",
+                            "session_id": payload["session_id"],
+                            "plugin_version": os.environ["SYMPHONY_PLUGIN_VERSION"],
+                            "plugin_root": os.environ["SYMPHONY_PLUGIN_ROOT"],
+                            "hook_schema_version": 1,
+                            "observed_at": "2026-09-17T00:00:00+00:00",
+                        }
                     path.write_text(json.dumps(state))
                     blocked = payload["hook_event_name"] == "Stop" and state.get("active_children")
                     print(json.dumps({"continue": not bool(blocked)}))
                     """
-                )
+                ).replace("__HEARTBEAT__", repr(heartbeat))
             )
         return root
 
@@ -138,6 +150,14 @@ class PackageSmokeTests(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertEqual("faulted", result["activation"][-1])
             self.assertIn("missing hook executable", result["error"])
+
+    def test_activation_rejects_unrelated_json_without_a_guarded_heartbeat(self):
+        with tempfile.TemporaryDirectory() as candidate_dir, tempfile.TemporaryDirectory() as home_dir:
+            candidate = self.make_candidate(Path(candidate_dir), heartbeat=False)
+            result = run_smoke("codex", candidate, "activation", Path(home_dir))
+
+            self.assertFalse(result["ok"])
+            self.assertIn("complete guarded heartbeat", result["error"])
 
     def test_absolute_cache_command_is_rejected(self):
         """Catches publishing hooks pinned to the developer's cache path."""

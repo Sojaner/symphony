@@ -11,9 +11,10 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, TypeVar
 
-from .model import Action, CapabilitySnapshot, Delegation, Event, MemoryStatus, ProjectState, RunState
+from .memory import redact_secrets
+from .model import CapabilitySnapshot, Delegation, Event, MemoryStatus, ProjectState, RunState
 
 try:
     import fcntl
@@ -24,11 +25,29 @@ except ImportError:  # pragma: no cover - exercised on platforms without fcntl
 SCHEMA_VERSION = 1
 _LOCAL_LOCKS: dict[str, threading.Lock] = {}
 _LOCAL_LOCKS_GUARD = threading.Lock()
+_UpdateResult = TypeVar("_UpdateResult")
+_SECRET_KEYS = {
+    "password",
+    "passwd",
+    "secret",
+    "api_key",
+    "apikey",
+    "access_token",
+    "refresh_token",
+    "authorization",
+    "client_secret",
+    "private_key",
+    "token",
+}
 
 
 def project_key(project: Path) -> str:
     canonical = os.path.normcase(str(Path(project).resolve()))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def legacy_project_key(project: Path) -> str:
+    return project_key(project)[:24]
 
 
 def _event_to_dict(event: Event) -> dict[str, Any]:
@@ -47,18 +66,6 @@ def _event_from_dict(value: Any) -> Event:
         kind=_text(value.get("kind"), "event.kind"),
         observed_at=_text(value.get("observed_at"), "event.observed_at"),
         payload=_object(value.get("payload", {}), "event.payload"),
-    )
-
-
-def _action_to_dict(action: Action) -> dict[str, Any]:
-    return {"kind": action.kind, "payload": dict(action.payload)}
-
-
-def _action_from_dict(value: Any) -> Action:
-    value = _object(value, "action")
-    return Action(
-        kind=_text(value.get("kind"), "action.kind"),
-        payload=_object(value.get("payload", {}), "action.payload"),
     )
 
 
@@ -106,8 +113,6 @@ def _run_to_dict(run: RunState) -> dict[str, Any]:
         "lead_identity": run.lead_identity,
         "assessment": dict(run.assessment),
         "delegations": [_delegation_to_dict(item) for item in run.delegations],
-        "events": [_event_to_dict(item) for item in run.events],
-        "pending_actions": [_action_to_dict(item) for item in run.pending_actions],
         "outcome": None if run.outcome is None else dict(run.outcome),
         "started_at": run.started_at,
         "updated_at": run.updated_at,
@@ -133,10 +138,6 @@ def _run_from_dict(value: Any) -> RunState:
         lead_identity=lead_identity,
         assessment=_object(value.get("assessment", {}), "run.assessment"),
         delegations=tuple(_delegation_from_dict(item) for item in _array(value.get("delegations", ()), "run.delegations")),
-        events=tuple(_event_from_dict(item) for item in _array(value.get("events", ()), "run.events")),
-        pending_actions=tuple(
-            _action_from_dict(item) for item in _array(value.get("pending_actions", ()), "run.pending_actions")
-        ),
         outcome=outcome,
         started_at=_text(value.get("started_at", ""), "run.started_at"),
         updated_at=_text(value.get("updated_at", ""), "run.updated_at"),
@@ -271,6 +272,18 @@ def _text(value: Any, name: str) -> str:
     return value
 
 
+def _redact(value: Any, key: str = "") -> Any:
+    if key.lower().replace("-", "_") in _SECRET_KEYS:
+        return "[REDACTED]"
+    if isinstance(value, str):
+        return redact_secrets(value)
+    if isinstance(value, dict):
+        return {item_key: _redact(item, str(item_key)) for item_key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact(item) for item in value]
+    return value
+
+
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
@@ -299,8 +312,9 @@ def _locked(path: Path) -> Iterator[None]:
 
 
 class StateStore:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, legacy_roots: tuple[Path, ...] = ()):
         self.root = Path(root)
+        self.legacy_roots = tuple(Path(item) for item in legacy_roots)
 
     def _path(self, project: Path) -> Path:
         return self.root / f"{project_key(project)}.json"
@@ -308,26 +322,66 @@ class StateStore:
     def load(self, project: Path) -> ProjectState:
         path = self._path(project)
         with _locked(path):
-            if not path.exists():
-                return ProjectState()
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                raw = _object(raw, "state")
-                if raw.get("schema_version") == SCHEMA_VERSION:
-                    return _state_from_dict(raw)
-                return self._migrate(path, raw)
-            except (OSError, TypeError, ValueError, json.JSONDecodeError):
-                self._archive(path, "corrupt")
-                rebuilt = ProjectState(needs_reassessment=True)
-                self._write(path, rebuilt)
-                return rebuilt
+            return self._load_unlocked(project, path)
 
     def save(self, project: Path, state: ProjectState) -> None:
         path = self._path(project)
         with _locked(path):
             self._write(path, replace(state, recent_runs=state.recent_runs[-20:]))
 
+    def update(
+        self,
+        project: Path,
+        transition: Callable[[ProjectState], tuple[ProjectState, _UpdateResult]],
+    ) -> _UpdateResult:
+        """Apply one read-reduce-write transaction under the project lock."""
+        path = self._path(project)
+        with _locked(path):
+            state = self._load_unlocked(project, path)
+            next_state, result = transition(state)
+            self._write(path, replace(next_state, recent_runs=next_state.recent_runs[-20:]))
+            return result
+
+    def _load_unlocked(self, project: Path, path: Path) -> ProjectState:
+        if not path.exists():
+            imported = self._import_legacy(project, path)
+            return imported if imported is not None else ProjectState()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = _object(raw, "state")
+            if raw.get("schema_version") == SCHEMA_VERSION:
+                return _state_from_dict(raw)
+            return self._migrate(path, raw)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            self._archive(path, "corrupt")
+            rebuilt = ProjectState(needs_reassessment=True)
+            self._write(path, rebuilt)
+            return rebuilt
+
+    def _import_legacy(self, project: Path, destination: Path) -> ProjectState | None:
+        key = legacy_project_key(project)
+        for root in self.legacy_roots:
+            source = root / "projects" / f"{key}.json"
+            if not source.is_file():
+                continue
+            try:
+                raw = _object(json.loads(source.read_text(encoding="utf-8")), "legacy state")
+                migrated = self._migrated_state(raw)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            self._archive(source, "pre-1.0", sanitize=True)
+            self._write(destination, migrated)
+            return migrated
+        return None
+
     def _migrate(self, path: Path, raw: dict[str, Any]) -> ProjectState:
+        migrated = self._migrated_state(raw)
+        self._archive(path, "pre-1.0", sanitize=True)
+        self._write(path, migrated)
+        return migrated
+
+    @staticmethod
+    def _migrated_state(raw: dict[str, Any]) -> ProjectState:
         enabled = raw.get("enabled", False)
         configuration = raw.get("configuration", {})
         if not isinstance(enabled, bool):
@@ -338,13 +392,18 @@ class StateStore:
             configuration=configuration,
             needs_reassessment=True,
         )
-        self._archive(path, "pre-1.0")
-        self._write(path, migrated)
         return migrated
 
     @staticmethod
-    def _archive(path: Path, reason: str) -> None:
-        os.replace(path, path.with_name(f"{path.name}.{reason}-{_timestamp()}"))
+    def _archive(path: Path, reason: str, sanitize: bool = False) -> None:
+        destination = path.with_name(f"{path.name}.{reason}-{_timestamp()}")
+        if not sanitize:
+            os.replace(path, destination)
+            return
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        destination.write_text(json.dumps(_redact(raw), sort_keys=True, separators=(",", ":")) + "\n")
+        destination.chmod(0o600)
+        path.unlink()
 
     @staticmethod
     def _write(path: Path, state: ProjectState) -> None:
@@ -353,7 +412,7 @@ class StateStore:
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(_state_to_dict(state), handle, sort_keys=True, separators=(",", ":"))
+                json.dump(_redact(_state_to_dict(state)), handle, sort_keys=True, separators=(",", ":"))
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())

@@ -11,6 +11,7 @@ from . import HOOK_SCHEMA_VERSION, PLUGIN_VERSION
 from .adapters import HookResult, detect_provider, event_from_payload, render
 from .model import Action, Delegation, Event, ProjectState
 from .reducer import reduce
+from .routing import Assessment, route_for, resolve_tier
 from .store import StateStore
 
 
@@ -20,14 +21,37 @@ CONTROLS = {"agents", "bypass", "disable", "enable", "help", "reassess", "start"
 def handle(payload: dict, environ: Mapping[str, str] = os.environ) -> HookResult:
     provider = detect_provider(payload)
     project = Path(payload.get("cwd") or os.getcwd()).resolve()
-    store = StateStore(Path(environ.get("SYMPHONY_STATE_DIR", Path.home() / ".symphony" / "state")))
-    state = store.load(project)
+    legacy_roots = tuple(
+        Path(environ[name])
+        for name in ("PLUGIN_DATA", "CLAUDE_PLUGIN_DATA")
+        if environ.get(name)
+    )
+    store = StateStore(
+        Path(environ.get("SYMPHONY_STATE_DIR", Path.home() / ".symphony" / "state")),
+        legacy_roots,
+    )
     source = event_from_payload(provider, payload)
+
+    def transition(state: ProjectState) -> tuple[ProjectState, tuple[Action, ...]]:
+        next_state, actions = _transition(state, source, provider, payload, environ)
+        return next_state, _render_actions(actions, next_state, provider)
+
+    actions = store.update(project, transition)
+    return render(provider, actions, str(payload.get("hook_event_name") or "UserPromptSubmit"))
+
+
+def _transition(
+    state: ProjectState,
+    source: Event,
+    provider: str,
+    payload: Mapping[str, object],
+    environ: Mapping[str, str],
+) -> tuple[ProjectState, tuple[Action, ...]]:
     actions: tuple[Action, ...] = ()
 
     if source.kind in {"session_heartbeat", "user_prompt"}:
         heartbeat = Event(
-            source.event_id + ":heartbeat",
+            source.event_id + ":" + source.observed_at + ":heartbeat",
             "session_heartbeat",
             source.observed_at,
             {
@@ -47,8 +71,18 @@ def handle(payload: dict, environ: Mapping[str, str] = os.environ) -> HookResult
         state, prompt_actions = _handle_prompt(state, source, provider)
         actions += prompt_actions
     elif source.kind == "session_heartbeat":
+        active_ids = payload.get("active_agent_ids", payload.get("active_ids"))
+        if state.active_run and isinstance(active_ids, list):
+            state, resume_actions = reduce(
+                state,
+                _derived(source, "resume_reconciled", {"active_ids": active_ids}, "resume"),
+            )
+            actions += resume_actions
         if state.active_run:
             actions += (Action("inject_context", {"text": _recovery_guidance(state)}),)
+    elif source.kind == "pre_tool_use":
+        state, route_actions = _register_assessment(state, source, provider)
+        actions += route_actions
     elif source.kind in {"subagent_started", "subagent_stopped", "post_tool_use"}:
         state, observed_actions = _observe_delegation(state, source)
         actions += observed_actions
@@ -56,8 +90,7 @@ def handle(payload: dict, environ: Mapping[str, str] = os.environ) -> HookResult
         state, lifecycle_actions = reduce(state, source)
         actions += lifecycle_actions
 
-    store.save(project, state)
-    return render(provider, _render_actions(actions, state, provider))
+    return state, actions
 
 
 def _handle_prompt(state: ProjectState, source: Event, provider: str) -> tuple[ProjectState, tuple[Action, ...]]:
@@ -66,28 +99,28 @@ def _handle_prompt(state: ProjectState, source: Event, provider: str) -> tuple[P
     if control is None:
         if not state.enabled:
             return state, ()
-        return reduce(state, _derived(source, "task_received", {"task": prompt}))
+        return reduce(state, _task_event(state, source, {"task": prompt}))
 
     name, argument = control
     if name == "help":
         return state, (Action("inject_context", {"text": _help(provider)}),)
     if name == "status":
-        return state, (Action("inject_context", {"text": _status(state, False)}),)
+        return state, (Action("inject_context", {"text": _status(state, False, provider)}),)
     if name == "agents":
-        return state, (Action("inject_context", {"text": _status(state, argument == "--all")}),)
+        return state, (Action("inject_context", {"text": _status(state, argument == "--all", provider)}),)
     if name == "enable":
         next_state, actions = reduce(state, _derived(source, "enable"))
         if argument:
             next_state, more = reduce(
                 next_state,
-                _derived(source, "task_received", {"task": argument}, suffix="enabled-task"),
+                _task_event(next_state, source, {"task": argument}, suffix="enabled-task"),
             )
             actions += more
         return next_state, actions
     if name == "start":
         if not argument:
             return state, (Action("inject_context", {"text": "Symphony start requires a task."}),)
-        return reduce(state, _derived(source, "task_received", {"task": argument, "one_shot": True}))
+        return reduce(state, _task_event(state, source, {"task": argument, "one_shot": True}))
     if name == "bypass":
         if not argument:
             return state, (Action("inject_context", {"text": "Symphony bypass requires a task."}),)
@@ -98,11 +131,17 @@ def _handle_prompt(state: ProjectState, source: Event, provider: str) -> tuple[P
         return reduce(state, _derived(source, "reassess", {"reason": argument or "explicit request"}))
     if name == "stop":
         kind = "force_stop" if argument == "--force" else "stop_requested"
-        return reduce(state, _derived(source, kind))
+        next_state, actions = reduce(state, _derived(source, kind))
+        return next_state, _prompt_stop_actions(actions)
     return state, (Action("inject_context", {"text": f"Unknown Symphony control: {name}. Use {_native_help(provider)}."}),)
 
 
 def _parse_control(prompt: str) -> tuple[str, str] | None:
+    if prompt.startswith("/symphony:"):
+        first_line = prompt.splitlines()[0]
+        command, _, argument = first_line.partition(" ")
+        name = command.removeprefix("/symphony:").strip()
+        return (name, argument.strip()) if name in CONTROLS else (name or "unknown", argument.strip())
     marker = "$symphony:symphony"
     if marker in prompt:
         before, after = prompt.split(marker, 1)
@@ -112,8 +151,6 @@ def _parse_control(prompt: str) -> tuple[str, str] | None:
         name, _, argument = tail.partition(" ")
         if name in CONTROLS:
             return name, argument.strip()
-        if not argument and not before.strip():
-            return name, ""
         task = " ".join(part for part in (before.strip(), tail) if part).strip()
         if task.lower().startswith("use "):
             task = task[4:].strip()
@@ -139,13 +176,29 @@ def _derived(source: Event, kind: str, payload: dict | None = None, suffix: str 
     return Event(f"{source.event_id}:{suffix}:{kind}", kind, source.observed_at, payload or {})
 
 
+def _task_event(
+    state: ProjectState,
+    source: Event,
+    payload: dict,
+    suffix: str = "control",
+) -> Event:
+    candidate = _derived(source, "task_received", payload, suffix)
+    if any(item.event_id == candidate.event_id for item in state.event_history):
+        return replace(candidate, event_id=f"{candidate.event_id}:{source.observed_at}")
+    return candidate
+
+
 def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectState, tuple[Action, ...]]:
     identity = source.payload.get("agent_id") or source.payload.get("subagent_id")
     if not identity or not state.active_run:
         return state, ()
     terminal = source.kind == "subagent_stopped"
     status = str(source.payload.get("status") or ("completed" if terminal else "working"))
-    role = _observed_role(source.payload)
+    current = next(
+        (item for item in state.active_run.delegations if item.identity == str(identity)),
+        None,
+    )
+    role = _observed_role(source.payload) or (current.role if current else "worker")
     if role == "lead" and source.kind == "subagent_started":
         state, actions = reduce(
             state,
@@ -158,25 +211,31 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
         )
     else:
         actions = ()
-    payload = {
+    update = {
         "identity": str(identity),
         "role": role,
         "objective": str(source.payload.get("task") or source.payload.get("objective") or ""),
         "state": status,
-        "requested_tier": str(source.payload.get("model") or "unknown"),
-        "requested_effort": str(source.payload.get("model_reasoning_effort") or "unknown"),
     }
-    for field in ("tokens", "duration_seconds"):
-        if source.payload.get(field) is not None:
-            payload[field] = source.payload[field]
-    state, delegation_actions = reduce(state, _derived(source, "delegation_updated", payload, "delegation"))
+    if source.payload.get("model"):
+        update["requested_tier"] = str(source.payload["model"])
+    if source.payload.get("model_reasoning_effort"):
+        update["requested_effort"] = str(source.payload["model_reasoning_effort"])
+    tokens = source.payload.get("tokens")
+    if isinstance(tokens, int) and not isinstance(tokens, bool):
+        update["tokens"] = tokens
+    duration = source.payload.get("duration_seconds")
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+        update["duration_seconds"] = duration
+    state, delegation_actions = reduce(state, _derived(source, "delegation_updated", update, "delegation"))
     actions += delegation_actions
     if role == "lead" and terminal and state.active_run:
+        completion_kind = "lead_completed" if status.lower() in {"completed", "done", "success", "succeeded"} else "lead_failed"
         state, completion_actions = reduce(
             state,
             _derived(
                 source,
-                "lead_completed",
+                completion_kind,
                 {
                     "identity": str(identity),
                     "owner_generation": state.active_run.owner_generation,
@@ -190,11 +249,92 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
 
 
 def _observed_role(payload: Mapping[str, object]) -> str:
-    label = str(payload.get("agent_type") or payload.get("role") or payload.get("task_name") or "worker")
+    label = str(payload.get("agent_type") or payload.get("role") or payload.get("task_name") or "")
     for role in ("assessor", "consultant", "lead", "worker"):
         if role in label.lower():
             return role
     return label
+
+
+def _register_assessment(
+    state: ProjectState, source: Event, provider: str
+) -> tuple[ProjectState, tuple[Action, ...]]:
+    if not state.active_run:
+        return state, ()
+    tool_name = str(source.payload.get("tool_name") or source.payload.get("tool") or "").lower()
+    if "agent" not in tool_name:
+        return state, ()
+    marker = "SYMPHONY_ROUTE:"
+    values = source.payload.get("tool_input") or source.payload.get("input") or {}
+    texts = [str(values)]
+    if isinstance(values, dict):
+        texts = [str(value) for value in values.values() if isinstance(value, str)]
+    line = next(
+        (item.strip()[len(marker) :].strip() for text in texts for item in text.splitlines() if item.strip().startswith(marker)),
+        "",
+    )
+    if not line:
+        return state, ()
+    try:
+        raw = json.loads(line)
+        assessment = Assessment(
+            str(raw["size"]),
+            str(raw["complexity"]),
+            str(raw.get("risk", "normal")),
+            str(raw.get("rationale", "")),
+            str(raw.get("topology", "")),
+        )
+        route = route_for(assessment)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return state, (Action("inject_context", {"text": "Symphony rejected an invalid SYMPHONY_ROUTE marker."}),)
+
+    route_data = {
+        "lead_tier": route.lead_tier,
+        "lead_effort": route.lead_effort,
+        "execution": route.execution,
+        "consultation": route.consultation,
+        "independent_review": route.independent_review,
+    }
+    snapshot = next((item for item in reversed(state.capabilities) if item.provider == provider), None)
+    if snapshot:
+        resolved = resolve_tier(route, snapshot)
+        route_data.update(
+            {
+                "lead_model": resolved.lead_model,
+                "lead_effort": resolved.lead_effort,
+                "degraded": resolved.degraded,
+            }
+        )
+    elif isinstance(values, dict):
+        if values.get("model"):
+            route_data["lead_model"] = str(values["model"])
+        if values.get("reasoning_effort") or values.get("model_reasoning_effort"):
+            route_data["lead_effort"] = str(
+                values.get("reasoning_effort") or values.get("model_reasoning_effort")
+            )
+    accepted = {
+        "size": assessment.size,
+        "complexity": assessment.complexity,
+        "risk": assessment.risk,
+        "rationale": assessment.rationale,
+        "topology": assessment.topology or route.execution,
+        "route": route_data,
+    }
+    return reduce(state, _derived(source, "assessment_accepted", accepted, "assessment"))
+
+
+def _prompt_stop_actions(actions: tuple[Action, ...]) -> tuple[Action, ...]:
+    converted = []
+    for action in actions:
+        if action.kind == "block_stop":
+            active = ", ".join(map(str, action.payload.get("active", ())))
+            reason = action.payload.get("reason") or f"active work remains: {active}"
+            converted.append(Action("inject_context", {"text": f"Symphony stop is blocked: {reason}."}))
+        elif action.kind == "permit_stop":
+            converted.append(Action("inject_context", {"text": "Symphony has no active work to stop."}))
+        else:
+            converted.append(action)
+    return tuple(converted)
 
 
 def _render_actions(
@@ -222,6 +362,13 @@ def _render_actions(
             rendered.append(Action("inject_context", {"text": _recovery_guidance(state)}))
         elif action.kind == "preserve_recovery_context":
             rendered.append(Action("inject_context", {"text": "Symphony recorded the interruption for safe reconciliation on resume."}))
+        elif action.kind == "stop_delegations":
+            identities = ", ".join(map(str, action.payload.get("active", ())))
+            rendered.append(Action("inject_context", {"text": f"Stop these tracked Symphony agents, then let lifecycle hooks reconcile them: {identities}."}))
+        elif action.kind == "replace_lead":
+            rendered.append(Action("inject_context", {"text": "The observed lead is unavailable. Spawn one safe replacement at the recorded owner generation."}))
+        elif action.kind == "route_run":
+            rendered.append(Action("inject_context", {"text": "Symphony accepted the assessed route. Spawn only the selected lead and keep the root thin."}))
     return tuple(rendered)
 
 
@@ -229,7 +376,10 @@ def _assessment_guidance(task: str) -> str:
     return (
         "Symphony owns execution topology. Keep the root thin. Assess this bounded task with a strongest/high "
         "assessor, then select the lead mechanically from the nine-cell matrix; the assessor must not become the "
-        f"lead. Task: {task}"
+        "lead. Before spawning that lead, include one exact line in its task: "
+        "SYMPHONY_ROUTE: {\"size\":\"small|medium|large\",\"complexity\":\"simple|mixed|complex\","
+        "\"risk\":\"normal|high\",\"rationale\":\"...\",\"topology\":\"...\"}. "
+        f"Task: {task}"
     )
 
 
@@ -252,7 +402,14 @@ def compact_delegations(state: ProjectState, limit: int = 5) -> tuple[Delegation
 
 
 def format_delegation(item: Delegation) -> str:
-    result = f"- {item.state}: {item.role} [{item.requested_tier}/{item.requested_effort}] — {item.identity}"
+    label = item.role
+    if item.requested_tier and item.requested_effort:
+        label += f" [{item.requested_tier}/{item.requested_effort}]"
+    elif item.requested_tier:
+        label += f" [{item.requested_tier}]"
+    elif item.requested_effort:
+        label += f" [effort={item.requested_effort}]"
+    result = f"- {item.state}: {label} — {item.identity}"
     if item.objective:
         result += f" — {item.objective}"
     if item.tokens is not None:
@@ -262,8 +419,8 @@ def format_delegation(item: Delegation) -> str:
     return result
 
 
-def _status(state: ProjectState, include_history: bool) -> str:
-    activation = next(iter(state.activation.values()), {})
+def _status(state: ProjectState, include_history: bool, provider: str = "") -> str:
+    activation = state.activation.get(provider, {}) if provider else next(iter(state.activation.values()), {})
     lines = [
         f"Symphony: {'enabled' if state.enabled else 'disabled'}",
         f"Hooks: {activation.get('state', 'pending verification')}",
@@ -271,6 +428,21 @@ def _status(state: ProjectState, include_history: bool) -> str:
     runs = ([state.active_run] if state.active_run else []) + (list(state.recent_runs) if include_history else [])
     if state.active_run:
         lines.append(f"Run: {state.active_run.run_id} ({state.active_run.status})")
+        assessment = state.active_run.assessment
+        if assessment.get("size") and assessment.get("complexity"):
+            lines.append(f"Assessment: {assessment['size']}/{assessment['complexity']}")
+        route = assessment.get("route", {})
+        if not isinstance(route, Mapping):
+            route = {}
+        topology = assessment.get("topology") or route.get("execution")
+        if topology:
+            lines.append(f"Topology: {topology}")
+        model = route.get("lead_model") or route.get("lead_tier")
+        effort = route.get("lead_effort")
+        if model:
+            lines.append(f"Lead route: {model}{f'/{effort}' if effort else ''}")
+        if state.active_run.lead_identity:
+            lines.append(f"Lead: {state.active_run.lead_identity}")
     records = [item for run in runs if run for item in run.delegations]
     if include_history:
         visible = records
@@ -286,7 +458,7 @@ def _native_help(provider: str) -> str:
 
 def _help(provider: str) -> str:
     if provider == "claude":
-        return "Symphony controls: /symphony:enable, :start, :bypass, :disable, :status, :agents, :reassess, :stop, :help."
+        return "Symphony controls: /symphony:enable, /symphony:start, /symphony:bypass, /symphony:disable, /symphony:status, /symphony:agents, /symphony:reassess, /symphony:stop, /symphony:help."
     return "Symphony controls: $symphony:symphony enable|start|bypass|disable|status|agents|reassess|stop|help."
 
 

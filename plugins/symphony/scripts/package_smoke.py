@@ -159,6 +159,7 @@ def _run_event(
             "SYMPHONY_STATE_DIR": str(state_dir),
             "SYMPHONY_PLUGIN_ROOT": str(root),
             "SYMPHONY_PLUGIN_VERSION": str(_manifest(root, provider)["version"]),
+            "SYMPHONY_SMOKE_PROVIDER": provider,
             "PLUGIN_ROOT": str(root),
             "CLAUDE_PLUGIN_ROOT": str(root),
         }
@@ -216,6 +217,26 @@ def _has_active_run(value: Any) -> bool:
     return False
 
 
+def _has_guarded_heartbeat(
+    value: Any,
+    provider: str,
+    session: str,
+    version: str,
+    root: Path,
+) -> bool:
+    if not isinstance(value, dict):
+        return False
+    activation = value.get("activation", {}).get(provider, {})
+    return (
+        activation.get("state") == "guarded"
+        and activation.get("session_id") == session
+        and activation.get("plugin_version") == version
+        and activation.get("plugin_root") == str(root)
+        and activation.get("hook_schema_version") == 1
+        and bool(activation.get("observed_at"))
+    )
+
+
 def _blocks_stop(output: dict[str, Any] | None) -> bool:
     return bool(output and (output.get("decision") == "block" or output.get("continue") is False))
 
@@ -252,6 +273,19 @@ def _exercise(
     def send(event: str, session: str = "fake-session") -> dict[str, Any] | None:
         output = _run_event(root, provider, event, project, state_dir, session)
         events.append(event)
+        if event == "UserPromptSubmit":
+            documents = _state_documents(state_dir)
+            if not any(
+                _has_guarded_heartbeat(
+                    document,
+                    provider,
+                    session,
+                    str(_manifest(root, provider)["version"]),
+                    root,
+                )
+                for document in documents
+            ):
+                raise SmokeFailure("UserPromptSubmit did not persist a complete guarded heartbeat")
         return output
 
     if scenario == "activation":

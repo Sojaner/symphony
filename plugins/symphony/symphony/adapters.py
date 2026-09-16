@@ -51,7 +51,11 @@ def event_from_payload(provider: str, payload: dict[str, Any]) -> Event:
     )
 
 
-def render(provider: str, actions: tuple[Action, ...]) -> HookResult:
+def render(
+    provider: str,
+    actions: tuple[Action, ...],
+    hook_event_name: str = "UserPromptSubmit",
+) -> HookResult:
     context = "\n".join(
         str(action.payload.get("text", ""))
         for action in actions
@@ -66,7 +70,7 @@ def render(provider: str, actions: tuple[Action, ...]) -> HookResult:
             json.dumps(
                 {
                     "hookSpecificOutput": {
-                        "hookEventName": "UserPromptSubmit",
+                        "hookEventName": hook_event_name,
                         "additionalContext": context,
                     }
                 }

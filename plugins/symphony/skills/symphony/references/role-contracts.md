@@ -24,6 +24,14 @@ abstract_role_routes:
   consultants: <tier/effort requirements, capacity, or none>
 ```
 
+Before spawning the selected lead, put the accepted fields on one exact first-class line in the lead task so the lifecycle hook can register the route before the host starts it:
+
+```text
+SYMPHONY_ROUTE: {"size":"medium","complexity":"mixed","risk":"normal","rationale":"...","topology":"mixed"}
+```
+
+The JSON values must use the matrix vocabulary above. The hook rejects malformed markers instead of guessing.
+
 ## Actionable work packet
 
 Every lead, worker, and consultant receives only the bounded context needed for its assignment. Every packet has these exact fields:

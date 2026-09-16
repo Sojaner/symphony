@@ -80,6 +80,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("enabled", self.context(result).lower())
         self.assertTrue(StateStore(self.state_root).load(self.project).enabled)
 
+    def test_raw_claude_slash_command_is_applied_before_skill_expansion(self):
+        result = handle(self.payload("/symphony:enable", "claude"), self.environ)
+
+        state = StateStore(self.state_root).load(self.project)
+        self.assertTrue(state.enabled)
+        self.assertIsNone(state.active_run)
+        self.assertIn("enabled", self.context(result).lower())
+
+    def test_raw_claude_start_preserves_the_full_task(self):
+        handle(self.payload("/symphony:start Check the release safely", "claude"), self.environ)
+
+        state = StateStore(self.state_root).load(self.project)
+        self.assertEqual(state.active_run.task, "Check the release safely")
+
     def test_claude_command_arguments_start_a_one_shot_run(self):
         prompt = "SYMPHONY_CONTROL: start\nARGUMENTS: Check the release"
         result = handle(self.payload(prompt, "claude"), self.environ)
@@ -133,6 +147,128 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(state.active_run)
         self.assertEqual(state.recent_runs[-1].status, "completed")
 
+    def test_failed_lead_stays_recoverable_and_stop_remains_guarded(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        started = self.payload("")
+        started.update(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_id": "lead-1",
+                "agent_type": "symphony_lead",
+            }
+        )
+        handle(started, self.environ)
+        handle({**started, "hook_event_name": "SubagentStop", "status": "failed"}, self.environ)
+
+        state = StateStore(self.state_root).load(self.project)
+        self.assertEqual(state.active_run.status, "recovering")
+        self.assertEqual(state.active_run.delegations[-1].state, "failed")
+        stop = {**self.payload(""), "hook_event_name": "Stop"}
+        self.assertEqual(self.output(handle(stop, self.environ))["decision"], "block")
+
+    def test_invalid_optional_metrics_are_ignored_without_losing_guard_state(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        started = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "worker-1",
+            "agent_type": "worker",
+            "tokens": "not-an-int",
+            "duration_seconds": False,
+        }
+        handle(started, self.environ)
+
+        state = StateStore(self.state_root).load(self.project)
+        self.assertIsNotNone(state.active_run)
+        self.assertIsNone(state.active_run.delegations[-1].tokens)
+        stop = {**self.payload(""), "hook_event_name": "Stop"}
+        self.assertEqual(self.output(handle(stop, self.environ))["decision"], "block")
+
+    def test_disable_preserves_active_run_until_observed_agents_stop(self):
+        handle(self.payload("$symphony:symphony enable Ship it"), self.environ)
+        started = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "worker-1",
+            "agent_type": "worker",
+        }
+        handle(started, self.environ)
+
+        disabled = handle(self.payload("$symphony:symphony disable"), self.environ)
+        stopping = StateStore(self.state_root).load(self.project)
+        self.assertFalse(stopping.enabled)
+        self.assertEqual(stopping.active_run.status, "stopping")
+        self.assertIn("worker-1", self.context(disabled))
+
+        handle({**started, "hook_event_name": "SubagentStop", "status": "completed"}, self.environ)
+        finished = StateStore(self.state_root).load(self.project)
+        self.assertIsNone(finished.active_run)
+        self.assertEqual(finished.recent_runs[-1].status, "disabled")
+
+    def test_session_start_reconciles_only_when_host_reports_active_ids(self):
+        delegation = Delegation("lead-1", "lead", "work", "working", "", "")
+        run = RunState("run-1", "task", status="interrupted", lead_identity="lead-1", delegations=(delegation,))
+        StateStore(self.state_root).save(self.project, ProjectState(enabled=True, active_run=run))
+
+        unknown = {**self.payload(""), "hook_event_name": "SessionStart"}
+        unknown_result = handle(unknown, self.environ)
+        self.assertEqual(
+            self.output(unknown_result)["hookSpecificOutput"]["hookEventName"],
+            "SessionStart",
+        )
+        self.assertEqual(StateStore(self.state_root).load(self.project).active_run.status, "interrupted")
+
+        handle({**unknown, "active_agent_ids": []}, self.environ)
+        self.assertEqual(StateStore(self.state_root).load(self.project).active_run.status, "recovering")
+
+    def test_pre_tool_route_marker_persists_assessment_and_status(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        marker = json.dumps(
+            {
+                "size": "medium",
+                "complexity": "mixed",
+                "risk": "normal",
+                "rationale": "bounded work",
+                "topology": "mixed",
+            }
+        )
+        hook = {
+            **self.payload(""),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "spawn_agent",
+            "tool_input": {"message": f"SYMPHONY_ROUTE: {marker}\nShip it"},
+        }
+        handle(hook, self.environ)
+        lead = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-1",
+            "agent_type": "lead",
+        }
+        handle(lead, self.environ)
+
+        status = self.context(handle(self.payload("$symphony:symphony status"), self.environ))
+        self.assertIn("Assessment: medium/mixed", status)
+        self.assertIn("Topology: mixed", status)
+        self.assertIn("Lead route: balanced/high", status)
+        self.assertIn("Lead: lead-1", status)
+
+    def test_legacy_provider_data_is_imported_once(self):
+        legacy_root = self.root / "plugin-data"
+        from plugins.symphony.symphony.store import legacy_project_key
+
+        legacy = legacy_root / "projects" / f"{legacy_project_key(self.project)}.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({"schema_version": 0, "enabled": True, "configuration": {"x": 1}}))
+        environ = {**self.environ, "PLUGIN_DATA": str(legacy_root)}
+
+        handle(self.payload("$symphony:symphony status"), environ)
+
+        state = StateStore(self.state_root).load(self.project)
+        self.assertTrue(state.enabled)
+        self.assertEqual(state.configuration, {"x": 1})
+        self.assertTrue(list(legacy.parent.glob(legacy.name + ".pre-1.0-*")))
+
     def test_compact_delegations_prioritizes_failed_then_active_then_recent(self):
         delegations = (
             Delegation("done-old", "worker", "", "completed", "economy", "low", "2026-01-01"),
@@ -161,10 +297,29 @@ class RuntimeTests(unittest.TestCase):
         row = Delegation("lead-1", "lead", "work", "working", "gpt-5", "high")
         self.assertIn("lead [gpt-5/high]", format_delegation(row))
 
-    def test_malformed_control_is_inert(self):
-        result = handle(self.payload("$symphony:symphony nonsense"), self.environ)
-        self.assertIn("unknown symphony control", self.context(result).lower())
-        self.assertIsNone(StateStore(self.state_root).load(self.project).active_run)
+    def test_single_word_codex_task_starts_a_one_shot_run(self):
+        result = handle(self.payload("$symphony:symphony summarize"), self.environ)
+        self.assertIn("assess", self.context(result).lower())
+        self.assertEqual(StateStore(self.state_root).load(self.project).active_run.task, "summarize")
+
+    def test_identical_claude_task_can_run_again_after_completion(self):
+        prompt = "SYMPHONY_CONTROL: start\nARGUMENTS: Repeat me"
+        handle(self.payload(prompt, "claude"), self.environ)
+        store = StateStore(self.state_root)
+        state = store.load(self.project)
+        store.save(
+            self.project,
+            ProjectState(
+                enabled=state.enabled,
+                activation=state.activation,
+                recent_runs=(state.active_run,),
+                event_history=state.event_history,
+            ),
+        )
+
+        handle(self.payload(prompt, "claude"), self.environ)
+
+        self.assertEqual(store.load(self.project).active_run.task, "Repeat me")
 
 
 if __name__ == "__main__":
