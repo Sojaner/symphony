@@ -653,7 +653,8 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
         f"only announce, spawn, bind/register, relay, and wait control work. {AUTHORITY_CONTEXT} {route}"
         "Make provider labels identify routing: Codex `task_name` is "
         "`symphony_<role>__<model-slug>__<effort-slug>`; Claude `description` starts "
-        "`symphony_<role> [<model>/<effort>]:`. Prefix root progress with `thin orchestrator "
+        "`symphony_<role> [<model>/<effort>]:`, and Claude Agent calls must set `model` explicitly "
+        "instead of inheriting it. Prefix root progress with `thin orchestrator "
         "[<model>/<effort>]:` when trusted runtime metadata exposes both values; otherwise use "
         "`thin orchestrator:`. After each observed lifecycle change, before every wait, and in the final "
         "response, replay one cumulative `Delegation log:` derived from the ledger. It contains one "
@@ -1024,13 +1025,17 @@ def _agent_display_label(run, record):
 
 def _delegation_snapshot(run):
     lines = ["Delegation log:"]
+    objective = next(
+        (line.strip() for line in run["objective"].splitlines() if line.strip()),
+        "project task",
+    )[:200]
     records = sorted(
         _agent_records(run),
         key=lambda record: (record.get("started_at") or 0, record["id"]),
     )
     for record in records:
         label = _agent_display_label(run, record)
-        lines.append(f"- Delegating: {label} — {record['id']} — {run['objective']}")
+        lines.append(f"- Delegating: {label} — {record['id']} — {objective}")
         state = "Completed" if record["status"] == "terminal" else "Waiting"
         lines.append(f"- {state}: {label} — {record['id']} — {record['status']}")
     return "\n".join(lines)
@@ -1629,7 +1634,8 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                         if routing_mismatches else ""
                     )
                     + "Then include a `Verification:` line with authoritative evidence, the "
-                    "selected mode, and the exact run completion receipt."
+                    "selected mode, and the exact run completion receipt. Preserve this cumulative "
+                    "delegation block in the same response:\n" + _delegation_snapshot(run)
                 ))
             if not _delegation_log_matches(message, run):
                 if memory_changed or assessment_changed:

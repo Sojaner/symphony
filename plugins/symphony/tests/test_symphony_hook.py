@@ -131,6 +131,7 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertTrue(terse.block)
         self.assertIn("self-contained final report", terse.reason)
         self.assertIn("both assessor and lead completion records", terse.reason)
+        self.assertIn("Delegation log:", terse.reason)
         self.assertIn("Completed: assessor/assessor — <status>", terse.reason)
         self.assertIn("Completed: lead/lead — <status>", terse.reason)
         self.assertIn("replacing only `<status>` with each agent's observed terminal status", terse.reason)
@@ -2755,7 +2756,10 @@ class SymphonyHookTests(unittest.TestCase):
 
     def test_wait_guidance_replays_cumulative_delegation_log(self):
         self.hook.handle_event(
-            self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
+            self.event(
+                "UserPromptSubmit",
+                prompt="/symphony:start explain the commands\nDo not repeat this instruction in every log row.",
+            ),
             self.data,
         )
         assessor_spawn = self.event(
@@ -2797,6 +2801,7 @@ class SymphonyHookTests(unittest.TestCase):
             "Waiting: lead [gpt-5.6-sol/medium] — lead-uuid — active",
         ):
             self.assertIn(required, waiting.reason)
+        self.assertNotIn("Do not repeat this instruction", waiting.reason)
 
     def test_completion_requires_cumulative_delegation_log(self):
         self.hook.handle_event(
@@ -2884,6 +2889,7 @@ class SymphonyHookTests(unittest.TestCase):
             "Project profile: automatic",
             "Codex `task_name` is `symphony_<role>__<model-slug>__<effort-slug>`",
             "Claude `description` starts `symphony_<role> [<model>/<effort>]:`",
+            "Claude Agent calls must set `model` explicitly",
             "Delegation log:",
             "Never emit a standalone `Waiting:` update",
             "`Waiting:` or `Completed:` line per agent",
@@ -4548,7 +4554,8 @@ class HookDeclarationTests(unittest.TestCase):
             "invalid or missing, report the failure plainly",
             "never `automatic`",
             "lifecycle and role assignment, not actual child model/effort",
-            "`description` to start with `symphony_assessor [<model>/<effort>]:` or `symphony_lead [<model>/<effort>]:`",
+            "assessor Agent/Task `model` explicitly to `opus`",
+            "`symphony_assessor [opus/high]:` or `symphony_lead [sonnet/medium]:`",
         ):
             self.assertIn(required, prompt)
         self.assertRegex(prompt, r"(?m)^max_turns: 12$")
