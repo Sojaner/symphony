@@ -599,16 +599,22 @@ def _spawn_label_error(run, payload):
         "high" if role == "assessor" else "<effort>"
     )
     expected = f"symphony_{expected_role} [{model}/{expected_effort}]:"
-    role_pattern = re.escape(role) if role else "[a-z0-9_]+"
-    if expected_effort != "<effort>":
-        pattern = rf"^symphony_{role_pattern} \[{re.escape(model)}/{re.escape(expected_effort)}\]:"
-    elif role:
-        pattern = rf"^symphony_{re.escape(role)} \[{re.escape(model)}/[a-z0-9_-]+\]:"
-    else:
-        pattern = rf"^symphony_[a-z0-9_]+ \[{re.escape(model)}/[a-z0-9_-]+\]:"
-    return None if isinstance(description, str) and re.match(pattern, description) else (
-        f"Start the provider-visible Claude description with `{expected}` for this spawn."
-    )
+    labelled = re.match(
+        r"^symphony_([a-z0-9_]+) \[([^/\]]+)/([^\]]+)\]:",
+        description or "",
+    ) if isinstance(description, str) else None
+    valid = bool(labelled)
+    if valid and role:
+        valid = labelled.group(1) == role
+    if valid:
+        label_model = labelled.group(2)
+        valid = label_model == model or (
+            model in {"opus", "sonnet", "haiku"}
+            and bool(re.search(rf"(?:^|[-_]){re.escape(model)}(?:$|[-_])", label_model))
+        )
+    if valid and expected_effort != "<effort>":
+        valid = labelled.group(3) == expected_effort
+    return None if valid else f"Start the provider-visible Claude description with `{expected}` for this spawn."
 
 
 def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, now=None):

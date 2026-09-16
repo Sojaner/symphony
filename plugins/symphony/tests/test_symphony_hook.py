@@ -2733,6 +2733,8 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIn("symphony_assessor [opus/high]:", blocked.reason)
         claude["tool_input"]["description"] = "symphony_assessor [opus/high]: assess"
         self.assertFalse(self.hook.handle_event(claude, self.data).block)
+        claude["tool_input"]["description"] = "symphony_assessor [claude-opus-5/high]: assess"
+        self.assertFalse(self.hook.handle_event(claude, self.data).block)
         claude["tool_input"].update({
             "effort": "high",
             "description": "symphony_assessor [opus/low]: assess",
