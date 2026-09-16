@@ -3564,18 +3564,50 @@ class HookDeclarationTests(unittest.TestCase):
         for required in (
             "Task, TaskOutput, TaskStop",
             "symphony:symphony",
-            "SYMPHONY_ASSESSMENT:<run-id>:<project-profile>:<run-mode>",
+            "SYMPHONY_ASSESSMENT:<actual-run-id>:small:small",
             "SYMPHONY_ASSESSMENT_REASON:<single bounded line>",
             "SYMPHONY_REGISTER:<run-id>:lead:<agent-id>",
             "run_in_background: false",
             "final-channel",
+            "exactly two Agent/Task invocations total",
+            "Never use Agent/Task for correction, retry, result collection, or recovery",
+            "Do not spawn a replacement lead",
+            "invalid or missing, report the failure plainly",
+            "never `automatic`",
         ):
             self.assertIn(required, prompt)
+        tool_grader = (PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders" / "two-agents.md").read_text(encoding="utf-8")
+        for required in ("type: tool_used", "tool: Agent", "min: 2", "max: 2"):
+            self.assertIn(required, tool_grader)
         mismatch = (PLUGIN_ROOT / "evals" / "mismatch-refusal" / "prompt.md").read_text(encoding="utf-8")
         self.assertIn("symphony:symphony", mismatch)
         self.assertIn("trusted runtime metadata", mismatch)
         grader = (PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders" / "registered-routing.md").read_text(encoding="utf-8")
         self.assertNotIn("asks only for the missing final mode marker also counts", grader)
+
+    def test_mismatch_eval_grades_strict_refusal_behavior_in_the_trace(self):
+        graders = PLUGIN_ROOT / "evals" / "mismatch-refusal" / "graders"
+        refusal = (graders / "refuses-with-mismatch.md").read_text(encoding="utf-8")
+        for required in (
+            "type: llm", "focus: trace", "invokes the `symphony:symphony` skill",
+            "trusted runtime metadata", "before any project action",
+            "gpt-5.6-terra", "claude-haiku-4-5-20251001",
+            "start a correctly configured task", "effort is unavailable or unverified",
+            "Fail on affirmative continuation", "lifecycle advice", "project work",
+            "missing or contradicted evidence", "No mismatch; proceeding",
+            "Mismatch, but I will build the API", "Start Symphony to continue",
+        ):
+            self.assertIn(required, refusal)
+        for path in graders.glob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("type: regex", text)
+            self.assertNotIn("pattern:", text)
+        guards = [path for path in graders.glob("no-*.md")]
+        self.assertEqual(6, len(guards))
+        for path in guards:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("type: tool_used", text)
+            self.assertIn("min: 0\nmax: 0", text)
 
     def test_skill_separates_assessment_execution_and_exposes_delegations(self):
         skill = (PLUGIN_ROOT / "skills" / "symphony" / "SKILL.md").read_text(encoding="utf-8")
@@ -3679,23 +3711,7 @@ Completed: symphony_lead — planned
         result = subprocess.run(["node", "-e", """
 const fs = require('fs');
 for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
-  try {
-    const regex = new RegExp(pattern, flags);
-    if (path.endsWith('/refuses-with-mismatch.md')) {
-      const refusal = 'Orchestrator mismatch\\nDeclared: gpt-5.6-terra/medium; actual: claude-haiku-4-5-20251001/medium\\nStart a task configured with the actual model and effort.';
-      for (const valid of [refusal, refusal.replace('20251001/medium', '20251001/unverified')]) {
-        if (!regex.test(valid)) throw new Error('valid refusal rejected');
-      }
-      for (const invalid of [
-        refusal.replace('Orchestrator mismatch', 'There is no mismatch; proceeding'),
-        refusal.replace('Start a task configured with the actual model and effort.', 'Proceeding with implementation.'),
-        refusal.replace('claude-haiku-4-5-20251001', 'gpt-5.6-terra'),
-        refusal + '\\nI will now build the API.',
-      ]) {
-        if (regex.test(invalid)) throw new Error('invalid refusal accepted');
-      }
-    }
-  }
+  try { new RegExp(pattern, flags); }
   catch (error) { throw new Error(path + ': ' + error.message); }
 }
 """], input=json.dumps(graders), capture_output=True, text=True)
