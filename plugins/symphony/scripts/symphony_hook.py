@@ -576,25 +576,25 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
     route = (
         f"Reconcile observed agents, announce {_mode_announcement(run['mode'])}, then emit "
         "`Delegating: symphony_lead — <bounded objective> — <model>/<effort> — accepted-mode "
-        "reassessment`, spawn a fresh separate mode-appropriate execution lead, register it, and wait. "
+        "reassessment`, spawn a fresh separate mode-appropriate execution lead, and wait. "
         if recovery and accepted_recovery else
         "Emit `Delegating: symphony_assessor — <bounded objective> — <model>/<effort> — initial or "
         "required reassessment`, spawn one strongest-available general reasoning model at high effort "
-        "with no inherited turns as read-only symphony_assessor, register it, and wait. After its "
-        "accepted receipt, announce `Mode: <mode> — <strategy> — <reason>` from the hook acknowledgment, "
+        "with no inherited turns as read-only symphony_assessor, and wait. After its "
+        "accepted receipt, announce `Mode: <mode> — <strategy> — <reason>`, "
         "emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — "
-        "selected <mode> execution`, spawn a separate mode-appropriate execution lead, register it, "
+        "selected <mode> execution`, spawn a separate mode-appropriate execution lead, "
         "and wait. The assessor must not implement or become the lead. "
         if run["assessment_due"] else
         f"Reconcile observed agents, announce {_mode_announcement(run['mode'])}, then emit "
         "`Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution`, "
-        "spawn a fresh separate mode-appropriate execution lead, register it, and wait. "
+        "spawn a fresh separate mode-appropriate execution lead, and wait. "
     )
     return (
         f"{action} Symphony run. Run id: {run['id']}. "
         f"Objective: {run['objective']}. Project profile: {state['assessment']['profile'] or 'automatic'} "
         f"(revision {state['assessment']['revision']}). You are the thin root/session keeper; perform "
-        f"only announce, spawn, register, relay, and wait control work. {AUTHORITY_CONTEXT} {route}"
+        f"only announce, spawn, bind/register, relay, and wait control work. {AUTHORITY_CONTEXT} {route}"
         "Use these exact visible record forms: `Delegating: <role> — <bounded objective> — "
         "<model>/<effort> — <reason>`; `Waiting: <role or wave> — <bounded in-progress fact>`; "
         "`Completed: <agent id/role> — <status>`, followed only when exposed by ` — tokens "
@@ -604,18 +604,17 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
         "deliverable, both assessor and lead completion records, a `Routing:` line naming the mode "
         "strategy plus each agent's actual model/effort and assigned job from the lead's delegation "
         "summary, a `Verification:` line, the selected mode, and the exact completion receipt. "
-        f"After the host exposes an id, emit `SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>` or "
-        f"`SYMPHONY_REGISTER:{run['id']}:lead:<agent-id>` as applicable. "
-        "For the initial execution lead and each recovery lead, immediately end a final-channel response "
-        "containing its exact registration line, without run completion. Commentary does not persist registration. "
-        "After the hook acknowledges registration, call the blocking wait for that same lead. "
+        "Codex `spawn_agent` calls are registered automatically by binding the root's pre-tool request "
+        "to the next observed child UUID; wait in the same turn and use the `agent_id` returned by the child. "
+        "Never guess an id from a task name. On a host without automatic binding, register only an exact "
+        f"host-returned id with `SYMPHONY_REGISTER:{run['id']}:<role>:<agent-id>`. "
         "Relay exactly "
         f"`SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>` and "
         "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>` from the terminal assessor or same-mode "
         "lead. Both receipt size fields must be small, medium, or large; automatic is a source, "
         "not a project size, and must never appear in the receipt. "
-        "After the registration handoff, immediately call the host blocking wait/result operation and continue "
-        "until every observed agent is terminal. Finish only with the accepted mode marker and "
+        "Immediately call the host blocking wait/result operation after every spawn and continue until every "
+        "observed agent is terminal. Finish only with the accepted mode marker and "
         f"`<!-- {run['receipt']} -->`."
     )
 
@@ -731,7 +730,7 @@ def _record_assessment_receipt(state, run, message, now, agent_id=None):
 
 
 def _register_roles(state, run, message):
-    """Only the owning root's control response may assign host-observed agents."""
+    """Assign host-observed agents from an owner relay or Codex lifecycle binding."""
     records = {record["id"]: record for record in _agent_records(run)}
     changed = False
     for run_id, role, agent_id in REGISTRATION_RE.findall(message):
@@ -1065,7 +1064,9 @@ def _transfer_interrupted_run(run, session_id, now):
 
 
 def _is_terminal_control(prompt, control, task):
-    return _looks_like_control(prompt) and not (
+    return (_looks_like_control(prompt) or (
+        SYMPHONY_SKILL_RE.match(prompt) and control is not None
+    )) and not (
         control in {"start", "enable"} and bool(task)
     )
 
@@ -1079,14 +1080,32 @@ def _invalid_control_args(control, args):
     )
 
 
+def _parse_user_prompt(prompt):
+    control, task, args = _parse_prompt(prompt)
+    skill_match = SYMPHONY_SKILL_RE.match(prompt)
+    if control is not None or not skill_match:
+        return control, task, args
+    skill_input = prompt[skill_match.end():].strip()
+    candidate = _parse_prompt(f"/symphony:{skill_input.lstrip('/')}")
+    candidate_control, _, candidate_args = candidate
+    if candidate_control is None:
+        return None, "", ""
+    if skill_input.startswith("/") or (
+        not _invalid_control_args(candidate_control, candidate_args)
+        and not (
+            candidate_control == "assess"
+            and candidate_args.strip().lower() not in {"", "small", "medium", "large", "auto"}
+        )
+    ):
+        return candidate
+    return None, "", ""
+
+
 def _handle_prompt(payload, state, now):
     prompt = payload.get("prompt") or ""
     skill_match = SYMPHONY_SKILL_RE.match(prompt)
     skill_input = prompt[skill_match.end():].strip() if skill_match else ""
-    control_prompt = (
-        f"/symphony:{skill_input[1:]}" if skill_input.startswith("/") else prompt
-    )
-    control, task, args = _parse_prompt(control_prompt)
+    control, task, args = _parse_user_prompt(prompt)
     dry_run, task = _dry_run_task(control, task)
     skill_task = skill_input if skill_match and control is None else ""
 
@@ -1339,6 +1358,8 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     ". Call the host's blocking wait/result tool and integrate every result before stopping."
                 ),
             )
+        if run.pop("pending_spawn", None) is not None:
+            memory_changed = True
         if run.get("status") == "stopping":
             _archive_run(state, "stopped", now)
             state["active_run"] = None
@@ -1546,7 +1567,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         return _handle_stop(payload, Path(data_dir), project_root, current, wait)
 
     prompt = payload.get("prompt") or ""
-    control, task, args = _parse_prompt(prompt) if event == "UserPromptSubmit" else (None, "", "")
+    control, task, args = _parse_user_prompt(prompt) if event == "UserPromptSubmit" else (None, "", "")
     _, terminal_task = _dry_run_task(control, task)
     terminal_control = event == "UserPromptSubmit" and _is_terminal_control(
         prompt, control, terminal_task,
@@ -1580,6 +1601,15 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     "spawn, resume, or call Agent for a correction; "
                     "no additional assessment receipt is required."
                 ))
+            elif (run and _owns_run(run, payload.get("session_id"))
+                  and payload.get("tool_name") == "spawn_agent"
+                  and isinstance(run.get("pending_spawn"), dict)):
+                result = HookResult(block=True, reason=(
+                    "A prior Symphony role spawn is still awaiting its SubagentStart lifecycle event. "
+                    "Do not dispatch another root role concurrently; wait for that child to start. If the "
+                    "spawn failed, end this response so the Stop hook can discard the orphaned binding, "
+                    "then retry."
+                ))
             elif run and _owns_run(run, payload.get("session_id")) and run["strong_assessment_required"]:
                 pending = [record["id"] for record in _agent_records(run)
                            if record.get("parent_session_id") in {None, run["owner_session_id"]}
@@ -1607,6 +1637,15 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                             "the weak root. Retry spawn_agent with the named model from the live host "
                             "catalog and reasoning_effort=high; do not proceed with an inherited model."
                         ))
+            if (run and _owns_run(run, payload.get("session_id"))
+                    and payload.get("tool_name") == "spawn_agent" and not result.block):
+                arguments = payload.get("tool_input") or {}
+                arguments = arguments if isinstance(arguments, dict) else {}
+                run["pending_spawn"] = {
+                    "role": "assessor" if run["strong_assessment_required"] else "lead",
+                    "model": arguments.get("model"),
+                    "effort": arguments.get("reasoning_effort") or arguments.get("effort"),
+                }
         elif event == "SessionStart":
             run = state.get("active_run")
             if run:
@@ -1656,6 +1695,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
             records = {record["id"]: record for record in _agent_records(run)} if run else {}
             record = records.get(agent_id)
             if run and agent_id and (record is None or record["status"] == "terminal"):
+                pending_spawn = (
+                    run.pop("pending_spawn", None)
+                    if payload.get("session_id") == run.get("owner_session_id") else None
+                )
                 run["agents"] = sorted(set(run.get("agents", [])) | {agent_id})
                 if record is None:
                     record = _agent_record(payload, current)
@@ -1672,7 +1715,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                         # A synchronous initial lead has no host id until its call returns.
                         # Mark the first post-assessment top-level child as a candidate so
                         # its own stop is not mistaken for a completed worker wave. Root
-                        # registration remains the only role authorization.
+                        # explicit registration remains the fallback authorization.
                         record["initial_lead_candidate"] = True
                     # A replacement lead must be a fresh dispatch after the
                     # prior lead is terminal, not a child from its active wave.
@@ -1682,12 +1725,23 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     record["status"] = "active"
                     record["stopped_at"] = None
                     record.pop("assessment_superseded", None)
+                if isinstance(pending_spawn, dict):
+                    for field in ("model", "effort"):
+                        value = pending_spawn.get(field)
+                        if isinstance(value, str) and value and record.get(field) in (None, "", NOT_EXPOSED):
+                            record[field] = value
                 run.setdefault("agent_records", {})[agent_id] = record
+                role = pending_spawn.get("role") if isinstance(pending_spawn, dict) else None
+                if role in {"assessor", "lead"}:
+                    _register_roles(
+                        state, run, f"SYMPHONY_REGISTER:{run['id']}:{role}:{agent_id}",
+                    )
                 run["last_event"] = event
                 run["status"] = "active"
                 result = HookResult(
                     context=(
                         f"You are an assigned child in Symphony run {run['id']}; inherited root bootstrap does not apply. "
+                        f"Your host agent id is `{agent_id}`; include `agent_id: {agent_id}` in your result. "
                         f"Perform your assigned role directly. {AUTHORITY_CONTEXT} A symphony_assessor is read-only and does not need spawn or wait tools: "
                         "inspect the repository and return its assessment, never delegate another assessor or lead. "
                         "A symphony_lead executes and verifies its assignment and ends its result with "
@@ -1777,6 +1831,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         elif event == "Interrupt":
             run = state.get("active_run")
             if run and _owns_run(run, payload.get("session_id")):
+                run.pop("pending_spawn", None)
                 run["last_event"] = event
                 run["interrupted_at"] = current
                 run["interruption_recovery_eligible"] = True

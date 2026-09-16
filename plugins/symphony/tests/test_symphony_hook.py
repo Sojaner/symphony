@@ -566,13 +566,8 @@ class SymphonyHookTests(unittest.TestCase):
                     self.assertIsNone(self.state()["active_run"])
                     self.assertEqual("stopped", self.state()["run_history"][-1]["status"])
 
-    def test_initial_lead_registration_requires_final_handoff_before_wait(self):
-        initial = self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
-        skill = (PLUGIN_ROOT / "skills" / "symphony" / "SKILL.md").read_text()
-        for text in (initial.context, skill):
-            self.assertIn("initial execution lead", text)
-            self.assertIn("final-channel response", text)
-            self.assertIn("hook acknowledges registration", text)
+    def test_manual_lead_registration_remains_supported(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         self.set_current_assessment()
         self.hook.handle_event(self.event("SubagentStart", agent_id="original-lead"), self.data)
         run = self.state()["active_run"]
@@ -790,7 +785,7 @@ class SymphonyHookTests(unittest.TestCase):
         run["mode_history"] = run["mode_history"] or [{"mode": mode}]
         self.hook.write_project_state(self.data, state)
 
-    def test_spawn_boundary_requires_persisted_assessment_before_execution(self):
+    def test_spawn_boundary_accepts_registered_codex_assessor_receipt(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
         spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={"model": "gpt-6-astra"})
         self.assertFalse(self.hook.handle_event(spawn, self.data).block)
@@ -798,18 +793,10 @@ class SymphonyHookTests(unittest.TestCase):
         run = self.state()["active_run"]
         receipt = f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\nSYMPHONY_ASSESSMENT_REASON:One unit"
         self.hook.handle_event(self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data)
-        before = self.state()
-        blocked = self.hook.handle_event(spawn, self.data)
-        self.assertTrue(blocked.block)
-        self.assertIn(f"SYMPHONY_REGISTER:{run['id']}:assessor:assessor", blocked.reason)
-        self.assertEqual(before, self.state())
-        self.hook.handle_event(self.event("Stop", last_assistant_message=(
-            f"SYMPHONY_REGISTER:{run['id']}:assessor:assessor\n" + receipt
-        )), self.data, stop_wait_seconds=0)
         self.assertEqual(1, self.state()["active_run"]["mode_revision"])
         self.assertFalse(self.hook.handle_event(spawn, self.data).block)
-        self.hook.handle_event(self.event("SubagentStart", agent_id="worker", session_id="lead"), self.data)
-        self.hook.handle_event(self.event("SubagentStop", agent_id="worker", session_id="lead"), self.data)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="lead"), self.data)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="lead"), self.data)
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data)
         self.assertFalse(self.hook.handle_event(spawn, self.data).block)
         self.hook.handle_event(self.event("SubagentStart", agent_id="fresh", agent_type="symphony_assessor"), self.data)
@@ -2509,6 +2496,152 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIsNone(self.state()["active_run"])
         self.assertIn("Symphony project enabled: false", result.context)
 
+    def test_explicit_skill_invocation_routes_bare_help_control(self):
+        result = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="$symphony:symphony help"),
+            self.data,
+        )
+
+        self.assertIsNone(self.state()["active_run"])
+        self.assertIn("SYMPHONY_CONTROL_HANDLED:", result.context)
+
+    def test_codex_spawn_metadata_auto_registers_role_holders(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
+            self.data,
+        )
+        assessor_spawn = self.event(
+            "PreToolUse", tool_name="spawn_agent",
+            tool_input={"model": "gpt-6-astra", "reasoning_effort": "high"},
+        )
+        self.assertFalse(self.hook.handle_event(assessor_spawn, self.data).block)
+        assessor_context = self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor-uuid"), self.data,
+        )
+        run = self.state()["active_run"]
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:large:small\n"
+            "SYMPHONY_ASSESSMENT_REASON:Bounded documentation response"
+        )
+        self.assertIn("agent id is `assessor-uuid`", assessor_context.context)
+        self.assertEqual("assessor-uuid", run["assessor_agent_id"])
+        self.assertEqual("assessor", run["agent_records"]["assessor-uuid"]["registered_role"])
+        self.assertEqual(
+            ("gpt-6-astra", "high"),
+            tuple(run["agent_records"]["assessor-uuid"][field] for field in ("model", "effort")),
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor-uuid", last_assistant_message=receipt),
+            self.data,
+        )
+        assessed = self.state()["active_run"]
+        self.assertEqual("small", assessed["mode"])
+        self.assertFalse(assessed["assessment_due"])
+
+        lead_spawn = self.event(
+            "PreToolUse", tool_name="spawn_agent",
+            tool_input={"model": "gpt-5.6-sol", "reasoning_effort": "medium"},
+        )
+        self.assertFalse(self.hook.handle_event(lead_spawn, self.data).block)
+        lead_context = self.hook.handle_event(
+            self.event("SubagentStart", agent_id="lead-uuid"), self.data,
+        )
+        self.assertIn("agent id is `lead-uuid`", lead_context.context)
+        self.hook.handle_event(self.event("SubagentStop", agent_id="lead-uuid"), self.data)
+        run = self.state()["active_run"]
+        self.assertEqual("lead-uuid", run["lead_agent_id"])
+        self.assertEqual("lead", run["agent_records"]["lead-uuid"]["registered_role"])
+        self.assertEqual(
+            ("gpt-5.6-sol", "medium"),
+            tuple(run["agent_records"]["lead-uuid"][field] for field in ("model", "effort")),
+        )
+        final = (
+            "Command help.\n"
+            "Completed: assessor-uuid/assessor — terminal\n"
+            "Completed: lead-uuid/lead — terminal\n"
+            "Routing: mode small (lead executes directly) — Bounded documentation response; "
+            "assessor assessor-uuid gpt-6-astra/high; lead lead-uuid gpt-5.6-sol/medium; workers none\n"
+            "Verification: command syntax checked.\n"
+            f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
+        )
+        completed = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=final), self.data, stop_wait_seconds=0,
+        )
+        self.assertFalse(completed.block)
+        self.assertIsNone(self.state()["active_run"])
+
+    def test_codex_role_spawn_is_serialized_until_lifecycle_start(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
+            self.data,
+        )
+        first = self.event(
+            "PreToolUse", tool_name="spawn_agent",
+            tool_input={"model": "gpt-6-astra", "reasoning_effort": "high"},
+        )
+        second = self.event(
+            "PreToolUse", tool_name="spawn_agent",
+            tool_input={"model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        )
+
+        self.assertFalse(self.hook.handle_event(first, self.data).block)
+        blocked = self.hook.handle_event(second, self.data)
+        self.assertTrue(blocked.block)
+        self.assertIn("prior Symphony role spawn", blocked.reason)
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor-uuid"), self.data,
+        )
+        record = self.state()["active_run"]["agent_records"]["assessor-uuid"]
+        self.assertEqual(("gpt-6-astra", "high"), (record["model"], record["effort"]))
+
+    def test_stop_clears_orphaned_codex_spawn_binding(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
+            self.data,
+        )
+        spawn = self.event(
+            "PreToolUse", tool_name="spawn_agent",
+            tool_input={"model": "gpt-6-astra", "reasoning_effort": "high"},
+        )
+
+        self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+        stopped = self.hook.handle_event(
+            self.event("Stop", last_assistant_message="spawn failed"),
+            self.data, stop_wait_seconds=0,
+        )
+        self.assertTrue(stopped.block)
+        self.assertNotIn("pending_spawn", self.state()["active_run"])
+        self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+
+    def test_interrupt_clears_orphaned_codex_spawn_binding(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
+            self.data,
+        )
+        spawn = self.event(
+            "PreToolUse", tool_name="spawn_agent",
+            tool_input={"model": "gpt-6-astra", "reasoning_effort": "high"},
+        )
+
+        self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+        self.hook.handle_event(self.event("Interrupt"), self.data)
+        self.assertNotIn("pending_spawn", self.state()["active_run"])
+
+    def test_codex_spawn_binding_tolerates_malformed_tool_input(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
+            self.data,
+        )
+        self.set_current_assessment()
+
+        result = self.hook.handle_event(
+            self.event("PreToolUse", tool_name="spawn_agent", tool_input="malformed"),
+            self.data,
+        )
+        self.assertFalse(result.block)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="lead-uuid"), self.data)
+        self.assertEqual("lead-uuid", self.state()["active_run"]["lead_agent_id"])
+
     def test_start_is_one_off_and_does_not_enable_project(self):
         result = self.hook.handle_event(
             self.event(
@@ -2540,7 +2673,7 @@ class SymphonyHookTests(unittest.TestCase):
             "followed only when exposed",
             "Mode: <mode> — <strategy> — <reason>",
             "a `Routing:` line naming the mode strategy plus each agent's actual model/effort and assigned job",
-            f"SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>",
+            f"SYMPHONY_REGISTER:{run['id']}:<role>:<agent-id>",
             f"SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>",
             run["receipt"],
         ):
@@ -3676,8 +3809,8 @@ class MemoryContractTests(unittest.TestCase):
             "An agent assigned `symphony_assessor` is already the assessor",
             "must not run the root bootstrap or require its own spawn tools",
             "Assigned children do not apply the root-only Mandatory first gate",
-            "Immediately end that response after the registration and assessment lines",
-            "Never spawn the lead in the same response",
+            "automatic binding registers the lead",
+            "never substitutes a task name for that UUID",
         ):
             self.assertIn(required, contract)
         self.assertLess(
@@ -4597,7 +4730,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
                 "No hard token or cost budget is promised.",
                 "single-use control receipt",
                 "no active registered agents",
-                "spawn, register, relay, and wait",
+                "spawn, bind/register, relay, and wait",
                 "accepted current assessment",
                 "Small runs skip optional memory",
                 "verified host timeout or cancellation",
@@ -4612,7 +4745,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.20.1"}, versions)
+        self.assertEqual({"0.20.2"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},

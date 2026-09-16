@@ -80,7 +80,7 @@ Start a new session after installation so Claude Code loads the commands, skill,
 - `enable` persistently enables the current working tree and optionally starts a task.
 - `disable` prevents future automatic activation and gracefully stops an active run.
 - `start` starts one guarded run without changing project enablement.
-- `$symphony:symphony <task>` also starts a guarded one-off run when invoked as a skill.
+- `$symphony:symphony <task>` starts a guarded one-off run; command names such as `$symphony:symphony help` are controls and do not start project work.
 - `assess` requests reassessment; `small`, `medium`, or `large` set a persistent project profile, while `auto` clears it.
 - `status` reads policy and run state without changing either.
 - `agents` lists the active run's subagents, including terminal agents; `--all` also includes retained historical runs. Model or effort that the host does not provide is shown as `not exposed by host`.
@@ -120,7 +120,7 @@ Neither Codex nor Claude Code lets a plugin prevent every explicit interrupt or 
 
 ## Assessment and execution bootstrap
 
-The root has only four duties: spawn, register, relay, and wait. It performs no repository, capability, or MCP discovery before delegating. The injected packet supplies the objective, run id, required assessor profile, and exact receipt syntax. The root first spawns a separate read-only assessor at the strongest available general reasoning model and high effort with no inherited turns, then relays its terminal receipt. After acceptance, it spawns the mode-appropriate `symphony_lead`.
+The root has only five duties: announce, spawn, bind/register, relay, and wait. It performs no repository, capability, or MCP discovery before delegating. The injected packet supplies the objective, run id, required assessor profile, and exact receipt syntax. The root first spawns a separate read-only assessor at the strongest available general reasoning model and high effort with no inherited turns, then relays its terminal receipt. Codex binds each root spawn request to the observed child UUID automatically; other hosts register the exact id they return. After acceptance, the root spawns the mode-appropriate `symphony_lead`.
 
 The assessor and execution lead discover repository instructions, worktree state, usable models, skills, tools, concurrency, and routing references themselves. On hosts that expose child lifecycle events, assessment requires the current registered terminal assessor. Hosts without those events retain the documented owner receipt fallback.
 

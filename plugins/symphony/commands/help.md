@@ -16,11 +16,13 @@ description: Show Symphony usage without enabling or starting it
 - `/symphony:stop --force` — release stale protection; a background agent may still be running.
 - `/symphony:help` — show this help without starting a run.
 
+The skill form accepts the same control names with or without a slash, so `$symphony:symphony help` is equivalent to `/symphony:help` rather than a project task.
+
 Each run selects one mode: **small** for direct work by the strong lead, **medium** for mixed direct work and selective delegation, or **large** for delegation waves. A project profile is separate from the per-run execution mode: a long-running large-profile project may still have a small task. Enabled projects start a guarded run automatically on their next non-control project prompt.
 
 New and explicitly reassessed runs use a separate read-only assessor: a bounded, read-only assessor that returns exactly one concise assessment result and does not implement. A mode-appropriate execution lead follows. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Symphony makes routing visible with `Delegating:` and `Completed:` records, a `Mode:` announcement after each accepted assessment, and a `Routing:` line in the final report naming the strategy and every agent's actual model/effort and assigned job.
 
-The root's duties are spawn, register, relay, and wait; the assessor and lead own repository discovery, capability selection, and execution. Normal completion requires an accepted current assessment and terminal registered children. Only explicit `start --dry-run` bypasses assessment. Codex medium/large worker delegation requires `agents.max_depth = 2` (root → lead → worker).
+The root's duties are announce, spawn, bind/register, relay, and wait; the assessor and lead own repository discovery, capability selection, and execution. Codex binds root spawn requests to observed lifecycle UUIDs automatically; other hosts register exact host-returned ids. Normal completion requires an accepted current assessment and terminal registered children. Only explicit `start --dry-run` bypasses assessment. Codex medium/large worker delegation requires `agents.max_depth = 2` (root → lead → worker).
 
 Help, status, agents, empty enable, assessment controls, and invalid input terminate with a single-use control receipt without resuming project work, waiting for children, or transferring ownership. Only an interrupted run with no active registered agents can transfer atomically to a new session. Other sessions remain inspection-only; old ownership cannot be reused.
 
