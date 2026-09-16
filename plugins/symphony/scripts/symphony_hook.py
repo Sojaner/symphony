@@ -49,7 +49,7 @@ ASSESSMENT_REASON_RE = re.compile(
     r"^[ \t]*SYMPHONY_ASSESSMENT_REASON:([^\r\n]*)\r?$", re.IGNORECASE | re.MULTILINE,
 )
 REGISTRATION_RE = re.compile(
-    r"^SYMPHONY_REGISTER:([a-f0-9]{16}):(assessor|lead):([A-Za-z0-9_-]{1,128})[ \t]*$",
+    r"^[ \t]*`?SYMPHONY_REGISTER:([a-f0-9]{16}):(assessor|lead):([A-Za-z0-9_-]{1,128})[ \t]*`?[ \t]*$",
     re.MULTILINE,
 )
 CONTROL_RECEIPT_RE = re.compile(r"(?:^|\n)<!-- SYMPHONY_CONTROL_HANDLED:([a-f0-9]{32}) -->\s*\Z")
@@ -388,9 +388,9 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
             f"{action} Symphony dry run. Run id: {run['id']}. Objective: {run['objective']}. "
             f"Project profile: {state['assessment']['profile'] or 'automatic'} "
             f"(revision {state['assessment']['revision']}). Dry run: true. "
-            "Do not spawn agents or write project files. Report only planned `Delegating:` and "
-            "`Completed:` records for a separate strongest/high assessor and mode-appropriate "
-            "execution lead, exactly one planned mode marker, and "
+            "Do not spawn agents or write project files. Report, in order, `Root profile:`, "
+            "`Capability routing:`, planned `Delegating:` and `Completed:` records for a separate "
+            "strongest/high assessor and mode-appropriate execution lead, exactly one planned mode marker, and "
             f"`<!-- {run['receipt']} -->`."
         )
     route = (
@@ -1109,7 +1109,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     block=True,
                     reason=(
                         control_ack + "Symphony dry run remains active. Reissue one self-contained "
-                        "planned report with the root profile, capability routing, planned `Delegating:` "
+                        "planned report with `Root profile:`, `Capability routing:`, planned `Delegating:` "
                         "and `Completed:` records for the separate strongest/high assessor and "
                         "mode-appropriate execution lead, exactly one `<!-- SYMPHONY_MODE:<mode> -->`, "
                         f"and the exact run completion receipt `<!-- {run['receipt']} -->`."
@@ -1131,7 +1131,7 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     block=True,
                     reason=(
                         "Symphony dry-run completion is missing its single selected mode. Reissue one "
-                        "self-contained planned report with the root profile, capability routing, planned "
+                        "self-contained planned report with `Root profile:`, `Capability routing:`, planned "
                         "`Delegating:` and `Completed:` records for the separate strongest/high assessor "
                         "and mode-appropriate execution lead, exactly one "
                         "`<!-- SYMPHONY_MODE:<mode> -->`, and the exact run completion receipt."
@@ -1153,6 +1153,31 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
             return HookResult(block=True, reason="Symphony completion must come from the owning root and match the accepted assessment mode.")
+        if run["dry_run"]:
+            normalized = message.lower()
+            records = (
+                "root profile:",
+                "capability routing:",
+                "delegating: symphony_assessor",
+                "completed: symphony_assessor",
+                "delegating: symphony_lead",
+                "completed: symphony_lead",
+                "symphony_mode:",
+                run["receipt"].lower(),
+            )
+            positions = [normalized.find(record) for record in records]
+            if any(position < 0 for position in positions) or positions != sorted(positions):
+                write_project_state(data_dir, state, now)
+                return HookResult(
+                    block=True,
+                    reason=(
+                        "Symphony dry-run completion requires one self-contained planned report in this "
+                        "order: `Root profile:`; `Capability routing:`; planned `Delegating:` and `Completed:` "
+                        "records for the separate strongest/high assessor; planned `Delegating:` and "
+                        "`Completed:` records for the mode-appropriate execution lead; exactly one mode "
+                        "marker; and the exact run completion receipt. Reissue the complete report."
+                    ),
+                )
         if not run["dry_run"] and (
             not _has_accepted_assessment(run) or run["assessment_due"]
         ):

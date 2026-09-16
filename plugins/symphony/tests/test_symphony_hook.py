@@ -653,6 +653,33 @@ class SymphonyHookTests(unittest.TestCase):
             last_assistant_message=receipt.replace(":large:medium", ":large:large")), self.data)
         self.assertEqual("large", self.state()["active_run"]["mode"])
 
+    def test_owner_registration_accepts_inline_markdown_code(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        run = self.state()["active_run"]
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
+            "SYMPHONY_ASSESSMENT_REASON:Bounded task"
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor", agent_type="general-purpose"), self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data,
+        )
+
+        result = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                f"`SYMPHONY_REGISTER:{run['id']}:assessor:assessor`\n{receipt}"
+            )),
+            self.data,
+            stop_wait_seconds=0,
+        )
+
+        self.assertIn("Symphony registered roles", result.reason)
+        self.assertIn("Symphony accepted assessment", result.reason)
+        self.assertEqual("assessor", self.state()["active_run"]["assessor_agent_id"])
+        self.assertFalse(self.state()["active_run"]["assessment_due"])
+
     def test_status_reports_assessment_fields_without_lifecycle_writes(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess large"), self.data)
         for active in (False, True):
@@ -2316,10 +2343,18 @@ class SymphonyHookTests(unittest.TestCase):
                 if expected_dry_run:
                     self.assertIn("Dry run: true", started.context)
                     self.assertIn("Do not spawn agents or write project files", started.context)
+                    self.assertIn("`Root profile:`", started.context)
+                    self.assertIn("`Capability routing:`", started.context)
                     self.assertNotIn("spawn one", started.context)
 
                 result = self.hook.handle_event(
                     self.event("Stop", last_assistant_message=(
+                        "Root profile: test/medium\n"
+                        "Capability routing: none required.\n"
+                        "Delegating: symphony_assessor — assess — strongest/high — read-only\n"
+                        "Completed: symphony_assessor — planned — tokens not exposed by host — duration not exposed by host\n"
+                        "Delegating: symphony_lead — execute — balanced/medium — medium execution\n"
+                        "Completed: symphony_lead — planned — tokens not exposed by host — duration not exposed by host\n"
                         f"<!-- SYMPHONY_MODE:medium -->\n{run['receipt']}"
                     )),
                     data, stop_wait_seconds=0,
@@ -2366,6 +2401,38 @@ class SymphonyHookTests(unittest.TestCase):
             self.assertIn("mode-appropriate execution lead", result.reason)
             self.assertIn("SYMPHONY_MODE:<mode>", result.reason)
             self.assertIn("run completion receipt", result.reason.lower())
+
+    def test_dry_run_completion_requires_self_contained_visible_records(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start --dry-run validate routing"),
+            self.data,
+        )
+        run = self.state()["active_run"]
+
+        report = (
+            "Root profile: test/medium\n"
+            "Capability routing: none required.\n"
+            "Delegating: symphony_assessor — assess — strongest/high — read-only\n"
+            "Completed: symphony_assessor — planned\n"
+            "Delegating: symphony_lead — execute — balanced/medium — medium execution\n"
+            "Completed: symphony_lead — planned\n"
+            f"<!-- SYMPHONY_MODE:medium -->\n{run['receipt']}"
+        )
+        for invalid in (
+            report.replace("Capability routing: none required.\n", ""),
+            "<!-- SYMPHONY_MODE:medium -->\n" + report.replace(
+                "<!-- SYMPHONY_MODE:medium -->\n", ""
+            ),
+        ):
+            result = self.hook.handle_event(
+                self.event("Stop", last_assistant_message=invalid),
+                self.data,
+                stop_wait_seconds=0,
+            )
+            self.assertTrue(result.block)
+            self.assertIn("`Root profile:`", result.reason)
+            self.assertIn("`Capability routing:`", result.reason)
+            self.assertIsNotNone(self.state()["active_run"])
 
     def test_interrupted_run_transfers_once_after_passive_foreign_startup_and_control(self):
         self.hook.handle_event(
