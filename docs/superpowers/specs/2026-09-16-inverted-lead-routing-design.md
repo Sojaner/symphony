@@ -29,13 +29,13 @@ A consultant receives one bounded decision area with only the evidence needed to
 An actionable consultant response may contain one decision or split the area into a small ordered set of narrower decisions. It ends with a machine-readable decision packet:
 
 ```text
-SYMPHONY_CONSULTATION:<run-id>:<size>:<complexity>
+SYMPHONY_CONSULTATION:<run-id>
 SYMPHONY_DECISION_COUNT:<count>
-SYMPHONY_DECISION:<index>:<precise decision>
+SYMPHONY_DECISION:<index>:<small|medium|large>:<low|medium|high>:<precise decision>
 SYMPHONY_ACTION:<index>:<mechanical action or mapping>
 ```
 
-`size` and `complexity` describe the bounded decision area, not the whole project. Every index from one through `count` appears exactly once in both fields, and index order is execution order. The lead applies the actions mechanically in that order. If the response exposes a broader issue or would change the run mode, the lead requests reassessment instead of expanding the consultation.
+Every actionable decision carries its own size and complexity. These values describe that decision, not the whole project, and give the lead the routing input for its implementation or delegation. Every index from one through `count` appears exactly once in both fields, and index order is execution order. The lead applies the actions mechanically in that order. If the response exposes a broader issue or would change the run mode, the lead requests reassessment instead of expanding the consultation.
 
 Consultants use the cheapest route suitable for the decision. Strongest/high is reserved for genuinely hard, risky, or irreversible decisions and final review; it is not the default consultant route.
 
@@ -64,7 +64,7 @@ A proposed mode, route, or consulting-strategy change that exceeds the current l
 - Consultant labels expose role/model/effort on both providers.
 - Consultant-heavy worker waves preserve one child slot, or serialize consultation before dependent work when no spare slot exists.
 - Occasional-consulting leads remain capable of resolving their own bounded decisions when no consultant slot is available.
-- Completion rejects actionable consultant results missing size, complexity, decision count, indexed decisions, or matching indexed actions.
+- Completion rejects actionable consultant results when any indexed decision lacks size or complexity, or when decision count, indexed decisions, and indexed actions do not form a complete matching set.
 
 ## Failure and recovery
 
@@ -80,7 +80,7 @@ Regression coverage will prove:
 - both Codex and Claude reject a lead route that differs from the accepted assessor selection;
 - large consultant-heavy schedules preserve decision capacity;
 - occasional-consulting leads can proceed when no consultant slot is available;
-- actionable consultant packets include unit size, complexity, a complete indexed decision set, and matching actions;
+- every actionable consultant decision includes its own size and complexity plus a matching indexed action;
 - reassessment can change mode, lead route, and consulting strategy without discarding accumulated evidence;
 - small direct execution and medium mixed execution retain their existing behavior;
 - existing lifecycle, visibility, recovery, and completion suites remain green.
