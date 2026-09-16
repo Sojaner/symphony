@@ -178,6 +178,7 @@ class SymphonyHookTests(unittest.TestCase):
 
         complete = self.hook.handle_event(
             self.event("Stop", last_assistant_message=(
+                self.delegation_log() +
                 "- **Completed:** `assessor` / `assessor` - completed — tokens 10\n"
                 "- **Completed:** `lead` / `lead` – completed\n"
                 "**Routing:**\n"
@@ -320,6 +321,7 @@ class SymphonyHookTests(unittest.TestCase):
                 self.assertTrue(rejected.block)
                 self.assertIn(expected, rejected.reason)
         complete = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            self.delegation_log() +
             "Completed: assessor/assessor — completed\nCompleted: lead/lead — completed\n"
             "Routing: mode medium (lead plus at most two bounded independent workers) — Two independent modules; "
             "assessor assessor gpt-6-astra/high; lead lead gpt-5.6-luna/low; "
@@ -337,7 +339,8 @@ class SymphonyHookTests(unittest.TestCase):
             f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\nSYMPHONY_ASSESSMENT_REASON:One bounded unit"
         )), self.data)
         self.hook.handle_event(self.event(
-            "PostToolUse", tool_name="Agent", tool_input={"model": "opus", "description": "symphony_assessor: size"},
+            "PostToolUse", tool_name="Agent",
+            tool_input={"model": "opus", "description": "symphony_assessor [opus/high]: size"},
             tool_response={"agentId": "assessor", "status": "async_launched"},
         ), self.data)
         self.start_role("lead", "lead")
@@ -349,7 +352,7 @@ class SymphonyHookTests(unittest.TestCase):
             tool_response={"agentId": "lead", "totalTokens": 12},
         ), self.data)
         records = self.state()["active_run"]["agent_records"]
-        self.assertEqual(("opus", "not exposed by host"), (records["assessor"]["model"], records["assessor"]["effort"]))
+        self.assertEqual(("opus", "high"), (records["assessor"]["model"], records["assessor"]["effort"]))
         # A value the host exposed on the child's lifecycle keeps precedence over the request.
         self.assertEqual(("claude-sonnet-5", "medium"), (records["lead"]["model"], records["lead"]["effort"]))
         self.assertEqual(12, records["lead"]["usage"]["final_request_total_tokens"])
@@ -361,7 +364,7 @@ class SymphonyHookTests(unittest.TestCase):
         )), self.data, stop_wait_seconds=0)
         self.assertIn(
             "`Routing: mode small (lead executes directly) — One bounded unit; "
-            "assessor assessor opus/unknown; lead lead claude-sonnet-5/medium; workers none`",
+            "assessor assessor opus/high; lead lead claude-sonnet-5/medium; workers none`",
             blocked.reason,
         )
         wrong = self.hook.handle_event(self.event("Stop", last_assistant_message=(
@@ -371,11 +374,12 @@ class SymphonyHookTests(unittest.TestCase):
             "Verification: checked" + tail
         )), self.data, stop_wait_seconds=0)
         self.assertTrue(wrong.block)
-        self.assertIn("assessor assessor must read opus/unknown", wrong.reason)
+        self.assertIn("assessor assessor must read opus/high", wrong.reason)
         complete = self.hook.handle_event(self.event("Stop", last_assistant_message=(
+            self.delegation_log() +
             "- **Completed:** assessor/assessor — completed\n- **Completed:** lead/lead — completed\n"
             "**Routing:**\n- mode small (lead executes directly) — One bounded unit\n"
-            "- assessor `assessor` opus/unknown\n- lead `lead` claude-sonnet-5/medium\n- workers none\n\n"
+            "- assessor `assessor` opus/high\n- lead `lead` claude-sonnet-5/medium\n- workers none\n\n"
             "Verification: checked" + tail
         )), self.data, stop_wait_seconds=0)
         self.assertFalse(complete.block, complete.reason)
@@ -717,7 +721,10 @@ class SymphonyHookTests(unittest.TestCase):
                 self.assertEqual(before, self.state())
         result = self.hook.handle_event(self.event(
             "PreToolUse", tool_name="spawn_agent",
-            tool_input={"model": "gpt-6-astra", "reasoning_effort": "high"},
+            tool_input={
+                "task_name": "symphony_assessor__gpt_6_astra__high",
+                "model": "gpt-6-astra", "reasoning_effort": "high",
+            },
         ), self.data)
         self.assertFalse(result.block)
 
@@ -764,6 +771,9 @@ class SymphonyHookTests(unittest.TestCase):
     def state(self):
         return self.hook.read_project_state(self.data, str(self.project))
 
+    def delegation_log(self):
+        return self.hook._delegation_snapshot(self.state()["active_run"]) + "\n"
+
     def start_role(self, agent_id, role, agent_type="general-purpose", now=1_000):
         self.hook.handle_event(
             self.event("SubagentStart", agent_id=agent_id, agent_type=agent_type), self.data, now=now,
@@ -787,22 +797,35 @@ class SymphonyHookTests(unittest.TestCase):
 
     def test_spawn_boundary_accepts_registered_codex_assessor_receipt(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
-        spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={"model": "gpt-6-astra"})
-        self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+        assessor_spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={
+            "task_name": "symphony_assessor__gpt_6_astra__high",
+            "model": "gpt-6-astra", "reasoning_effort": "high",
+        })
+        lead_spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={
+            "task_name": "symphony_lead__gpt_6_astra__high",
+            "model": "gpt-6-astra", "reasoning_effort": "high",
+        })
+        self.assertFalse(self.hook.handle_event(assessor_spawn, self.data).block)
         self.hook.handle_event(self.event("SubagentStart", agent_id="assessor"), self.data)
         run = self.state()["active_run"]
         receipt = f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\nSYMPHONY_ASSESSMENT_REASON:One unit"
         self.hook.handle_event(self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data)
         self.assertEqual(1, self.state()["active_run"]["mode_revision"])
-        self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+        self.assertFalse(self.hook.handle_event(lead_spawn, self.data).block)
         self.hook.handle_event(self.event("SubagentStart", agent_id="lead"), self.data)
         self.hook.handle_event(self.event("SubagentStop", agent_id="lead"), self.data)
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data)
-        self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+        self.assertFalse(self.hook.handle_event(assessor_spawn, self.data).block)
         self.hook.handle_event(self.event("SubagentStart", agent_id="fresh", agent_type="symphony_assessor"), self.data)
-        self.assertTrue(self.hook.handle_event(spawn, self.data).block)
+        self.assertTrue(self.hook.handle_event(assessor_spawn, self.data).block)
         self.assertFalse(self.hook.handle_event(
-            self.event("PreToolUse", tool_name="spawn_agent", session_id="child"), self.data,
+            self.event(
+                "PreToolUse", tool_name="spawn_agent", session_id="child",
+                tool_input={
+                    "task_name": "symphony_worker__gpt_5_6_luna__low",
+                    "model": "gpt-5.6-luna", "reasoning_effort": "low",
+                },
+            ), self.data,
         ).block)
         self.assertFalse(self.hook.handle_event(
             self.event("PreToolUse", tool_name="Bash"), self.data,
@@ -833,7 +856,10 @@ class SymphonyHookTests(unittest.TestCase):
                 before = self.hook.read_project_state(data, str(self.project))["active_run"]
                 self.assertEqual(int(early_registration), before["mode_revision"])
                 self.assertEqual(not early_registration, before["assessment_due"])
-                spawn = self.event("PreToolUse", tool_name="Agent")
+                spawn = self.event("PreToolUse", tool_name="Agent", tool_input={
+                    "model": "sonnet",
+                    "description": "symphony_lead [sonnet/medium]: execute the accepted plan",
+                })
                 self.assertEqual(not early_registration, self.hook.handle_event(spawn, data).block)
                 relay = self.hook.handle_event(self.event(
                     "Stop", last_assistant_message=registration + "\n" + receipt,
@@ -863,7 +889,10 @@ class SymphonyHookTests(unittest.TestCase):
                     self.hook.handle_event(self.event("Stop", last_assistant_message=(
                         f"SYMPHONY_REGISTER:{run_id}:assessor:{failed_id}"
                     )), self.data, stop_wait_seconds=0)
-                spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={"model": "gpt-6-astra"})
+                spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={
+                    "task_name": "symphony_assessor__gpt_6_astra__high",
+                    "model": "gpt-6-astra", "reasoning_effort": "high",
+                })
                 self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess"), self.data)
                 self.assertTrue(self.hook.handle_event(spawn, self.data).block)
                 self.hook.handle_event(self.event("SubagentStop", agent_id=failed_id), self.data)
@@ -888,7 +917,11 @@ class SymphonyHookTests(unittest.TestCase):
                     f"SYMPHONY_REGISTER:{run_id}:assessor:{fresh_id}\n"
                     f"SYMPHONY_ASSESSMENT:{run_id}:small:small\nSYMPHONY_ASSESSMENT_REASON:Fresh assessment"
                 )), self.data, stop_wait_seconds=0)
-                self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+                lead_spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={
+                    "task_name": "symphony_lead__gpt_6_astra__high",
+                    "model": "gpt-6-astra", "reasoning_effort": "high",
+                })
+                self.assertFalse(self.hook.handle_event(lead_spawn, self.data).block)
 
     def test_worker_mode_marker_and_conflicting_completion_cannot_change_accepted_mode(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
@@ -1052,7 +1085,10 @@ class SymphonyHookTests(unittest.TestCase):
                 self.assertFalse(self.state()["active_run"]["assessment_due"])
                 self.assertEqual("Bounded task", self.state()["assessment"]["reason"])
                 self.assertFalse(self.hook.handle_event(
-                    self.event("PreToolUse", tool_name="Agent"), self.data,
+                    self.event("PreToolUse", tool_name="Agent", tool_input={
+                        "model": "sonnet",
+                        "description": "symphony_lead [sonnet/medium]: execute the accepted plan",
+                    }), self.data,
                 ).block)
 
     def test_markdown_wrapped_empty_assessment_reason_is_rejected(self):
@@ -2507,12 +2543,15 @@ class SymphonyHookTests(unittest.TestCase):
 
     def test_codex_spawn_metadata_auto_registers_role_holders(self):
         self.hook.handle_event(
-            self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
+            self.event("UserPromptSubmit", prompt="/symphony:start explain the `commands`"),
             self.data,
         )
         assessor_spawn = self.event(
             "PreToolUse", tool_name="spawn_agent",
-            tool_input={"model": "gpt-6-astra", "reasoning_effort": "high"},
+            tool_input={
+                "task_name": "symphony_assessor__gpt_6_astra__high",
+                "model": "gpt-6-astra", "reasoning_effort": "high",
+            },
         )
         self.assertFalse(self.hook.handle_event(assessor_spawn, self.data).block)
         assessor_context = self.hook.handle_event(
@@ -2540,7 +2579,10 @@ class SymphonyHookTests(unittest.TestCase):
 
         lead_spawn = self.event(
             "PreToolUse", tool_name="spawn_agent",
-            tool_input={"model": "gpt-5.6-sol", "reasoning_effort": "medium"},
+            tool_input={
+                "task_name": "symphony_lead__gpt_5_6_sol__medium",
+                "model": "gpt-5.6-sol", "reasoning_effort": "medium",
+            },
         )
         self.assertFalse(self.hook.handle_event(lead_spawn, self.data).block)
         lead_context = self.hook.handle_event(
@@ -2565,7 +2607,8 @@ class SymphonyHookTests(unittest.TestCase):
             f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
         )
         completed = self.hook.handle_event(
-            self.event("Stop", last_assistant_message=final), self.data, stop_wait_seconds=0,
+            self.event("Stop", last_assistant_message=self.delegation_log() + final),
+            self.data, stop_wait_seconds=0,
         )
         self.assertFalse(completed.block)
         self.assertIsNone(self.state()["active_run"])
@@ -2577,7 +2620,10 @@ class SymphonyHookTests(unittest.TestCase):
         )
         first = self.event(
             "PreToolUse", tool_name="spawn_agent",
-            tool_input={"model": "gpt-6-astra", "reasoning_effort": "high"},
+            tool_input={
+                "task_name": "symphony_assessor__gpt_6_astra__high",
+                "model": "gpt-6-astra", "reasoning_effort": "high",
+            },
         )
         second = self.event(
             "PreToolUse", tool_name="spawn_agent",
@@ -2601,7 +2647,10 @@ class SymphonyHookTests(unittest.TestCase):
         )
         spawn = self.event(
             "PreToolUse", tool_name="spawn_agent",
-            tool_input={"model": "gpt-6-astra", "reasoning_effort": "high"},
+            tool_input={
+                "task_name": "symphony_assessor__gpt_6_astra__high",
+                "model": "gpt-6-astra", "reasoning_effort": "high",
+            },
         )
 
         self.assertFalse(self.hook.handle_event(spawn, self.data).block)
@@ -2620,14 +2669,17 @@ class SymphonyHookTests(unittest.TestCase):
         )
         spawn = self.event(
             "PreToolUse", tool_name="spawn_agent",
-            tool_input={"model": "gpt-6-astra", "reasoning_effort": "high"},
+            tool_input={
+                "task_name": "symphony_assessor__gpt_6_astra__high",
+                "model": "gpt-6-astra", "reasoning_effort": "high",
+            },
         )
 
         self.assertFalse(self.hook.handle_event(spawn, self.data).block)
         self.hook.handle_event(self.event("Interrupt"), self.data)
         self.assertNotIn("pending_spawn", self.state()["active_run"])
 
-    def test_codex_spawn_binding_tolerates_malformed_tool_input(self):
+    def test_codex_spawn_binding_rejects_malformed_tool_input(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
             self.data,
@@ -2638,9 +2690,170 @@ class SymphonyHookTests(unittest.TestCase):
             self.event("PreToolUse", tool_name="spawn_agent", tool_input="malformed"),
             self.data,
         )
-        self.assertFalse(result.block)
+        self.assertTrue(result.block)
+        self.assertIn("structured tool input", result.reason)
+        self.assertIsNone(self.state()["active_run"]["lead_agent_id"])
+
+    def test_role_spawns_require_provider_visible_model_effort_labels(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
+            self.data,
+        )
+        codex = self.event(
+            "PreToolUse", tool_name="spawn_agent",
+            tool_input={
+                "task_name": "symphony_assessor",
+                "model": "gpt-6-astra",
+                "reasoning_effort": "high",
+            },
+        )
+        blocked = self.hook.handle_event(codex, self.data)
+        self.assertTrue(blocked.block)
+        self.assertIn("symphony_assessor__gpt_6_astra__high", blocked.reason)
+        codex["tool_input"]["task_name"] = "symphony_assessor__gpt_6_astra__high"
+        self.assertFalse(self.hook.handle_event(codex, self.data).block)
+        malformed_child = self.event(
+            "PreToolUse", tool_name="spawn_agent", session_id="child",
+            tool_input={
+                "task_name": ["not", "a", "label"],
+                "model": "gpt-5.6-luna", "reasoning_effort": "low",
+            },
+        )
+        malformed = self.hook.handle_event(malformed_child, self.data)
+        self.assertTrue(malformed.block)
+        self.assertIn("provider-visible Codex task_name", malformed.reason)
+
+        self.hook.handle_event(self.event("Interrupt"), self.data)
+        claude = self.event(
+            "PreToolUse", tool_name="Agent",
+            tool_input={"model": "opus", "description": "symphony_assessor: assess"},
+        )
+        blocked = self.hook.handle_event(claude, self.data)
+        self.assertTrue(blocked.block)
+        self.assertIn("symphony_assessor [opus/high]:", blocked.reason)
+        claude["tool_input"]["description"] = "symphony_assessor [opus/high]: assess"
+        self.assertFalse(self.hook.handle_event(claude, self.data).block)
+        claude["tool_input"].update({
+            "effort": "high",
+            "description": "symphony_assessor [opus/low]: assess",
+        })
+        mismatch = self.hook.handle_event(claude, self.data)
+        self.assertTrue(mismatch.block)
+        self.assertIn("symphony_assessor [opus/high]:", mismatch.reason)
+        worker_mismatch = self.event(
+            "PreToolUse", tool_name="Agent", session_id="child",
+            tool_input={
+                "model": "sonnet", "effort": "high",
+                "description": "symphony_worker [sonnet/low]: inspect parser",
+            },
+        )
+        mismatch = self.hook.handle_event(worker_mismatch, self.data)
+        self.assertTrue(mismatch.block)
+        self.assertIn("symphony_<role> [sonnet/high]:", mismatch.reason)
+
+    def test_wait_guidance_replays_cumulative_delegation_log(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
+            self.data,
+        )
+        assessor_spawn = self.event(
+            "PreToolUse", tool_name="spawn_agent",
+            tool_input={
+                "task_name": "symphony_assessor__gpt_6_astra__high",
+                "model": "gpt-6-astra", "reasoning_effort": "high",
+            },
+        )
+        self.hook.handle_event(assessor_spawn, self.data)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="assessor-uuid"), self.data)
+        run = self.state()["active_run"]
+        self.hook.handle_event(self.event(
+            "SubagentStop", agent_id="assessor-uuid", last_assistant_message=(
+                f"SYMPHONY_ASSESSMENT:{run['id']}:large:small\n"
+                "SYMPHONY_ASSESSMENT_REASON:Bounded documentation response"
+            ),
+        ), self.data)
+        lead_spawn = self.event(
+            "PreToolUse", tool_name="spawn_agent",
+            tool_input={
+                "task_name": "symphony_lead__gpt_5_6_sol__medium",
+                "model": "gpt-5.6-sol", "reasoning_effort": "medium",
+            },
+        )
+        self.hook.handle_event(lead_spawn, self.data)
         self.hook.handle_event(self.event("SubagentStart", agent_id="lead-uuid"), self.data)
-        self.assertEqual("lead-uuid", self.state()["active_run"]["lead_agent_id"])
+
+        waiting = self.hook.handle_event(
+            self.event("Stop", last_assistant_message="Waiting for lead"),
+            self.data, stop_wait_seconds=0,
+        )
+        self.assertTrue(waiting.block)
+        for required in (
+            "Delegation log:",
+            "Delegating: assessor [gpt-6-astra/high] — assessor-uuid",
+            "Completed: assessor [gpt-6-astra/high] — assessor-uuid — terminal",
+            "Delegating: lead [gpt-5.6-sol/medium] — lead-uuid",
+            "Waiting: lead [gpt-5.6-sol/medium] — lead-uuid — active",
+        ):
+            self.assertIn(required, waiting.reason)
+
+    def test_completion_requires_cumulative_delegation_log(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start explain the `commands`"),
+            self.data,
+        )
+        for role, agent_id, model, effort in (
+            ("assessor", "assessor-uuid", "gpt-6-astra", "high"),
+            ("lead", "lead-uuid", "gpt-5.6-sol", "medium"),
+        ):
+            spawn = self.event(
+                "PreToolUse", tool_name="spawn_agent",
+                tool_input={
+                    "task_name": f"symphony_{role}__{model.replace('-', '_').replace('.', '_')}__{effort}",
+                    "model": model, "reasoning_effort": effort,
+                },
+            )
+            self.assertFalse(self.hook.handle_event(spawn, self.data).block)
+            self.hook.handle_event(self.event("SubagentStart", agent_id=agent_id), self.data)
+            run = self.state()["active_run"]
+            message = (
+                f"SYMPHONY_ASSESSMENT:{run['id']}:large:small\n"
+                "SYMPHONY_ASSESSMENT_REASON:Bounded documentation response"
+            ) if role == "assessor" else ""
+            self.hook.handle_event(
+                self.event("SubagentStop", agent_id=agent_id, last_assistant_message=message), self.data,
+            )
+        run = self.state()["active_run"]
+        report = (
+            "Command help.\n"
+            "Completed: assessor-uuid/assessor — terminal\n"
+            "Completed: lead-uuid/lead — terminal\n"
+            "Routing: mode small (lead executes directly) — Bounded documentation response; "
+            "assessor assessor-uuid gpt-6-astra/high; lead lead-uuid gpt-5.6-sol/medium; workers none\n"
+            "Verification: command syntax checked.\n"
+            f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
+        )
+
+        blocked = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=report), self.data, stop_wait_seconds=0,
+        )
+        self.assertTrue(blocked.block)
+        self.assertIn("Delegation log:", blocked.reason)
+        delegation_log = (
+            "Delegation log:\n"
+            "- Delegating: assessor [gpt-6-astra/high] — assessor-uuid — explain the `commands`\n"
+            "- Completed: assessor [gpt-6-astra/high] — assessor-uuid — terminal\n"
+            "- Delegating: lead [gpt-5.6-sol/medium] — lead-uuid — explain the `commands`\n"
+            "- Completed: lead [gpt-5.6-sol/medium] — lead-uuid — terminal\n"
+        )
+        formatted_log = delegation_log.replace(
+            "Delegation log:", "**Delegation log:**",
+        ).replace("- Delegating:", "- **Delegating:**").replace("- Completed:", "- **Completed:**")
+        completed = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=formatted_log + report),
+            self.data, stop_wait_seconds=0,
+        )
+        self.assertFalse(completed.block, completed.reason)
+        self.assertIsNone(self.state()["active_run"])
 
     def test_start_is_one_off_and_does_not_enable_project(self):
         result = self.hook.handle_event(
@@ -2667,10 +2880,12 @@ class SymphonyHookTests(unittest.TestCase):
             f"Run id: {run['id']}",
             "Objective: fix the parser",
             "Project profile: automatic",
-            "Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>",
-            "Waiting: <role or wave> — <bounded in-progress fact>",
-            "Completed: <agent id/role> — <status>",
-            "followed only when exposed",
+            "Codex `task_name` is `symphony_<role>__<model-slug>__<effort-slug>`",
+            "Claude `description` starts `symphony_<role> [<model>/<effort>]:`",
+            "Delegation log:",
+            "Never emit a standalone `Waiting:` update",
+            "`Waiting:` or `Completed:` line per agent",
+            "Add tokens or duration only when exposed",
             "Mode: <mode> — <strategy> — <reason>",
             "a `Routing:` line naming the mode strategy plus each agent's actual model/effort and assigned job",
             f"SYMPHONY_REGISTER:{run['id']}:<role>:<agent-id>",
@@ -4331,7 +4546,7 @@ class HookDeclarationTests(unittest.TestCase):
             "invalid or missing, report the failure plainly",
             "never `automatic`",
             "lifecycle and role assignment, not actual child model/effort",
-            "`description` to start with `symphony_assessor:` or `symphony_lead:`",
+            "`description` to start with `symphony_assessor [<model>/<effort>]:` or `symphony_lead [<model>/<effort>]:`",
         ):
             self.assertIn(required, prompt)
         self.assertRegex(prompt, r"(?m)^max_turns: 12$")
@@ -4343,7 +4558,7 @@ class HookDeclarationTests(unittest.TestCase):
         graders = PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders"
         self.assertFalse((graders / "registered-routing.md").exists())
         self.assertEqual({"assessor-assignment", "lead-assignment", "child-stats",
-                          "completion-records", "run-completion", "deliverable", "routing"},
+                          "completion-records", "delegation-log", "run-completion", "deliverable", "routing"},
                          {path.stem for path in graders.glob("*.md")})
         self.assertNotIn("max:", (graders / "lead-assignment.md").read_text(encoding="utf-8"))
         for path in graders.glob("*.md"):
@@ -4374,8 +4589,15 @@ class HookDeclarationTests(unittest.TestCase):
     def test_hosted_atomic_graders_reject_missing_evidence(self):
         routing = ("Routing: mode small (lead executes directly) — fixed contract task; "
                    "assessor acae72eeb92357e91 claude-opus-5/high; lead a6032276286cc99b8 claude-sonnet-5/medium; workers none")
+        delegation_log = """Delegation log:
+- Delegating: assessor [claude-opus-5/high] — acae72eeb92357e91 — fixed contract task
+- Completed: assessor [claude-opus-5/high] — acae72eeb92357e91 — terminal
+- Delegating: lead [claude-sonnet-5/medium] — a6032276286cc99b8 — fixed contract task
+- Completed: lead [claude-sonnet-5/medium] — a6032276286cc99b8 — terminal
+"""
         report = f"""Completed: acae72eeb92357e91/assessor — complete — tokens 11230 — duration 19999ms
 Completed: a6032276286cc99b8/lead — complete
+{delegation_log}
 {routing}
 UTF-8 CSV produces a JSON array of objects; reject duplicate headers and field count mismatch.
 Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: field count rejection.
@@ -4425,17 +4647,21 @@ three independently verifiable cases cover the happy path and both failures.
         stats = {"spawned": 2, "completed": 2, "spawned_by_subagents": 0, "failed": 0}
         terminal = {"type": "result", "subtype": "success", "subagent_stats": stats}
         smoke = {"last_message": report, "trace": json.dumps(terminal),
-                 "calls": [{"name": "Agent", "input": {"description": f"symphony_{role}: bounded task",
+                 "calls": [{"name": "Agent", "input": {"description": (
+                                                            "symphony_assessor [opus/high]: bounded task"
+                                                            if role == "assessor" else
+                                                            "symphony_lead [sonnet/medium]: bounded task"),
                                                         "prompt": f"You are assigned symphony_{role}."}}
                            for role in ("assessor", "lead")]}
         lead_with_assessor_context = {"name": "Agent", "input": {
-            "description": "symphony_lead: bounded execution",
+            "description": "symphony_lead [sonnet/medium]: bounded execution",
             "prompt": "Accepted Assessment (from symphony_assessor): perform the accepted small task.",
         }}
         mismatch = {"last_message": refusal, "trace": "", "calls": [
             {"name": "Skill", "input": {"skill": "symphony:symphony"}},
         ]}
         bad_reports = [
+                report.replace(delegation_log + "\n", ""),
                 report.replace(routing + "\n", ""),
                 report.replace("claude-opus-5/high", "<model>/<effort>"),
                 report.replace("mode small", "mode large"),
@@ -4538,7 +4764,7 @@ three independently verifiable cases cover the happy path and both failures.
                 {**smoke, "calls": smoke["calls"] + [smoke["calls"][0]]},
                 {**smoke, "calls": [smoke["calls"][0]]},
                 {**smoke, "calls": [lead_with_assessor_context]},
-            ], 7),
+            ], 8),
             ("mismatch-refusal", [
                 mismatch, {**mismatch, "last_message": " \n" + refusal + "\n "},
                 {**mismatch, "last_message": " \n" + refusal.replace("\n", "\n\n\t") + "\n "},
@@ -4586,15 +4812,16 @@ for (const [name, graders, good, bad] of JSON.parse(fs.readFileSync(0, 'utf8')))
             "proposed mode change or unresolved high-risk ambiguity requires a new strong assessor",
             "ordinary reassessment due",
             "strong assessment required",
-            "Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>",
-            "Waiting: <role or wave> — <bounded in-progress fact>",
+            "Codex `task_name` is `symphony_<role>__<model-slug>__<effort-slug>`",
+            "Claude `description` starts `symphony_<role> [<model>/<effort>]:`",
+            "Delegation log:",
+            "Never emit a standalone `Waiting:` update",
             "Completed: <agent id/role> — <status>",
             "Mode: <mode> — <strategy> — <reason>",
             "Delegation summary:",
             "Routing: mode <mode> (<strategy>) — <reason>; assessor <agent id> <model>/<effort>; lead <agent id> <model>/<effort>",
             "one `Routing:` line with the mode strategy and every agent's actual model/effort and assigned job",
-            "append token or duration segments only for values the host exposed",
-            "`Waiting:` may report only observed lifecycle state",
+            "Append token or duration segments only when exposed",
             "fresh execution lead from bounded lifecycle/document memory",
             "Symphony is the orchestration authority for an active run",
             "Supporting workflow skills are bounded techniques",
@@ -4745,7 +4972,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.20.2"}, versions)
+        self.assertEqual({"0.20.3"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},

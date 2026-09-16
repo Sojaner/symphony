@@ -20,7 +20,7 @@ The skill form accepts the same control names with or without a slash, so `$symp
 
 Each run selects one mode: **small** for direct work by the strong lead, **medium** for mixed direct work and selective delegation, or **large** for delegation waves. A project profile is separate from the per-run execution mode: a long-running large-profile project may still have a small task. Enabled projects start a guarded run automatically on their next non-control project prompt.
 
-New and explicitly reassessed runs use a separate read-only assessor: a bounded, read-only assessor that returns exactly one concise assessment result and does not implement. A mode-appropriate execution lead follows. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Symphony makes routing visible with `Delegating:` and `Completed:` records, a `Mode:` announcement after each accepted assessment, and a `Routing:` line in the final report naming the strategy and every agent's actual model/effort and assigned job.
+New and explicitly reassessed runs use a separate read-only assessor: a bounded, read-only assessor that returns exactly one concise assessment result and does not implement. A mode-appropriate execution lead follows. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Provider task labels include each role's model/effort, and every wait plus the final response replays a cumulative `Delegation log:` so earlier dispatches remain visible. Symphony also shows a `Mode:` announcement after each accepted assessment and a `Routing:` line in the final report naming the strategy and every agent's actual model/effort and assigned job.
 
 The root's duties are announce, spawn, bind/register, relay, and wait; the assessor and lead own repository discovery, capability selection, and execution. Codex binds root spawn requests to observed lifecycle UUIDs automatically; other hosts register exact host-returned ids. Normal completion requires an accepted current assessment and terminal registered children. Only explicit `start --dry-run` bypasses assessment. Codex medium/large worker delegation requires `agents.max_depth = 2` (root → lead → worker).
 
@@ -30,7 +30,7 @@ Help, status, agents, empty enable, assessment controls, and invalid input termi
 
 Usage is authoritative host observations only; Symphony never estimates usage or cost. Claude synchronous Agent usage may be exposed; unavailable background or Codex usage is omitted. Token fields are final-request scoped; host duration and tool count are agent-run scoped, and lifecycle duration is observed wall time. No hard token or cost budget is promised.
 
-`Waiting:` reports only observed in-progress lifecycle state. `Completed:` includes the agent id/role and terminal status, adding token or duration values only when exposed.
+The snapshot contains each observed `Delegating:`, `Waiting:`, and `Completed:` state. `Waiting:` reports only observed in-progress lifecycle state and never appears without that cumulative snapshot. `Completed:` includes the agent id/role and terminal status, adding token or duration values only when exposed.
 
 ## Document memory
 

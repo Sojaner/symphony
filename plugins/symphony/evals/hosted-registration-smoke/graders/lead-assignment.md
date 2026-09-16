@@ -1,7 +1,7 @@
 ---
 type: tool_used
 tool: Agent
-input_match: '"description"\s*:\s*"symphony_lead:'
+input_match: '"description"\s*:\s*"symphony_lead \[[^/\]]+/[^\]]+\]:'
 min: 1
 ---
 

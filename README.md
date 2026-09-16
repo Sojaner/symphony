@@ -22,7 +22,7 @@ Mode is selected per run. Enabling Symphony never permanently classifies a proje
 
 `/symphony:assess [small|medium|large|auto]` requests reassessment or sets a persistent project profile. Use `/symphony:assess large` for this repository when its long-running shape calls for that profile; `auto` reverses the override. A project profile is not a per-run execution mode: a long-running large-profile project may still have a small task.
 
-Each new or explicitly reassessed run first uses a separate read-only assessor: a bounded, read-only assessor that returns exactly one concise assessment result and does not implement. A mode-appropriate execution lead follows. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Before and after each spawned role, Symphony shows `Delegating:` and `Completed:` records so the routing is visible.
+Each new or explicitly reassessed run first uses a separate read-only assessor: a bounded, read-only assessor that returns exactly one concise assessment result and does not implement. A mode-appropriate execution lead follows. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Every wait and final response replays the cumulative delegation history so earlier routing remains visible.
 
 ## Persistent project enablement
 
@@ -130,9 +130,9 @@ For a small task, the selected lead continues directly as the implementer. The a
 
 Usage is authoritative host observations only; Symphony never estimates usage or cost. Claude synchronous Agent usage may be exposed; unavailable background or Codex usage is omitted. Token fields describe the final request only; host duration and tool count describe the agent run, while lifecycle duration is observed wall time. No hard token or cost budget is promised.
 
-Visible records use `Delegating: <role> — <objective> — <model>/<effort> — <reason>`, `Waiting: <role or wave> — <observed in-progress fact>`, and `Completed: <agent id/role> — <status>`. Completion adds token or duration segments only when exposed. Waiting reports observed lifecycle state only. After an accepted assessment the root announces `Mode: <mode> — <strategy> — <reason>`, so the user sees whether the lead executes directly, adds bounded workers, or runs dependency-aware waves.
+Provider task labels carry the role and requested routing: Codex uses `symphony_<role>__<model-slug>__<effort-slug>`, while Claude descriptions start `symphony_<role> [<model>/<effort>]:`. Progress and the final response replay a cumulative `Delegation log:` with every observed `Delegating:`, `Waiting:`, and `Completed:` state, so a later waiting update cannot hide earlier delegations. Token and duration segments appear only when exposed. After an accepted assessment the root announces `Mode: <mode> — <strategy> — <reason>`, so the user sees whether the lead executes directly, adds bounded workers, or runs dependency-aware waves.
 
-The final completion response is self-contained: it repeats the integrated deliverable, assessor and lead completion records, one `Routing:` line naming the mode strategy plus every agent's actual model/effort and assigned job, authoritative verification, selected mode, and completion receipt. The hook checks the assessor and lead routing against host-observed or root-requested values, so those two entries cannot be misreported.
+The final completion response is self-contained: it repeats the integrated deliverable, cumulative delegation log, assessor and lead completion summary records, one `Routing:` line naming the mode strategy plus every agent's actual model/effort and assigned job, authoritative verification, selected mode, and completion receipt. The hook checks the report against its lifecycle ledger.
 
 ## Workflow and evidence capabilities
 

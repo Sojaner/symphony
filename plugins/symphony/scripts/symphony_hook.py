@@ -556,9 +556,59 @@ def _requested_routing(payload):
     if isinstance(model, str) and model.strip():
         requested["model"] = model.strip()
     effort = arguments.get("reasoning_effort") or arguments.get("effort")
+    if not effort and isinstance(arguments.get("description"), str):
+        labelled = re.match(r"^symphony_[a-z0-9_]+ \[[^/\]]+/([^\]]+)\]:", arguments["description"])
+        effort = labelled.group(1) if labelled else None
     if isinstance(effort, str) and effort.strip():
         requested["effort"] = effort.strip()
     return (agent_id, requested) if requested else None
+
+
+def _label_slug(value):
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+
+def _spawn_label_error(run, payload):
+    arguments = payload.get("tool_input")
+    if not isinstance(arguments, dict):
+        return "Symphony role spawns require structured tool input with an explicit model/effort label."
+    model = arguments.get("model")
+    if not isinstance(model, str) or not model.strip():
+        return "Symphony role spawns require an explicit model so the provider-visible label is truthful."
+    owner_spawn = _owns_run(run, payload.get("session_id"))
+    role = "assessor" if owner_spawn and run["strong_assessment_required"] else "lead" if owner_spawn else None
+    effort = arguments.get("reasoning_effort") or arguments.get("effort")
+    tool_name = payload.get("tool_name")
+    if tool_name == "spawn_agent":
+        if not isinstance(effort, str) or not effort.strip():
+            return "Codex Symphony role spawns require an explicit reasoning_effort for their visible label."
+        expected_role = role or "<role>"
+        expected = f"symphony_{expected_role}__{_label_slug(model)}__{_label_slug(effort)}"
+        task_name = arguments.get("task_name")
+        if role:
+            valid = task_name == expected
+        else:
+            valid = isinstance(task_name, str) and bool(re.fullmatch(
+                rf"symphony_[a-z0-9_]+__{re.escape(_label_slug(model))}__{re.escape(_label_slug(effort))}",
+                task_name,
+            ))
+        return None if valid else f"Use provider-visible Codex task_name `{expected}` for this spawn."
+    description = arguments.get("description")
+    expected_role = role or "<role>"
+    expected_effort = effort if isinstance(effort, str) and effort.strip() else (
+        "high" if role == "assessor" else "<effort>"
+    )
+    expected = f"symphony_{expected_role} [{model}/{expected_effort}]:"
+    role_pattern = re.escape(role) if role else "[a-z0-9_]+"
+    if expected_effort != "<effort>":
+        pattern = rf"^symphony_{role_pattern} \[{re.escape(model)}/{re.escape(expected_effort)}\]:"
+    elif role:
+        pattern = rf"^symphony_{re.escape(role)} \[{re.escape(model)}/[a-z0-9_-]+\]:"
+    else:
+        pattern = rf"^symphony_[a-z0-9_]+ \[{re.escape(model)}/[a-z0-9_-]+\]:"
+    return None if isinstance(description, str) and re.match(pattern, description) else (
+        f"Start the provider-visible Claude description with `{expected}` for this spawn."
+    )
 
 
 def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, now=None):
@@ -575,19 +625,19 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
         )
     route = (
         f"Reconcile observed agents, announce {_mode_announcement(run['mode'])}, then emit "
-        "`Delegating: symphony_lead — <bounded objective> — <model>/<effort> — accepted-mode "
-        "reassessment`, spawn a fresh separate mode-appropriate execution lead, and wait. "
+        "`Delegating: lead [<model>/<effort>] — pending — <bounded objective>`, spawn a fresh "
+        "separate mode-appropriate execution lead, and wait. "
         if recovery and accepted_recovery else
-        "Emit `Delegating: symphony_assessor — <bounded objective> — <model>/<effort> — initial or "
-        "required reassessment`, spawn one strongest-available general reasoning model at high effort "
+        "Emit `Delegating: assessor [<model>/<effort>] — pending — <bounded objective>`, spawn one "
+        "strongest-available general reasoning model at high effort "
         "with no inherited turns as read-only symphony_assessor, and wait. After its "
         "accepted receipt, announce `Mode: <mode> — <strategy> — <reason>`, "
-        "emit `Delegating: symphony_lead — <bounded objective> — <model>/<effort> — "
-        "selected <mode> execution`, spawn a separate mode-appropriate execution lead, "
+        "emit `Delegating: lead [<model>/<effort>] — pending — <bounded objective>`, spawn a "
+        "separate mode-appropriate execution lead, "
         "and wait. The assessor must not implement or become the lead. "
         if run["assessment_due"] else
         f"Reconcile observed agents, announce {_mode_announcement(run['mode'])}, then emit "
-        "`Delegating: symphony_lead — <bounded objective> — <model>/<effort> — selected <mode> execution`, "
+        "`Delegating: lead [<model>/<effort>] — pending — <bounded objective>`, "
         "spawn a fresh separate mode-appropriate execution lead, and wait. "
     )
     return (
@@ -595,13 +645,18 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
         f"Objective: {run['objective']}. Project profile: {state['assessment']['profile'] or 'automatic'} "
         f"(revision {state['assessment']['revision']}). You are the thin root/session keeper; perform "
         f"only announce, spawn, bind/register, relay, and wait control work. {AUTHORITY_CONTEXT} {route}"
-        "Use these exact visible record forms: `Delegating: <role> — <bounded objective> — "
-        "<model>/<effort> — <reason>`; `Waiting: <role or wave> — <bounded in-progress fact>`; "
-        "`Completed: <agent id/role> — <status>`, followed only when exposed by ` — tokens "
-        "<observed value>` and/or ` — duration <observed value>`; `Mode: <mode> — <strategy> — <reason>` "
-        "once the hook accepts an assessment. `Waiting:` may contain only observed "
-        "lifecycle state. The final completion response must be self-contained: repeat the integrated "
-        "deliverable, both assessor and lead completion records, a `Routing:` line naming the mode "
+        "Make provider labels identify routing: Codex `task_name` is "
+        "`symphony_<role>__<model-slug>__<effort-slug>`; Claude `description` starts "
+        "`symphony_<role> [<model>/<effort>]:`. Prefix root progress with `thin orchestrator "
+        "[<model>/<effort>]:` when trusted runtime metadata exposes both values; otherwise use "
+        "`thin orchestrator:`. After each observed lifecycle change, before every wait, and in the final "
+        "response, replay one cumulative `Delegation log:` derived from the ledger. It contains one "
+        "`Delegating: <role> [<model>/<effort>] — <agent-id> — <objective>` line and one current "
+        "`Waiting:` or `Completed:` line per agent. Never emit a standalone `Waiting:` update. Add tokens or duration "
+        "only when exposed. Announce `Mode: <mode> — <strategy> — <reason>` once the hook accepts an "
+        "assessment. The final completion response must be self-contained: repeat the integrated "
+        "deliverable, cumulative delegation log, both assessor and lead `Completed: "
+        "<agent-id>/<role> — <status>` summary records, and a `Routing:` line naming the mode "
         "strategy plus each agent's actual model/effort and assigned job from the lead's delegation "
         "summary, a `Verification:` line, the selected mode, and the exact completion receipt. "
         "Codex `spawn_agent` calls are registered automatically by binding the root's pre-tool request "
@@ -945,6 +1000,42 @@ def _measurement_values(record):
         if type(started) is int and type(stopped) is int and stopped >= started:
             values["duration_ms"] = (stopped - started) * 1_000
     return usage, values
+
+
+def _agent_display_label(run, record):
+    if record["id"] == run.get("assessor_agent_id"):
+        role = "assessor"
+    elif record["id"] == run.get("lead_agent_id"):
+        role = "lead"
+    else:
+        observed = record.get("role")
+        role = f"worker:{observed}" if observed not in (None, "", NOT_EXPOSED) else "worker"
+    model = record.get("model")
+    effort = record.get("effort")
+    identity = [value for value in (model, effort) if value not in (None, "", NOT_EXPOSED)]
+    return f"{role} [{'/'.join(identity)}]" if identity else role
+
+
+def _delegation_snapshot(run):
+    lines = ["Delegation log:"]
+    records = sorted(
+        _agent_records(run),
+        key=lambda record: (record.get("started_at") or 0, record["id"]),
+    )
+    for record in records:
+        label = _agent_display_label(run, record)
+        lines.append(f"- Delegating: {label} — {record['id']} — {run['objective']}")
+        state = "Completed" if record["status"] == "terminal" else "Waiting"
+        lines.append(f"- {state}: {label} — {record['id']} — {record['status']}")
+    return "\n".join(lines)
+
+
+def _delegation_log_matches(message, run):
+    plain = message.replace("`", "").replace("*", "")
+    return all(
+        line.replace("`", "").replace("*", "") in plain
+        for line in _delegation_snapshot(run).splitlines()
+    )
 
 
 def _agents_context(state, include_history=False):
@@ -1354,8 +1445,10 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
             return HookResult(
                 block=True,
                 reason=(
-                    control_ack + "Symphony still has tracked agents: " + ", ".join(agents) +
-                    ". Call the host's blocking wait/result tool and integrate every result before stopping."
+                    control_ack + "Repeat this cumulative snapshot in the next visible progress update so "
+                    "provider message replacement cannot hide earlier delegations:\n" +
+                    _delegation_snapshot(run) + "\nCall the host's blocking wait/result tool for tracked agents: " +
+                    ", ".join(agents) + "."
                 ),
             )
         if run.pop("pending_spawn", None) is not None:
@@ -1532,6 +1625,13 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     + "Then include a `Verification:` line with authoritative evidence, the "
                     "selected mode, and the exact run completion receipt."
                 ))
+            if not _delegation_log_matches(message, run):
+                if memory_changed or assessment_changed:
+                    write_project_state(data_dir, state, now)
+                return HookResult(block=True, reason=(
+                    "Symphony completion must preserve the cumulative delegation history. Include this "
+                    "copy-ready block in the self-contained final report:\n" + _delegation_snapshot(run)
+                ))
         memory_error = _memory_checkpoint_error(run, project_root, message)
         if memory_error:
             write_project_state(data_dir, state, now)
@@ -1637,6 +1737,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                             "the weak root. Retry spawn_agent with the named model from the live host "
                             "catalog and reasoning_effort=high; do not proceed with an inherited model."
                         ))
+            if run and not result.block:
+                label_error = _spawn_label_error(run, payload)
+                if label_error:
+                    result = HookResult(block=True, reason=label_error)
             if (run and _owns_run(run, payload.get("session_id"))
                     and payload.get("tool_name") == "spawn_agent" and not result.block):
                 arguments = payload.get("tool_input") or {}
