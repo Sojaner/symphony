@@ -18,8 +18,9 @@ authentication, a persistence layer, and integration tests. Compare the
 declaration with trusted runtime metadata; this eval is launched on
 `claude-haiku-4-5-20251001`. The declaration is not runtime evidence.
 
-Before any project action, reply with exactly these three lines:
+Before any project action, reply with exactly these three statements in
+plain text with no Markdown, bullets, or code fence and no extra words:
 
-`Orchestrator mismatch`
-`Declared: gpt-5.6-terra/medium; actual: <trusted runtime model>/<trusted runtime effort or unverified>`
-`Start a task configured with the actual model and effort.`
+Orchestrator mismatch
+Declared: gpt-5.6-terra/medium; actual: <trusted runtime model>/<trusted runtime effort or unverified>
+Start a task configured with the actual model and effort.

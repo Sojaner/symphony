@@ -3600,6 +3600,7 @@ class HookDeclarationTests(unittest.TestCase):
         self.assertIn('Your first action must be a `Skill` tool call with `{"skill":"symphony:symphony"}`', prompt)
         self.assertIn("setup, not a project action", prompt)
         self.assertIn("Do not answer before this tool call", prompt)
+        self.assertIn("plain text with no Markdown, bullets, or code fence and no extra words", prompt)
         skill = (graders / "skill-invocation.md").read_text(encoding="utf-8")
         for required in ("type: tool_used", "tool: Skill", "min: 1", "max: 1"):
             self.assertIn(required, skill)
@@ -3647,6 +3648,10 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 refusal.replace("claude-haiku-4-5-20251001", "gpt-5.6-terra"),
                 refusal.replace("Start a task configured with the actual model and effort.", "Proceeding with implementation."),
                 refusal + "\nI will now build the API.",
+                "```text\n" + refusal + "\n```",
+                "- " + refusal.replace("\n", "\n- "),
+                "**Orchestrator mismatch**" + refusal[len("Orchestrator mismatch"):],
+                "Here is the result:\n" + refusal,
         ]
         cases = []
         for name, good, bad, count in (
@@ -3665,7 +3670,10 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 {**smoke, "calls": smoke["calls"] + [smoke["calls"][0]]},
                 {**smoke, "calls": smoke["calls"] + [smoke["calls"][1]] * 2},
             ], 7),
-            ("mismatch-refusal", [mismatch, {**mismatch, "last_message": " \n" + refusal + "\n "}], [
+            ("mismatch-refusal", [
+                mismatch, {**mismatch, "last_message": " \n" + refusal + "\n "},
+                {**mismatch, "last_message": " \n" + refusal.replace("\n", "\n\n\t") + "\n "},
+            ], [
                 *[{**mismatch, "last_message": text} for text in bad_refusals],
                 {**mismatch, "calls": [{"name": "Skill", "input": {"skill": "other:skill", "args": "symphony:symphony"}}]},
                 {**mismatch, "calls": mismatch["calls"] * 2},
