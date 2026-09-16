@@ -610,7 +610,7 @@ def parse_args(argv=None):
     parser.add_argument("--candidate-marketplace", type=Path, default=repo_root)
     parser.add_argument("--output", type=Path, default=Path("codex-smoke-artifacts"))
     parser.add_argument("--name", default="control")
-    parser.add_argument("--prompt", default="/symphony:help")
+    parser.add_argument("--prompt", default="$symphony:symphony help")
     parser.add_argument("--expect", action="append", default=[])
     parser.add_argument("--require-completion", action="store_true")
     parser.add_argument("--expected-mode", choices=("small", "medium", "large"))

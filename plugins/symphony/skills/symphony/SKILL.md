@@ -27,9 +27,20 @@ Before doing anything else, inspect the user prompt for an explicit `Orchestrato
 
 When injected context names a Symphony run, its run id, recovery instruction, and completion receipt are authoritative. Keep one run and at most one active execution lead. Recovery may replace the lead after reconciling workers and making the prior lead terminal; retain the run id and use bounded lifecycle/document memory for its replacement.
 
-Read-only inspection commands do not require an active run or a lead. An explicit `$symphony:symphony <task>` invocation normally arms a guarded one-off run through the prompt hook. If project work still arrives without lifecycle context, hook protection is genuinely unavailable: do not ask the user to authorize unprotected continuation and do not continue manually. State the failure once and tell the user to trust or enable the plugin hooks, then retry with `/symphony:start [--dry-run] <task>` or use `/symphony:enable [task]` for persistent project activation.
+Read-only inspection commands do not require an active run or a lead. In Codex CLI, an explicit `$symphony:symphony <task>` invocation at the beginning of the prompt, optionally after “use”, normally arms a guarded one-off run through the prompt hook. If Codex project work still arrives without lifecycle context, hook protection is genuinely unavailable: do not ask the user to authorize unprotected continuation and do not continue manually. State the failure once and tell the user to trust or enable the plugin hooks, start a new task, and retry with `$symphony:symphony <task>`, `$symphony:symphony start [--dry-run] <task>`, or `$symphony:symphony enable [task]`. Never direct a Codex user to `/symphony:*`; those slash commands are Claude Code commands.
 
-The user commands are:
+Codex CLI commands use `$symphony:symphony <control> [arguments]`:
+
+- `$symphony:symphony enable [task]`;
+- `$symphony:symphony disable`;
+- `$symphony:symphony start [--dry-run] <task>`;
+- `$symphony:symphony status`;
+- `$symphony:symphony assess [small|medium|large|auto]`;
+- `$symphony:symphony agents [--all]`;
+- `$symphony:symphony stop [--force]`;
+- `$symphony:symphony help`.
+
+Claude Code commands use the slash form:
 
 - `/symphony:enable [task]`: persistently enable this working tree and optionally start a run;
 - `/symphony:disable`: disable future activation and gracefully stop an active run;
@@ -85,7 +96,7 @@ The delegation summary is the only place the root learns which model and effort 
 
 Include `<!-- SYMPHONY_MODE:<small|medium|large> -->` with that record to report the accepted mode. Mode markers do not authorize mode changes; a changed mode requires a fresh authorized assessment receipt. Normal completion has no marker-only fallback.
 
-If the user invokes `/symphony:start --dry-run <task>`, do not spawn agents or write project files. Derive the planned strongest/high assessor and the separate execution lead from the selected mode and live catalog; do not hard-code the execution lead or mode. Report planned `Delegating:` and `Completed:` records for both roles, one mode, capability routing, and mode marker; do not ask a follow-up question. These are planned records only, not claims that agents ran. Only a run persisted with `dry_run=true` may bypass accepted assessment; merely describing work as a dry run does not.
+If the user invokes `start --dry-run <task>` through the provider's Symphony command form, do not spawn agents or write project files. Derive the planned strongest/high assessor and the separate execution lead from the selected mode and live catalog; do not hard-code the execution lead or mode. Report planned `Delegating:` and `Completed:` records for both roles, one mode, capability routing, and mode marker; do not ask a follow-up question. These are planned records only, not claims that agents ran. Only a run persisted with `dry_run=true` may bypass accepted assessment; merely describing work as a dry run does not.
 
 Keep the execution lead id while its context remains bounded. On resume or compaction, reconcile tracked workers first, then start a fresh execution lead from bounded lifecycle/document memory rather than indefinitely resuming context.
 

@@ -6,6 +6,22 @@ description: Show Symphony usage without enabling or starting it
 
 # Symphony commands
 
+## Codex CLI
+
+Codex exposes Symphony as a skill, not as `/symphony:*` slash commands. Begin the prompt with the invocation, optionally after “use”.
+
+- `$symphony:symphony <task>` — shortest guarded one-off form.
+- `$symphony:symphony start [--dry-run] <task>` — explicit guarded one-off form.
+- `$symphony:symphony enable [task]`
+- `$symphony:symphony disable`
+- `$symphony:symphony assess [small|medium|large|auto]`
+- `$symphony:symphony status`
+- `$symphony:symphony agents [--all]`
+- `$symphony:symphony stop [--force]`
+- `$symphony:symphony help`
+
+## Claude Code
+
 - `/symphony:enable [task]` — enable Symphony for this working tree and optionally start a task.
 - `/symphony:disable` — disable future automatic activation and gracefully stop an active run.
 - `/symphony:start [--dry-run] <task>` — start one guarded run without changing project enablement; `--dry-run` validates only the planned routing and writes no project files.
@@ -16,7 +32,7 @@ description: Show Symphony usage without enabling or starting it
 - `/symphony:stop --force` — release stale protection; a background agent may still be running.
 - `/symphony:help` — show this help without starting a run.
 
-The skill form accepts the same control names with or without a slash, so `$symphony:symphony help` is equivalent to `/symphony:help` rather than a project task.
+The Codex skill form accepts the same control names, so `$symphony:symphony help` is a control rather than a project task.
 
 Each run selects one mode: **small** for direct work by a capable lead, **medium** for mixed direct work and selective delegation, or **large** for an inexpensive administrative lead with worker waves and reserved consultation capacity. A project profile is separate from the per-run execution mode: a long-running large-profile project may still have a small task. Enabled projects start a guarded run automatically on their next non-control project prompt.
 
@@ -46,6 +62,6 @@ If active memory loses MCP/index health or either required file, the lead report
 
 ## Local verification
 
-`python3 plugins/symphony/scripts/codex_smoke.py --prompt /symphony:help --expect SYMPHONY_CONTROL_HANDLED: --timeout 120` tests an isolated candidate install and trusted candidate hooks with a hard deadline. Artifacts include JSONL, state, timing, and available usage; copied credentials are removed. Local release verification requires the complete finite matrix and three consecutive fresh Luna/low passes after the last relevant change. Medium/large cases require observed nested workers; unsupported host cases remain blockers. Optional CI skips do not satisfy this gate.
+`python3 plugins/symphony/scripts/codex_smoke.py --prompt '$symphony:symphony help' --expect SYMPHONY_CONTROL_HANDLED: --timeout 120` tests an isolated candidate install and trusted candidate hooks with a hard deadline. Artifacts include JSONL, state, timing, and available usage; copied credentials are removed. Local release verification requires the complete finite matrix and three consecutive fresh Luna/low passes after the last relevant change. Medium/large cases require observed nested workers; unsupported host cases remain blockers. Optional CI skips do not satisfy this gate.
 
 End with the exact injected `SYMPHONY_CONTROL_HANDLED` receipt on its own final line. Do not resume an active run or emit a run-completion receipt for help.

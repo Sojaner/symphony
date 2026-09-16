@@ -27,7 +27,7 @@ jobs:
               --candidate-marketplace . \
               --output codex-smoke-artifacts \
               --name control-help \
-              --prompt /symphony:help \
+              --prompt '$symphony:symphony help' \
               --expect SYMPHONY_CONTROL_HANDLED: \
               --timeout 120
           fi

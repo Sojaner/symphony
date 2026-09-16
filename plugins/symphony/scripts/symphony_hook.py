@@ -53,7 +53,10 @@ RAW_CONTROL_RE = re.compile(
     r"\A/symphony:(enable|disable|start|stop|status|agents|assess|help)(?:\s+([\s\S]*))?\Z",
     re.IGNORECASE,
 )
-SYMPHONY_SKILL_RE = re.compile(r"\A[ \t]*\$symphony:symphony\b", re.IGNORECASE)
+SYMPHONY_SKILL_RE = re.compile(
+    r"\A[ \t]*(?:(?:please[ \t]+)?use[ \t]+(?:the[ \t]+)?)?\$symphony:symphony\b",
+    re.IGNORECASE,
+)
 CONTROL_RE = re.compile(
     r"^[ \t]*(?:<!--[ \t]*)?SYMPHONY_CONTROL:[ \t]*(enable|disable|start|stop|status|agents|assess|help)"
     r"(?=[ \t]*(?:-->|$))", re.IGNORECASE | re.MULTILINE,
@@ -1348,7 +1351,7 @@ def _transfer_interrupted_run(run, session_id, now):
 
 def _is_terminal_control(prompt, control, task):
     return (_looks_like_control(prompt) or (
-        SYMPHONY_SKILL_RE.match(prompt) and control is not None
+        SYMPHONY_SKILL_RE.search(prompt) and control is not None
     )) and not (
         control in {"start", "enable"} and bool(task)
     )
@@ -1365,28 +1368,20 @@ def _invalid_control_args(control, args):
 
 def _parse_user_prompt(prompt):
     control, task, args = _parse_prompt(prompt)
-    skill_match = SYMPHONY_SKILL_RE.match(prompt)
+    skill_match = SYMPHONY_SKILL_RE.search(prompt)
     if control is not None or not skill_match:
         return control, task, args
     skill_input = prompt[skill_match.end():].strip()
     candidate = _parse_prompt(f"/symphony:{skill_input.lstrip('/')}")
-    candidate_control, _, candidate_args = candidate
+    candidate_control, _, _ = candidate
     if candidate_control is None:
         return None, "", ""
-    if skill_input.startswith("/") or (
-        not _invalid_control_args(candidate_control, candidate_args)
-        and not (
-            candidate_control == "assess"
-            and candidate_args.strip().lower() not in {"", "small", "medium", "large", "auto"}
-        )
-    ):
-        return candidate
-    return None, "", ""
+    return candidate
 
 
 def _handle_prompt(payload, state, now):
     prompt = payload.get("prompt") or ""
-    skill_match = SYMPHONY_SKILL_RE.match(prompt)
+    skill_match = SYMPHONY_SKILL_RE.search(prompt)
     skill_input = prompt[skill_match.end():].strip() if skill_match else ""
     control, task, args = _parse_user_prompt(prompt)
     dry_run, task = _dry_run_task(control, task)
@@ -1396,9 +1391,11 @@ def _handle_prompt(payload, state, now):
         control is None and _looks_like_control(prompt)
         or _invalid_control_args(control, args)
     ):
-        return HookResult(context="Invalid Symphony control. Use /symphony:help for valid commands.")
+        help_command = "$symphony:symphony help" if skill_match else "/symphony:help"
+        return HookResult(context=f"Invalid Symphony control. Use {help_command} for valid commands.")
     if control == "start" and not task:
-        return HookResult(context="Usage: /symphony:start [--dry-run] <task>")
+        command = "$symphony:symphony start" if skill_match else "/symphony:start"
+        return HookResult(context=f"Usage: {command} [--dry-run] <task>")
 
     if control == "help":
         return HookResult()
@@ -1415,7 +1412,8 @@ def _handle_prompt(payload, state, now):
     if control == "assess":
         profile = args.strip().lower()
         if profile not in {"", "small", "medium", "large", "auto"}:
-            return HookResult(context="Usage: /symphony:assess [small|medium|large|auto]")
+            command = "$symphony:symphony assess" if skill_match else "/symphony:assess"
+            return HookResult(context=f"Usage: {command} [small|medium|large|auto]")
         if profile in {"small", "medium", "large"}:
             state["assessment"] = {
                 "profile": profile,
@@ -1476,10 +1474,11 @@ def _handle_prompt(payload, state, now):
         control in {"start", "enable"} and bool(task)
     ) or bool(skill_task)
     if state.get("corrupt"):
+        stop_command = "$symphony:symphony stop --force" if skill_match else "/symphony:stop --force"
         return HookResult(
             context=(
                 f"Symphony state is corrupt: {state.get('warning')}. Run "
-                "`/symphony:stop --force` before starting new work."
+                f"`{stop_command}` before starting new work."
             )
         )
 

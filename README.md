@@ -20,7 +20,7 @@ Mode is selected per run. Enabling Symphony never permanently classifies a proje
 
 ## Assessment and reassessment
 
-`/symphony:assess [small|medium|large|auto]` requests reassessment or sets a persistent project profile. Use `/symphony:assess large` for this repository when its long-running shape calls for that profile; `auto` reverses the override. A project profile is not a per-run execution mode: a long-running large-profile project may still have a small task.
+The `assess [small|medium|large|auto]` control requests reassessment or sets a persistent project profile. Use `assess large` for this repository when its long-running shape calls for that profile; `auto` reverses the override. The provider-specific forms are listed below. A project profile is not a per-run execution mode: a long-running large-profile project may still have a small task.
 
 Each new or explicitly reassessed run first uses a separate bounded, read-only assessor at strongest/high. It returns exactly one concise assessment result and does not implement. Its machine-readable receipt selects the exact lead model, effort, consulting strategy, and worker limit. Small leads are capable direct executors; medium leads are capable mixed executors with consultation fallback; large leads are inexpensive administrators with reserved consultant capacity. Automatic reassessment boundaries are an owner prompt, planning boundary, final worker wave, interrupt, or resume, so the route adapts as project shape changes. Every wait and final response replays the cumulative delegation history.
 
@@ -28,7 +28,7 @@ Each new or explicitly reassessed run first uses a separate bounded, read-only a
 
 Symphony can remain enabled for a working tree across completed tasks, new sessions, resumes, and context compaction. Project policy and active-run state are stored in the host's writable plugin-data directory, not in the repository.
 
-Completing or stopping a run clears only that run. The project remains enabled until `/symphony:disable` is used.
+Completing or stopping a run clears only that run. The project remains enabled until the `disable` control is used.
 
 An active run records its owner session, objective, completion receipt, and tracked subagents. On resume, Symphony reconciles this record and the current worktree instead of launching a duplicate lead. Only an interrupted run with no active registered agents can transfer to a new owner; the atomic transfer records the previous owner and consumes recovery eligibility. Other sessions are inspection-only, and the previous owner cannot mutate the transferred run.
 
@@ -64,6 +64,26 @@ Start a new session after installation so Claude Code loads the commands, skill,
 
 ## Commands
 
+### Codex CLI
+
+Codex exposes Symphony as the `$symphony:symphony` skill. Begin the prompt with the invocation, optionally after “use”:
+
+```text
+$symphony:symphony <task>
+$symphony:symphony help
+$symphony:symphony enable [task]
+$symphony:symphony disable
+$symphony:symphony start [--dry-run] <task>
+$symphony:symphony assess [small|medium|large|auto]
+$symphony:symphony status
+$symphony:symphony agents [--all]
+$symphony:symphony stop [--force]
+```
+
+`$symphony:symphony <task>` is the shortest one-off form; `start <task>` is its explicit equivalent. Do not enter `/symphony:*` in Codex—the slash forms belong to Claude Code.
+
+### Claude Code
+
 ```text
 /symphony:help
 /symphony:enable [task]
@@ -72,8 +92,7 @@ Start a new session after installation so Claude Code loads the commands, skill,
 /symphony:assess [small|medium|large|auto]
 /symphony:status
 /symphony:agents [--all]
-/symphony:stop
-/symphony:stop --force
+/symphony:stop [--force]
 ```
 
 - `help` displays usage without enabling or starting Symphony.
@@ -197,7 +216,7 @@ Run a bounded real-Codex candidate trial:
 ```bash
 python3 plugins/symphony/scripts/codex_smoke.py \
   --candidate-marketplace . --output /tmp/symphony-smoke \
-  --name control-help --prompt /symphony:help \
+  --name control-help --prompt '$symphony:symphony help' \
   --expect SYMPHONY_CONTROL_HANDLED: --timeout 120
 ```
 

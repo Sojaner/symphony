@@ -1456,6 +1456,9 @@ class SymphonyHookTests(unittest.TestCase):
         prompts = (
             "/symphony:help extra", "/symphony:status extra", "/symphony:agents --bogus",
             "/symphony:disable extra", "/symphony:stop --bogus",
+            "use $symphony:symphony help extra",
+            "$symphony:symphony agents --bogus",
+            "$symphony:symphony stop --bogus",
             "SYMPHONY_CONTROL: stop\nSYMPHONY_ARGS: --force extra",
         )
         for state_name in ("no-run", "starting", "active", "stopping"):
@@ -1484,6 +1487,40 @@ class SymphonyHookTests(unittest.TestCase):
                     self.assertIn("Invalid Symphony control", response.context)
                     self.assertIn("SYMPHONY_CONTROL_HANDLED", response.context)
                     self.assertEqual(before, self.hook.read_project_state(data, str(self.project)))
+
+    def test_malformed_codex_assess_is_terminal_and_side_effect_free(self):
+        for state_name in ("no-run", "starting", "active", "stopping"):
+            with self.subTest(state=state_name):
+                data = Path(self.tmp.name) / f"malformed-codex-assess-{state_name}"
+                data.mkdir()
+                if state_name != "no-run":
+                    self.hook.handle_event(
+                        self.event("UserPromptSubmit", prompt="/symphony:start task"), data,
+                    )
+                if state_name == "active":
+                    self.hook.handle_event(
+                        self.event("SubagentStart", agent_id="worker"), data,
+                    )
+                elif state_name == "stopping":
+                    state = self.hook.read_project_state(data, str(self.project))
+                    state["active_run"]["status"] = "stopping"
+                    self.hook.write_project_state(data, state)
+                before = self.hook.read_project_state(data, str(self.project))
+
+                response = self.hook.handle_event(
+                    self.event(
+                        "UserPromptSubmit",
+                        prompt="$symphony:symphony assess gigantic",
+                    ),
+                    data,
+                )
+
+                self.assertIn(
+                    "Usage: $symphony:symphony assess [small|medium|large|auto]",
+                    response.context,
+                )
+                self.assertIn("SYMPHONY_CONTROL_HANDLED", response.context)
+                self.assertEqual(before, self.hook.read_project_state(data, str(self.project)))
 
     def test_foreign_controls_are_inspection_only_for_a_live_run(self):
         mutating_controls = (
@@ -2551,6 +2588,42 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertEqual("reproduce and fix the timeout", run["objective"])
         self.assertIn("thin root/session keeper", result.context)
         self.assertIn(run["receipt"], result.context)
+
+    def test_skill_invocation_after_natural_language_prefix_arms_one_off_run(self):
+        result = self.hook.handle_event(
+            self.event(
+                "UserPromptSubmit",
+                prompt="use $symphony:symphony and do the authenticated profiling run",
+            ),
+            self.data,
+        )
+
+        run = self.state()["active_run"]
+        self.assertEqual("and do the authenticated profiling run", run["objective"])
+        self.assertIn("thin root/session keeper", result.context)
+        self.assertIn(run["receipt"], result.context)
+
+    def test_quoted_skill_reference_does_not_arm_a_run(self):
+        result = self.hook.handle_event(
+            self.event(
+                "UserPromptSubmit",
+                prompt="The guide mentions $symphony:symphony but the command does not work.",
+            ),
+            self.data,
+        )
+
+        self.assertIsNone(self.state()["active_run"])
+        self.assertEqual("", result.context)
+
+    def test_empty_codex_skill_start_reports_codex_usage(self):
+        result = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="$symphony:symphony start"),
+            self.data,
+        )
+
+        self.assertIsNone(self.state()["active_run"])
+        self.assertIn("Usage: $symphony:symphony start [--dry-run] <task>", result.context)
+        self.assertNotIn("Usage: /symphony:start", result.context)
 
     def test_explicit_skill_invocation_routes_control(self):
         result = self.hook.handle_event(
@@ -5199,7 +5272,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             )
             for required in (
                 "/symphony:assess [small|medium|large|auto]",
-                "/symphony:assess large",
+                "assess large",
                 "project profile",
                 "per-run execution mode",
                 "long-running large-profile project may still have a small task",
@@ -5227,11 +5300,14 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
                 "three consecutive fresh",
             ):
                 self.assertIn(required, text)
+            self.assertIn("Codex CLI", text)
+            self.assertIn("$symphony:symphony start [--dry-run] <task>", text)
+            self.assertIn("Claude Code", text)
         versions = {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.21.1"}, versions)
+        self.assertEqual({"0.21.2"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},
