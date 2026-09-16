@@ -1,5 +1,6 @@
 {
   "name": "symphony",
+  "description": "Capability-aware, recoverable orchestration for Codex and Claude Code.",
   "owner": {
     "name": "Sojaner"
   },
@@ -7,7 +8,7 @@
     {
       "name": "symphony",
       "source": "./plugins/symphony",
-      "description": "Multi-model orchestration that gives the right task to the right model: steadier progress, less overthinking, lower cost.",
+      "description": "Task-sized orchestration with durable lifecycle recovery and compact delegation visibility.",
       "category": "productivity"
     }
   ]

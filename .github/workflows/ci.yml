@@ -1,0 +1,105 @@
+name: Symphony CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run deterministic tests
+        run: python3 -m unittest discover -s plugins/symphony/tests -v
+
+      - name: Check patches
+        run: git diff --check
+
+      - name: Run installed-package smokes
+        run: |
+          for provider in codex claude; do
+            for scenario in activation managed-run interrupt-resume upgrade; do
+              python3 plugins/symphony/scripts/package_smoke.py \
+                --provider "$provider" \
+                --candidate . \
+                --scenario "$scenario"
+            done
+          done
+
+      - name: Install Claude Code
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Validate Claude marketplace and plugin
+        run: |
+          claude plugin validate .claude-plugin/marketplace.json
+          claude plugin validate plugins/symphony
+
+      - name: Run real Codex control smoke when available
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if ! command -v codex >/dev/null 2>&1 || [ -z "$OPENAI_API_KEY" ]; then
+            echo "::notice::SKIP real Codex smoke: CLI or credential unavailable"
+            exit 0
+          fi
+          export CODEX_HOME="$RUNNER_TEMP/symphony-codex-home"
+          mkdir -p "$CODEX_HOME"
+          codex plugin marketplace add "$GITHUB_WORKSPACE"
+          codex plugin add symphony@symphony
+          codex exec \
+            --dangerously-bypass-hook-trust \
+            --skip-git-repo-check \
+            --output-last-message "$RUNNER_TEMP/codex-help.txt" \
+            -C "$GITHUB_WORKSPACE" \
+            '$symphony:symphony help'
+          grep -qi symphony "$RUNNER_TEMP/codex-help.txt"
+
+      - name: Run real Claude control smoke when credential is available
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::SKIP real Claude smoke: credential unavailable"
+            exit 0
+          fi
+          export CLAUDE_CONFIG_DIR="$RUNNER_TEMP/symphony-claude-home"
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          claude plugin marketplace add "$GITHUB_WORKSPACE"
+          claude plugin install -y symphony@symphony
+          claude --print \
+            --model haiku \
+            --max-budget-usd 0.50 \
+            --output-format text \
+            '/symphony:help' > "$RUNNER_TEMP/claude-help.txt"
+          grep -qi symphony "$RUNNER_TEMP/claude-help.txt"
+
+  release:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish a release for a new manifest version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('plugins/symphony/.claude-plugin/plugin.json'))['version'])")
+          codex_version=$(python3 -c "import json; print(json.load(open('plugins/symphony/.codex-plugin/plugin.json'))['version'])")
+          test "$version" = "$codex_version" || { echo "::error::Provider manifest versions differ"; exit 1; }
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$version already exists"
+          else
+            gh release create "v$version" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "v$version" \
+              --generate-notes
+          fi

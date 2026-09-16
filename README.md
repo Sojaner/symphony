@@ -4,41 +4,7 @@
 
 # Symphony
 
-Symphony is a Codex and Claude Code plugin that routes project work through a task-sized execution lead. A strongest/high read-only assessor chooses the smallest suitable execution mode and exact lead route, while lifecycle hooks keep long-running delegated work recoverable.
-
-The root agent can be cheap or weak. Deterministic lifecycle hooks make it a thin session keeper, while a strongest-available high-effort child owns decisions, implementation or delegation, integration, and verification.
-
-## Execution modes
-
-Each run selects exactly one mode:
-
-- **Small:** a capable lead completes a straightforward task directly.
-- **Medium:** a balanced lead handles fast and integration-sensitive work while delegating independent or specialist units.
-- **Large:** an inexpensive administrative lead plans, dispatches, and integrates worker waves, reserving strong models for bounded consultations.
-
-Mode is selected per run. Enabling Symphony never permanently classifies a project as small, medium, or large.
-
-## Assessment and reassessment
-
-The `assess [small|medium|large|auto]` control requests reassessment or sets a persistent project profile. Use `assess large` for this repository when its long-running shape calls for that profile; `auto` reverses the override. The provider-specific forms are listed below. A project profile is not a per-run execution mode: a long-running large-profile project may still have a small task.
-
-Each new or explicitly reassessed run first uses a separate bounded, read-only assessor at strongest/high. It returns exactly one concise assessment result and does not implement. Its machine-readable receipt selects the exact lead model, effort, consulting strategy, and worker limit. Small leads are capable direct executors; medium leads are capable mixed executors with consultation fallback; large leads are inexpensive administrators with reserved consultant capacity. Automatic reassessment boundaries are an owner prompt, planning boundary, final worker wave, interrupt, or resume, so the route adapts as project shape changes. Every wait and final response replays the cumulative delegation history.
-
-## Persistent project enablement
-
-Symphony can remain enabled for a working tree across completed tasks, new sessions, resumes, and context compaction. Project policy and active-run state are stored in the host's writable plugin-data directory, not in the repository.
-
-Completing or stopping a run clears only that run. The project remains enabled until the `disable` control is used.
-
-An active run records its owner session, objective, completion receipt, and tracked subagents. On resume, Symphony reconciles this record and the current worktree instead of launching a duplicate lead. Only an interrupted run with no active registered agents can transfer to a new owner; the atomic transfer records the previous owner and consumes recovery eligibility. Other sessions are inspection-only, and the previous owner cannot mutate the transferred run.
-
-## Requirements
-
-- Python 3 available to `/usr/bin/env python3` for the lifecycle hook.
-- Trusted plugin hooks. Codex asks users to review plugin hook definitions before running them.
-- A host model catalog that allows spawning a capable child with a model override.
-
-If hooks are disabled, untrusted, or cannot run Python, the Symphony skill can still explain manual routing but cannot promise guarded stopping or recovery.
+Symphony is a Codex and Claude Code plugin that keeps the root agent thin, selects a task-sized execution lead, and preserves lifecycle state across long-running work.
 
 ## Install
 
@@ -49,211 +15,126 @@ codex plugin marketplace add Sojaner/symphony
 codex plugin add symphony@symphony
 ```
 
-Review and trust the bundled lifecycle hooks when Codex prompts. Start a new task after installation.
-
-For medium and large runs, allow the lead to spawn workers by setting `agents.max_depth = 2` in your Codex configuration (root → lead → worker). The default depth of one only supports direct root children. The live harness supplies this setting in its isolated host; Symphony does not rewrite your configuration.
+Open `/hooks`, review and trust Symphony's hooks, then send another prompt. An install or update performed outside the running Codex process requires a new session before the hooks can execute.
 
 ### Claude Code
 
 ```text
 /plugin marketplace add Sojaner/symphony
 /plugin install symphony@symphony
+/reload-plugins
 ```
 
-Start a new session after installation so Claude Code loads the commands, skill, and hooks.
+If normal reload is declined, use `/reload-plugins --force` or restart Claude Code. Send another prompt after reload so Symphony can record the current-session heartbeat. `/hooks` shows whether workspace or managed policy blocks hook execution.
 
-## Commands
+## Use
 
-### Codex CLI
-
-Codex exposes Symphony as the `$symphony:symphony` skill. Begin the prompt with the invocation, optionally after “use”:
+Codex exposes one skill entry point:
 
 ```text
+$symphony:symphony enable
 $symphony:symphony <task>
-$symphony:symphony help
-$symphony:symphony enable [task]
-$symphony:symphony disable
-$symphony:symphony start [--dry-run] <task>
-$symphony:symphony assess [small|medium|large|auto]
+$symphony:symphony bypass <task>
 $symphony:symphony status
 $symphony:symphony agents [--all]
+$symphony:symphony reassess
 $symphony:symphony stop [--force]
+$symphony:symphony disable
+$symphony:symphony help
 ```
 
-`$symphony:symphony <task>` is the shortest one-off form; `start <task>` is its explicit equivalent. Do not enter `/symphony:*` in Codex—the slash forms belong to Claude Code.
-
-### Claude Code
+Claude Code exposes native slash commands:
 
 ```text
-/symphony:help
-/symphony:enable [task]
-/symphony:disable
-/symphony:start [--dry-run] <task>
-/symphony:assess [small|medium|large|auto]
+/symphony:enable
+/symphony:start <task>
+/symphony:bypass <task>
 /symphony:status
 /symphony:agents [--all]
+/symphony:reassess
 /symphony:stop [--force]
+/symphony:disable
+/symphony:help
 ```
 
-- `help` displays usage without enabling or starting Symphony.
-- `enable` persistently enables the current working tree and optionally starts a task.
-- `disable` prevents future automatic activation and gracefully stops an active run.
-- `start` starts one guarded run without changing project enablement.
-- `$symphony:symphony <task>` starts a guarded one-off run; command names such as `$symphony:symphony help` are controls and do not start project work.
-- `assess` requests reassessment; `small`, `medium`, or `large` set a persistent project profile, while `auto` clears it.
-- `status` reads policy and run state without changing either.
-- `agents` lists the active run's subagents, including terminal agents; `--all` also includes retained historical runs. Model or effort that the host does not provide is shown as `not exposed by host`.
-- `stop` ends the active run but preserves project enablement.
-- `stop --force` releases stale protection. A tracked or untracked child may continue running, so use it only for recovery.
+Do not use `/symphony:*` in Codex. `$symphony:symphony <task>` and `/symphony:start <task>` each run one managed task without changing project enablement.
 
-Help, status, agents (including `--all`), empty enable, assessment controls, and invalid controls end with a single-use control receipt. They do not resume or complete project work, wait for children, or transfer ownership. Assessment controls change only their documented policy. Only an explicit `start --dry-run` run can bypass an accepted current assessment; normal completion requires that assessment and terminal registered children.
+## Persistent enablement
 
-When a project is enabled, the first non-control project prompt in a later session automatically arms a guarded run and starts the assessor-led bootstrap.
+`enable` governs future substantive prompts in the current project, including new sessions and resumes, until `disable` is used. Controls and deterministic trivial tasks do not trigger assessment. `bypass` runs one task outside Symphony without changing enablement or mutating an active run.
 
-## Document memory
+`stop` ends the active run but keeps project enablement. `stop --force` records an explicit interruption when a safe stop cannot be completed. `disable` gracefully stops and archives active recovery context, then disables future automatic governance. Uninstalling removes plugin execution but does not rewrite the project or silently finish active work; disable first when possible.
 
-Small runs skip optional memory. Medium and large runs may use at most one disposable probe only with a verified host timeout or cancellation that makes the probe terminal within its bound. Otherwise they skip it. Missing, failing, or hanging memory uses fallback to repository documents and source inspection; optional MCP cannot hold up bootstrap or completion.
+## Guarded execution
 
-Extended memory is available only when the execution lead verifies `codebase-memory-mcp`, a healthy project index, and usable memory-path coverage. The lead reads `.symphony/memory/current.md` directly for the active checkpoint and queries `.symphony/memory/history/<run-id>.md` through MCP graph/search tools; stale or uncovered history uses a targeted direct read while indexing catches up. Otherwise Symphony keeps using its compact lifecycle record and does not create or claim indexed memory.
+A run is **guarded** only after the loaded Symphony hook has written a matching heartbeat for the current provider session. Installation, discovery, or trust alone is not proof of execution.
 
-`.symphony/memory/` is project-local and is not automatically ignored, committed, or deleted. `/symphony:disable` and `/symphony:stop --force` preserve it; deleting it manually disables historical recall until it is recreated. Keep no secrets, raw environment values, full transcripts, or copied source bodies in memory.
+When the heartbeat is absent, `status` reports pending verification and gives the provider-native recovery step. A missing packaged executable or nonzero hook exit is reported as a fault, not as a trust problem. Symphony never silently labels an unverified run guarded; an unguarded one-shot route must be explicit.
 
-Manually ignoring `.symphony/memory/` disables indexed history until the ignore policy changes.
+Normal completion is blocked while host-observed tracked work remains active. User interruption and host-enforced overrides remain authoritative, so interrupted work is recovered from durable lifecycle state rather than described as uninterruptible.
 
-Hooks cannot call MCP. The execution lead activates memory only with its verified capability receipt, and hooks enforce that activation with the documented file and checkpoint-receipt checks.
+## Routing
 
-If an activated run loses MCP/index health or either memory file, the lead reports the loss with its run-bound `SYMPHONY_MEMORY_UNAVAILABLE:<run-id>:codebase-memory-mcp` receipt. Hooks then disable extended memory, retain the last checkpoint time, and allow normal completion from compact lifecycle recovery. While memory remains active, a missing or stale final checkpoint still blocks completion.
+Assessment treats task size and complexity as separate axes. The fixed route is resolved against the models and efforts actually available from the provider.
 
-## Lifecycle protection
+| Size / complexity | Simple | Mixed | Complex |
+|---|---|---|---|
+| Small | capable/medium, direct | capable/high, direct with optional consultation | strongest/high, direct with independent review |
+| Medium | balanced/medium, mixed | balanced/high, mixed with optional consultation | capable/high, mixed with reserved consultation |
+| Large | economy/low, delegated | economy/medium, delegated with reserved consultation | economy/medium, delegated with strongest consultation |
 
-The hook layer runs before model reasoning and at agent lifecycle events:
+The assessor is bounded, read-only, and separate from the lead. The lead route never inherits the assessor's expensive model or effort. Large-task leads administer dependency-aware work and reserve capacity for narrow consultant decisions. Small-task leads do straightforward work directly and delegate only genuinely independent or mechanical units.
 
-1. `SessionStart` restores enabled-project and interrupted-run context.
-2. `UserPromptSubmit` applies commands or arms the next project run.
-3. `SubagentStart` and `SubagentStop` maintain the tracked-agent ledger.
-4. `PreToolUse` blocks premature root execution delegation until the assessor receipt has been persisted.
-5. `Stop` waits briefly for tracked agents, then blocks normal stopping until the current assessment is accepted, every result is reconciled, and the final completion receipt matches. Control receipts terminate immediately.
-6. `Interrupt` records owner-scoped recovery context where the host exposes the event.
+`reassess` updates subsequent work at a safe evidence boundary. It does not duplicate an active lead or rewrite completed work.
 
-Neither Codex nor Claude Code lets a plugin prevent every explicit interrupt or host-enforced Stop override. Symphony therefore guarantees normal-Stop protection and recoverable state, not an uninterruptible process.
+## Visibility
 
-## Assessment and execution bootstrap
+`status` reports project enablement, activation state, guarded/degraded state, assessment cell, topology, lead identity, and up to five current delegation records. Each agent has one latest record, prioritized as failed, active/waiting, then recently completed.
 
-The root has only five duties: announce, spawn, bind/register, relay, and wait. It performs no repository, capability, or MCP discovery before delegating. The injected packet supplies the objective, run id, required assessor profile, and exact receipt syntax. The root first spawns a separate read-only assessor at the strongest available general reasoning model and high effort with no inherited turns, then relays its terminal receipt. Codex binds each root spawn request to the observed child UUID automatically; other hosts register the exact id they return. After acceptance, the root spawns the mode-appropriate `symphony_lead`.
+```text
+Working: worker [capable/medium] — <identity> — <bounded objective>
+Failed: consultant [strongest/high] — <identity> — <bounded decision>
+Completed: worker [balanced/medium] — <identity> — <bounded objective>
+```
 
-The assessor and execution lead discover repository instructions, worktree state, usable models, skills, tools, concurrency, and routing references themselves. On hosts that expose child lifecycle events, assessment requires the current registered terminal assessor. Hosts without those events retain the documented owner receipt fallback.
+`agents --all` includes the latest state for every delegation in the current run and the retained 20-run history. Token and duration fields are omitted when the provider does not expose them.
 
-For a small task, the selected lead continues directly as the implementer. The assessor never implements.
+## Optional capabilities
 
-## Usage visibility
+Symphony uses available supporting workflows only for bounded jobs. Superpowers, Compound Engineering, Matt Pocock skills, and Ponytail may supply a suitable technique; Context7 may provide current official documentation; Codebase Memory may provide structural discovery and indexed document memory. Missing optional capabilities use native source inspection and repository documents without delaying startup.
 
-Usage is authoritative host observations only; Symphony never estimates usage or cost. Claude synchronous Agent usage may be exposed; unavailable background or Codex usage is omitted. Token fields describe the final request only; host duration and tool count describe the agent run, while lifecycle duration is observed wall time. No hard token or cost budget is promised.
+Document memory is enabled only when Codebase Memory is available and its project index is healthy. It stores curated decisions and continuation state in `.symphony/context.md`, never secrets, transcripts, or copied source bodies.
 
-Provider task labels carry the role and requested routing: Codex uses `symphony_<role>__<model-slug>__<effort-slug>`, while Claude descriptions start `symphony_<role> [<model>/<effort>]:`. Progress and the final response replay a cumulative `Delegation log:` with every observed `Delegating:`, `Waiting:`, and `Completed:` state, so a later waiting update cannot hide earlier delegations. Token and duration segments appear only when exposed. After an accepted assessment the root announces `Mode: <mode> — <strategy> — <reason>`, so the user sees whether the lead executes directly, adds bounded workers, or runs dependency-aware waves.
-
-The final completion response is self-contained: it repeats the integrated deliverable, cumulative delegation log, assessor and lead completion summary records, one `Routing:` line naming the mode strategy plus every agent's actual model/effort and assigned job, authoritative verification, selected mode, and completion receipt. The hook checks the report against its lifecycle ledger.
-
-## Workflow and evidence capabilities
-
-Symphony inspects the effective catalog for the root and each child. It never treats marketplace installation or files on disk as proof that a skill or tool is usable by that agent.
-
-| Capability | Symphony role |
-|---|---|
-| Superpowers | Bounded design, planning, debugging, TDD, implementation, or verification technique. |
-| Compound Engineering | Bounded planning, review, POV, delivery, or PR technique. |
-| Matt Pocock skills | Bounded design, diagnosis, TDD, review, domain-modeling, research, or agent-documentation technique. |
-| Ponytail | Optional cross-cutting simplicity constraint for coding and design. |
-| Context7 | Current official documentation for version-sensitive framework and host behavior. |
-| Codebase Memory MCP | Structural code discovery, callers, dependencies, architecture, and blast-radius evidence. |
-
-Explicit user requests and repository instructions come first. During an active run, Symphony owns routing, delegation, waiting, reassessment, and completion. It selects at most one supporting Superpowers, Compound Engineering, or Matt Pocock technique for a unit; that technique returns its artifact to the Symphony lead and does not offer a second execution handoff.
-
-When bounded Codebase Memory use is available, the assessor or lead checks the project index and graph. Worker packets include qualified symbols, relevant traces, index freshness, and coverage gaps. A worker without graph tools uses that evidence and does not claim direct MCP access. Targeted source search remains the fallback for literals, configuration, non-code files, and graph coverage gaps.
-
-## Missing capabilities
-
-A missing optional capability does not stop a task when a valid fallback exists. If the absence materially affected the result, Symphony may suggest it in the final handoff:
-
-- at most one suggestion per run;
-- at most once per capability and project every 30 days;
-- never during active work unless the missing capability blocks an explicit user guarantee;
-- never installed or enabled automatically.
-
-## Update
-
-Codex:
+## Upgrade and migration
 
 ```bash
 codex plugin marketplace upgrade symphony
 codex plugin add symphony@symphony
 ```
 
-Claude Code:
-
 ```text
 /plugin marketplace update symphony
+/reload-plugins
 ```
 
-Start a new task after updating so the host reloads hooks and skills.
-Already-running sessions retain their loaded hook declarations; if an upgrade replaces their versioned cache, the hook launcher falls forward to the newest installed Symphony version.
+Codex updates loaded outside the current process require a new session and renewed `/hooks` review when the hook hash changes. Claude updates require reload or restart. In both providers, the next prompt confirms the loaded version through its heartbeat.
 
-## Development and testing
+Symphony 1.0 imports project enablement and user configuration only. Incompatible active-run state is archived and the next managed task receives a fresh assessment.
 
-Run the deterministic lifecycle tests:
+## Develop and verify
 
 ```bash
 python3 -m unittest discover -s plugins/symphony/tests -v
-```
-
-Validate the Claude plugin:
-
-```bash
 claude plugin validate ./plugins/symphony
+python3 plugins/symphony/scripts/package_smoke.py --provider codex --candidate . --scenario activation
+python3 plugins/symphony/scripts/package_smoke.py --provider claude --candidate . --scenario activation
+git diff --check
 ```
 
-Run a bounded real-Codex candidate trial:
-
-```bash
-python3 plugins/symphony/scripts/codex_smoke.py \
-  --candidate-marketplace . --output /tmp/symphony-smoke \
-  --name control-help --prompt '$symphony:symphony help' \
-  --expect SYMPHONY_CONTROL_HANDLED: --timeout 120
-```
-
-Each trial installs the candidate through a local marketplace into a fresh Codex home, repository, and plugin-data directory, verifies installed bytes, trusts only candidate hooks, and removes its credential copy. It retains JSONL, lifecycle state, artifacts, timing, and host usage. Installation, authentication, timeout, and assertion failures fail the local gate; an optional CI skip is not a release pass.
-
-The 0.16.0 release gate runs deterministic command/state and adversarial receipt cases first, then live weak-root, nested medium/large worker, recovery/compaction where supported, memory absent/failing/hanging, and visibility cases. Medium/large passes require actual worker lifecycle records. Luna/low small work must pass three consecutive fresh trials after the last relevant change; a later change resets the count. Unsupported host scenarios are recorded as blockers, never passed by simulation.
-
-The Claude eval suite checks planned assessor/medium-lead routing and mismatch refusal. A separate read-only smoke case exercises two real sequential agents and owner-root registration/assessment receipts in the evaluator's isolated workspace:
-
-```bash
-claude plugin eval ./plugins/symphony \
-  --model claude-haiku-4-5-20251001
-```
-
-The hosted evaluator requires early-access enablement. Local lifecycle tests verify the event protocol; dry-run reports do not prove real spawns or receipt acceptance. The read-only smoke has not produced hosted evidence locally because the installed evaluator exits at its early-access gate.
-
-CI runs validation and evals on every push and pull request. A successful push to `main` creates a GitHub release when the manifest version is new.
-
-## Repository layout
-
-```text
-.agents/plugins/marketplace.json       Codex marketplace manifest
-.claude-plugin/marketplace.json        Claude Code marketplace manifest
-plugins/symphony/.codex-plugin/        Codex plugin manifest
-plugins/symphony/.claude-plugin/       Claude Code plugin manifest
-plugins/symphony/commands/             User command surfaces
-plugins/symphony/hooks/                Claude and Codex hook declarations
-plugins/symphony/scripts/              Shared lifecycle implementation
-plugins/symphony/tests/                Deterministic lifecycle tests
-plugins/symphony/evals/                Claude plugin eval suite
-plugins/symphony/skills/symphony/      Execution and capability-routing instructions
-.symphony/memory/                      Runtime-created project-local document memory
-```
+The package smoke supports `activation`, `managed-run`, `interrupt-resume`, and `upgrade`. It installs the candidate in an isolated fake-provider home, executes only materialized hook paths, and emits one JSON result.
 
 ## References
 
-- [Codex hooks](https://developers.openai.com/codex/hooks)
-- [OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model)
+- [Codex hooks](https://learn.chatgpt.com/docs/hooks)
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks)
-- [Claude Code subagents](https://code.claude.com/docs/en/sub-agents)
+- [Claude Code plugins](https://code.claude.com/docs/en/discover-plugins)

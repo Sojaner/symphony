@@ -1,0 +1,177 @@
+import json
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+
+from plugins.symphony.scripts.package_smoke import run_smoke
+
+
+ROOT = Path(__file__).resolve().parents[3]
+SCRIPT = ROOT / "plugins" / "symphony" / "scripts" / "package_smoke.py"
+
+
+class PackageSmokeTests(unittest.TestCase):
+    def make_candidate(self, root: Path, *, broken: bool = False, absolute: bool = False) -> Path:
+        plugin = root / "plugins" / "symphony"
+        for relative in (".codex-plugin", ".claude-plugin", "hooks", "scripts"):
+            (plugin / relative).mkdir(parents=True, exist_ok=True)
+
+        manifest = {"name": "symphony", "version": "1.0.0"}
+        (plugin / ".codex-plugin" / "plugin.json").write_text(
+            json.dumps({**manifest, "hooks": "./hooks/codex.json"})
+        )
+        (plugin / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest))
+
+        command = 'python3 "${PLUGIN_ROOT}/scripts/symphony_hook.py"'
+        if absolute:
+            command = 'python3 "/tmp/plugin-cache/1.0.0/scripts/symphony_hook.py"'
+        codex = {
+            "hooks": {
+                event: [{"hooks": [{"type": "command", "command": command}]}]
+                for event in (
+                    "SessionStart",
+                    "UserPromptSubmit",
+                    "SubagentStart",
+                    "SubagentStop",
+                    "Stop",
+                    "Interrupt",
+                )
+            }
+        }
+        claude_command = command.replace("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}")
+        claude = {
+            "hooks": {
+                event: [{"hooks": [{"type": "command", "command": claude_command}]}]
+                for event in (
+                    "SessionStart",
+                    "UserPromptSubmit",
+                    "SubagentStart",
+                    "SubagentStop",
+                    "Stop",
+                )
+            }
+        }
+        (plugin / "hooks" / "codex.json").write_text(json.dumps(codex))
+        (plugin / "hooks" / "hooks.json").write_text(json.dumps(claude))
+
+        if not broken:
+            (plugin / "scripts" / "symphony_hook.py").write_text(
+                textwrap.dedent(
+                    """\
+                    import json, os, pathlib, sys
+                    payload = json.load(sys.stdin)
+                    root = pathlib.Path(os.environ["SYMPHONY_STATE_DIR"])
+                    root.mkdir(parents=True, exist_ok=True)
+                    path = root / "fake-state.json"
+                    state = json.loads(path.read_text()) if path.exists() else {"events": []}
+                    state["events"].append(payload["hook_event_name"])
+                    if payload["hook_event_name"] == "UserPromptSubmit":
+                        state["active_run"] = {"objective": payload["prompt"]}
+                    elif payload["hook_event_name"] == "SubagentStart":
+                        state["active_children"] = [payload["agent_id"]]
+                    elif payload["hook_event_name"] == "SubagentStop":
+                        state["active_children"] = []
+                    state["heartbeat"] = {
+                        "session_id": payload["session_id"],
+                        "plugin_version": os.environ["SYMPHONY_PLUGIN_VERSION"],
+                        "plugin_root": os.environ["SYMPHONY_PLUGIN_ROOT"],
+                    }
+                    path.write_text(json.dumps(state))
+                    blocked = payload["hook_event_name"] == "Stop" and state.get("active_children")
+                    print(json.dumps({"continue": not bool(blocked)}))
+                    """
+                )
+            )
+        return root
+
+    def test_activation_materializes_and_executes_candidate_after_trust(self):
+        """Catches validating the source tree without running the installed copy."""
+        with tempfile.TemporaryDirectory() as candidate_dir, tempfile.TemporaryDirectory() as home_dir:
+            candidate = self.make_candidate(Path(candidate_dir))
+            result = run_smoke("codex", candidate, "activation", Path(home_dir))
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(["needs_review", "guarded"], result["activation"])
+            self.assertEqual(["UserPromptSubmit"], result["events"])
+            install_root = Path(result["install_root"])
+            self.assertTrue((install_root / "scripts" / "symphony_hook.py").is_file())
+            self.assertNotEqual(candidate / "plugins" / "symphony", install_root)
+
+    def test_all_scenarios_run_for_both_provider_protocols(self):
+        """Catches a scenario silently accepting a provider whose lifecycle was not exercised."""
+        expected = {
+            "managed-run": ["UserPromptSubmit", "SubagentStart", "Stop", "SubagentStop", "Stop"],
+            "interrupt-resume": ["UserPromptSubmit", "SessionStart"],
+        }
+        with tempfile.TemporaryDirectory() as candidate_dir:
+            candidate = self.make_candidate(Path(candidate_dir))
+            for provider in ("codex", "claude"):
+                for scenario, suffix in expected.items():
+                    with self.subTest(provider=provider, scenario=scenario), tempfile.TemporaryDirectory() as home:
+                        result = run_smoke(provider, candidate, scenario, Path(home))
+                        events = result["events"]
+                        if provider == "codex" and scenario == "interrupt-resume":
+                            suffix = ["UserPromptSubmit", "Interrupt", "SessionStart"]
+                        self.assertTrue(result["ok"])
+                        self.assertEqual(suffix, events)
+
+    def test_upgrade_reloads_new_materialized_version(self):
+        """Catches reusing a removed versioned cache path after an upgrade."""
+        with tempfile.TemporaryDirectory() as candidate_dir, tempfile.TemporaryDirectory() as home_dir:
+            candidate = self.make_candidate(Path(candidate_dir))
+            result = run_smoke("claude", candidate, "upgrade", Path(home_dir))
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(["1.0.0", "1.0.1"], result["heartbeat_versions"])
+            self.assertNotEqual(*result["loaded_roots"])
+            self.assertTrue(result["loaded_roots"][1].endswith("/1.0.1"))
+
+    def test_missing_hook_executable_is_a_fault(self):
+        """Catches reporting trust-pending when the packaged command target is absent."""
+        with tempfile.TemporaryDirectory() as candidate_dir, tempfile.TemporaryDirectory() as home_dir:
+            candidate = self.make_candidate(Path(candidate_dir), broken=True)
+            result = run_smoke("codex", candidate, "activation", Path(home_dir))
+
+            self.assertFalse(result["ok"])
+            self.assertEqual("faulted", result["activation"][-1])
+            self.assertIn("missing hook executable", result["error"])
+
+    def test_absolute_cache_command_is_rejected(self):
+        """Catches publishing hooks pinned to the developer's cache path."""
+        with tempfile.TemporaryDirectory() as candidate_dir, tempfile.TemporaryDirectory() as home_dir:
+            candidate = self.make_candidate(Path(candidate_dir), absolute=True)
+            result = run_smoke("codex", candidate, "activation", Path(home_dir))
+
+            self.assertFalse(result["ok"])
+            self.assertIn("plugin-root placeholder", result["error"])
+
+    def test_cli_emits_one_json_result(self):
+        """Catches human log lines corrupting the smoke artifact consumed by CI."""
+        with tempfile.TemporaryDirectory() as candidate_dir:
+            candidate = self.make_candidate(Path(candidate_dir))
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--provider",
+                    "claude",
+                    "--candidate",
+                    str(candidate),
+                    "--scenario",
+                    "activation",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertTrue(json.loads(completed.stdout)["ok"])
+            self.assertEqual("", completed.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
