@@ -46,7 +46,9 @@ ASSESSMENT_RE = re.compile(
     re.IGNORECASE,
 )
 ASSESSMENT_REASON_RE = re.compile(
-    r"^[ \t]*SYMPHONY_ASSESSMENT_REASON:([^\r\n]*)\r?$", re.IGNORECASE | re.MULTILINE,
+    r"^[ \t]*(?:`|\*\*)?SYMPHONY_ASSESSMENT_REASON:[ \t]*(?:`|\*\*)?[ \t]*"
+    r"([^\r\n]*?)[ \t]*(?:`|\*\*)?[ \t]*\r?$",
+    re.IGNORECASE | re.MULTILINE,
 )
 REGISTRATION_RE = re.compile(
     r"^[ \t]*(?:`|\*\*)?SYMPHONY_REGISTER:([a-f0-9]{16}):(assessor|lead):"

@@ -766,8 +766,8 @@ class SymphonyHookTests(unittest.TestCase):
                 )
                 run = self.state()["active_run"]
                 receipt = (
-                    f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
-                    "SYMPHONY_ASSESSMENT_REASON:Bounded task"
+                    f"{wrapper}SYMPHONY_ASSESSMENT:{run['id']}:small:small{wrapper}\n"
+                    f"{wrapper}SYMPHONY_ASSESSMENT_REASON:{wrapper} Bounded task"
                 )
                 self.hook.handle_event(
                     self.event("SubagentStart", agent_id="assessor", agent_type="general-purpose"),
@@ -791,6 +791,38 @@ class SymphonyHookTests(unittest.TestCase):
                 self.assertIn("Symphony accepted assessment", result.reason)
                 self.assertEqual("assessor", self.state()["active_run"]["assessor_agent_id"])
                 self.assertFalse(self.state()["active_run"]["assessment_due"])
+                self.assertEqual("Bounded task", self.state()["assessment"]["reason"])
+                self.assertFalse(self.hook.handle_event(
+                    self.event("PreToolUse", tool_name="Agent"), self.data,
+                ).block)
+
+    def test_markdown_wrapped_empty_assessment_reason_is_rejected(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        run = self.state()["active_run"]
+        receipt = (
+            f"**SYMPHONY_ASSESSMENT:{run['id']}:small:small**\n"
+            "**SYMPHONY_ASSESSMENT_REASON:**"
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="assessor", agent_type="general-purpose"), self.data,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt), self.data,
+        )
+
+        result = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                f"**SYMPHONY_REGISTER:{run['id']}:assessor:assessor**\n{receipt}"
+            )),
+            self.data,
+            stop_wait_seconds=0,
+        )
+
+        self.assertTrue(result.block)
+        self.assertNotIn("Symphony accepted assessment", result.reason)
+        self.assertTrue(self.state()["active_run"]["assessment_due"])
 
     def test_status_reports_assessment_fields_without_lifecycle_writes(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:assess large"), self.data)
