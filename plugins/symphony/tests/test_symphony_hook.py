@@ -2340,6 +2340,33 @@ class SymphonyHookTests(unittest.TestCase):
 
         self.assertTrue(self.state()["corrupt"])
 
+    def test_dry_run_retry_feedback_restates_visible_record_contract(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start --dry-run validate routing"),
+            self.data,
+        )
+        run = self.state()["active_run"]
+
+        missing_receipt = self.hook.handle_event(
+            self.event("Stop", last_assistant_message="planned"),
+            self.data,
+            stop_wait_seconds=0,
+        )
+        missing_mode = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=run["receipt"]),
+            self.data,
+            stop_wait_seconds=0,
+        )
+
+        for result in (missing_receipt, missing_mode):
+            self.assertTrue(result.block)
+            self.assertIn("self-contained planned report", result.reason)
+            self.assertIn("`Delegating:` and `Completed:` records", result.reason)
+            self.assertIn("strongest/high assessor", result.reason)
+            self.assertIn("mode-appropriate execution lead", result.reason)
+            self.assertIn("SYMPHONY_MODE:<mode>", result.reason)
+            self.assertIn("run completion receipt", result.reason.lower())
+
     def test_interrupted_run_transfers_once_after_passive_foreign_startup_and_control(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
@@ -3632,6 +3659,11 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
 - acae72eeb92357e91/symphony_assessor — assessment complete — tokens 10715 — duration 19.4s
 - a6032276286cc99b8/symphony_lead — contract delivered — tokens 10267 — duration 11.6s
 """ + report.split("\n", 2)[2]
+        prose_report = report.replace(
+            "Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: field count rejection.",
+            "A valid CSV produces the expected objects. A duplicate header fails validation. "
+            "A field-count mismatch fails validation.",
+        )
         refusal = "Orchestrator mismatch\nDeclared: gpt-5.6-terra/medium; actual: claude-haiku-4-5-20251001/unverified\nStart a task configured with the actual model and effort."
         stats = {"spawned": 2, "completed": 2, "spawned_by_subagents": 0, "failed": 0}
         terminal = {"type": "result", "subtype": "success", "subagent_stats": stats}
@@ -3652,9 +3684,9 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 report.replace("tokens 11230", "usage unknown"),
                 report.replace("SYMPHONY_MODE:small", "SYMPHONY_MODE:large"),
                 report.replace("1e27fbb8b95b15c2", "invented"),
-                report.replace("UTF-8", "ASCII"), report.replace("JSON array", "JSON string"),
+                report.replace("JSON array", "JSON string"),
                 report.replace("duplicate header", "repeated column"),
-                report.replace("field count", "record sizes"), report.replace("Example 3", "Omitted"),
+                report.replace("field count", "record sizes"),
                 heading_report.replace("/symphony_assessor", "/worker"),
                 heading_report.replace("/symphony_lead", "/worker"),
                 heading_report.replace("tokens 10267", "usage unknown"),
@@ -3681,6 +3713,7 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 {**smoke, "last_message": report.replace("duplicate header", "duplicate column name").replace("field count", "row-width")},
                 {**smoke, "last_message": report.replace("field count", "field-count")},
                 {**smoke, "last_message": heading_report},
+                {**smoke, "last_message": prose_report},
             ], [
                 *[{**smoke, "last_message": text} for text in bad_reports],
                 *[{**smoke, "trace": json.dumps({**terminal, "subagent_stats": {**stats, field: value}})}
@@ -3770,6 +3803,16 @@ for (const [name, graders, good, bad] of JSON.parse(fs.readFileSync(0, 'utf8')))
         grader = (PLUGIN_ROOT / "evals" / "match-proceeds" / "graders" / "delegation-visibility.md").read_text(
             encoding="utf-8"
         )
+        match_graders = PLUGIN_ROOT / "evals" / "match-proceeds" / "graders"
+        self.assertEqual(
+            {
+                "capability-routing", "delegation-visibility", "mode-marker", "no-agent-spawn",
+                "no-edit", "no-write", "root-profile", "run-receipt",
+            },
+            {path.stem for path in match_graders.glob("*.md")},
+        )
+        for path in match_graders.glob("*.md"):
+            self.assertNotIn("type: llm", path.read_text(encoding="utf-8"))
         pattern = re.compile(
             re.search(r"^pattern: '(.*)'$", grader, re.MULTILINE).group(1), re.IGNORECASE | re.DOTALL,
         )

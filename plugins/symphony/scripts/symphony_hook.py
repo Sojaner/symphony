@@ -1104,6 +1104,17 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
         if run["receipt"] not in message:
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
+            if run["dry_run"]:
+                return HookResult(
+                    block=True,
+                    reason=(
+                        control_ack + "Symphony dry run remains active. Reissue one self-contained "
+                        "planned report with the root profile, capability routing, planned `Delegating:` "
+                        "and `Completed:` records for the separate strongest/high assessor and "
+                        "mode-appropriate execution lead, exactly one `<!-- SYMPHONY_MODE:<mode> -->`, "
+                        f"and the exact run completion receipt `<!-- {run['receipt']} -->`."
+                    ),
+                )
             return HookResult(
                 block=True,
                 reason=(
@@ -1115,6 +1126,17 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
         if len(modes) != 1:
             if memory_changed or assessment_changed:
                 write_project_state(data_dir, state, now)
+            if run["dry_run"]:
+                return HookResult(
+                    block=True,
+                    reason=(
+                        "Symphony dry-run completion is missing its single selected mode. Reissue one "
+                        "self-contained planned report with the root profile, capability routing, planned "
+                        "`Delegating:` and `Completed:` records for the separate strongest/high assessor "
+                        "and mode-appropriate execution lead, exactly one "
+                        "`<!-- SYMPHONY_MODE:<mode> -->`, and the exact run completion receipt."
+                    ),
+                )
             return HookResult(
                 block=True,
                 reason=(
