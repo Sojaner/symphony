@@ -3946,6 +3946,51 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             encoding="utf-8"
         )
         self.assertIn("python3 -m unittest discover -s plugins/symphony/tests -v", workflow)
+        self.assertIn("--keep-temp", workflow)
+        self.assertIn("test -s eval-results.json", workflow)
+        self.assertNotIn("continue-on-error", workflow)
+        capture = workflow.split("      - name: Collect raw eval traces\n", 1)[1].split("      - name:", 1)[0]
+        upload = workflow.split("      - name: Upload results\n", 1)[1].split("\n  release:", 1)[0]
+        self.assertIn("if: always()", capture)
+        self.assertIn("if: always()", upload)
+        self.assertIn("eval-traces/", upload)
+        self.assertIn("/tmp/claude-eval-*/out/trace.jsonl", capture)
+        self.assertNotIn("cp -r", capture)
+        self.assertIn("/eval-traces/", (PLUGIN_ROOT.parents[1] / ".gitignore").read_text(encoding="utf-8"))
+
+        # Exercise the actual capture script with two eval roots plus private config.
+        script = capture.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("claude-eval-first", "claude-eval-second"):
+                trial = root / name
+                (trial / "out").mkdir(parents=True)
+                (trial / "out" / "trace.jsonl").write_text(name, encoding="utf-8")
+                (trial / "credentials.json").write_text("private credential", encoding="utf-8")
+            script = script.replace("/tmp/claude-eval-", f"{root}/claude-eval-")
+            result = subprocess.run(["bash", "-e", "-c", script], cwd=root, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            files = sorted((root / "eval-traces").rglob("*"))
+            self.assertEqual(["claude-eval-first/trace.jsonl", "claude-eval-second/trace.jsonl"],
+                             [str(path.relative_to(root / "eval-traces")) for path in files if path.is_file()])
+            for path in files:
+                if path.is_file():
+                    self.assertEqual(path.parent.name, path.read_text(encoding="utf-8"))
+            empty = root / "empty"
+            empty.mkdir()
+            result = subprocess.run(["bash", "-e", "-c", script.replace("claude-eval-", "absent-eval-")],
+                                    cwd=empty, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual([], list(empty.iterdir()))
+
+            evaluation = workflow.split("      - name: Run plugin evals\n", 1)[1].split("      - name:", 1)[0]
+            eval_script = "\n".join(line[10:] for line in evaluation.split("        run: |\n", 1)[1].splitlines())
+            for eval_status, expected in ((7, 7), (0, 1)):
+                result = subprocess.run(["bash", "-e", "-c", f"claude() {{ return {eval_status}; }}\n" + eval_script],
+                                        cwd=empty, env={**os.environ, "ANTHROPIC_API_KEY": "test-placeholder"},
+                                        capture_output=True, text=True)
+                self.assertEqual(expected, result.returncode, result.stderr)
 
     def test_subagent_start_gets_context_and_terminal_stop_emits_no_continuation(self):
         with tempfile.TemporaryDirectory() as temporary:

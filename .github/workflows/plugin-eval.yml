@@ -54,10 +54,22 @@ jobs:
             --threshold 0.9 \
             --json eval-results.json \
             --report eval-report.html \
+            --keep-temp \
             --no-publish
           # Require real results even if a gated evaluator exits successfully
           # without running any cases.
           test -s eval-results.json || { echo "plugin eval produced no results (early access not enabled?)"; exit 1; }
+
+      - name: Collect raw eval traces
+        if: always()
+        run: |
+          for trace in /tmp/claude-eval-*/out/trace.jsonl; do
+            [ -f "$trace" ] || continue
+            eval_dir="${trace%/out/trace.jsonl}"
+            trace_name="${eval_dir##*/}"
+            mkdir -p "eval-traces/$trace_name"
+            cp -- "$trace" "eval-traces/$trace_name/trace.jsonl"
+          done
 
       - name: Upload results
         if: always()
@@ -67,6 +79,7 @@ jobs:
           path: |
             eval-results.json
             eval-report.html
+            eval-traces/
             codex-smoke-artifacts/
             plugins/symphony/evals/results/
 
