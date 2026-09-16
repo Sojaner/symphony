@@ -59,6 +59,13 @@ class CapabilitySnapshot:
 
 
 @dataclass(frozen=True)
+class MemoryStatus:
+    enabled: bool = False
+    reason: str = "not_probed"
+    indexed_at: str | None = None
+
+
+@dataclass(frozen=True)
 class ProjectState:
     schema_version: int = 1
     enabled: bool = False
@@ -69,3 +76,5 @@ class ProjectState:
     recent_runs: tuple[RunState, ...] = ()
     event_history: tuple[Event, ...] = ()
     needs_reassessment: bool = False
+    memory: MemoryStatus = field(default_factory=MemoryStatus)
+    capability_suggestions: Mapping[str, tuple[str, ...]] = field(default_factory=dict)

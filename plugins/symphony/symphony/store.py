@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from .model import Action, CapabilitySnapshot, Delegation, Event, ProjectState, RunState
+from .model import Action, CapabilitySnapshot, Delegation, Event, MemoryStatus, ProjectState, RunState
 
 try:
     import fcntl
@@ -194,6 +194,14 @@ def _state_to_dict(state: ProjectState) -> dict[str, Any]:
         "recent_runs": [_run_to_dict(item) for item in state.recent_runs[-20:]],
         "event_history": [_event_to_dict(item) for item in state.event_history],
         "needs_reassessment": state.needs_reassessment,
+        "memory": {
+            "enabled": state.memory.enabled,
+            "reason": state.memory.reason,
+            "indexed_at": state.memory.indexed_at,
+        },
+        "capability_suggestions": {
+            capability: list(versions) for capability, versions in state.capability_suggestions.items()
+        },
     }
 
 
@@ -207,6 +215,14 @@ def _state_from_dict(value: Any) -> ProjectState:
     if not isinstance(enabled, bool) or not isinstance(needs_reassessment, bool):
         raise ValueError("state flags must be booleans")
     active_run = value.get("active_run")
+    memory = _object(value.get("memory", {}), "state.memory")
+    memory_enabled = memory.get("enabled", False)
+    if not isinstance(memory_enabled, bool):
+        raise ValueError("state.memory.enabled must be a boolean")
+    indexed_at = memory.get("indexed_at")
+    if indexed_at is not None:
+        indexed_at = _text(indexed_at, "state.memory.indexed_at")
+    suggestions = _object(value.get("capability_suggestions", {}), "state.capability_suggestions")
     return ProjectState(
         enabled=enabled,
         configuration=_object(value.get("configuration", {}), "state.configuration"),
@@ -222,6 +238,18 @@ def _state_from_dict(value: Any) -> ProjectState:
             _event_from_dict(item) for item in _array(value.get("event_history", ()), "state.event_history")
         ),
         needs_reassessment=needs_reassessment,
+        memory=MemoryStatus(
+            enabled=memory_enabled,
+            reason=_text(memory.get("reason", "not_probed"), "state.memory.reason"),
+            indexed_at=indexed_at,
+        ),
+        capability_suggestions={
+            _text(capability, "state capability suggestion"): tuple(
+                _text(version, "state capability suggestion version")
+                for version in _array(versions, "state capability suggestion versions")
+            )
+            for capability, versions in suggestions.items()
+        },
     )
 
 

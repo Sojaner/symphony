@@ -10,6 +10,7 @@ from plugins.symphony.symphony.model import (
     CapabilitySnapshot,
     Delegation,
     Event,
+    MemoryStatus,
     ProjectState,
     RunState,
 )
@@ -75,6 +76,8 @@ class StateStoreTests(unittest.TestCase):
             active_run=run,
             recent_runs=(run,),
             event_history=(event,),
+            memory=MemoryStatus(True, "healthy", "2026-09-17T09:30:00+00:00"),
+            capability_suggestions={"context7": ("1.0.0",)},
         )
 
         self.store.save(self.project, state)
