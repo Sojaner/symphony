@@ -29,6 +29,7 @@ def _heartbeat(state: ProjectState, event: Event):
         "state": "guarded",
         "session_id": event.payload.get("session_id"),
         "plugin_version": event.payload.get("plugin_version"),
+        "plugin_root": event.payload.get("plugin_root"),
         "hook_schema_version": event.payload.get("hook_schema_version"),
         "observed_at": event.observed_at,
     }

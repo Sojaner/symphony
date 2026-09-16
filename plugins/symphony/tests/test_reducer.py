@@ -49,6 +49,7 @@ class LifecycleReducerTests(unittest.TestCase):
                 provider="codex",
                 session_id="session-1",
                 plugin_version="1.0.0",
+                plugin_root="/plugins/symphony/1.0.0",
                 hook_schema_version=1,
             ),
         )
@@ -56,6 +57,7 @@ class LifecycleReducerTests(unittest.TestCase):
         self.assertTrue(state.enabled)
         self.assertEqual(state.activation["codex"]["state"], "guarded")
         self.assertEqual(state.activation["codex"]["session_id"], "session-1")
+        self.assertEqual(state.activation["codex"]["plugin_root"], "/plugins/symphony/1.0.0")
         self.assertEqual(actions, (Action("project_enabled"),))
         self.assertEqual(heartbeat_actions, ())
 

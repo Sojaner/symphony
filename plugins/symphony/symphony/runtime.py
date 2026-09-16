@@ -34,6 +34,9 @@ def handle(payload: dict, environ: Mapping[str, str] = os.environ) -> HookResult
                 "provider": provider,
                 "session_id": payload.get("session_id"),
                 "plugin_version": PLUGIN_VERSION,
+                "plugin_root": environ.get(
+                    "SYMPHONY_PLUGIN_ROOT", str(Path(__file__).resolve().parents[1])
+                ),
                 "hook_schema_version": HOOK_SCHEMA_VERSION,
             },
         )

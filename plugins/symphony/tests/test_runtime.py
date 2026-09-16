@@ -70,6 +70,8 @@ class RuntimeTests(unittest.TestCase):
         state = StateStore(self.state_root).load(self.project)
         self.assertEqual(state.activation["codex"]["state"], "guarded")
         self.assertEqual(state.activation["codex"]["session_id"], "codex-session")
+        self.assertEqual(state.activation["codex"]["plugin_version"], "1.0.0")
+        self.assertTrue(state.activation["codex"]["plugin_root"].endswith("plugins/symphony"))
         self.assertIn("guarded", self.context(result).lower())
         self.assertNotIn("unarmed", self.context(result).lower())
 
