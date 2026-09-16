@@ -3570,9 +3570,8 @@ class HookDeclarationTests(unittest.TestCase):
             "run_in_background: false",
             "final-channel",
             "exactly two successfully started and completed distinct children",
-            "at most one guard-denied premature attempt",
-            "a single retry for the missing role",
-            "at most three Agent/Task invocations total",
+            "Guard-denied attempts that start no child are not extra children",
+            "Retry a blocked lead attempt only after the required lifecycle handoff",
             "Never use Agent/Task for correction, result collection, or recovery",
             "Do not spawn a replacement lead",
             "invalid or missing, report the failure plainly",
@@ -3580,17 +3579,18 @@ class HookDeclarationTests(unittest.TestCase):
             "lifecycle and role assignment, not actual child model/effort",
         ):
             self.assertIn(required, prompt)
-        tool_grader = (PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders" / "two-agents.md").read_text(encoding="utf-8")
-        for required in ("type: tool_used", "tool: Agent", "min: 2", "max: 3"):
-            self.assertIn(required, tool_grader)
+        self.assertRegex(prompt, r"(?m)^max_turns: 12$")
+        timeout = int(re.search(r"(?m)^timeout_seconds: (\d+)$", prompt).group(1))
+        self.assertLessEqual(timeout, 300)
         mismatch = (PLUGIN_ROOT / "evals" / "mismatch-refusal" / "prompt.md").read_text(encoding="utf-8")
         self.assertIn("symphony:symphony", mismatch)
         self.assertIn("trusted runtime metadata", mismatch)
         graders = PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders"
         self.assertFalse((graders / "registered-routing.md").exists())
-        self.assertEqual({"two-agents", "assessor-assignment", "lead-assignment", "child-stats",
+        self.assertEqual({"assessor-assignment", "lead-assignment", "child-stats",
                           "completion-records", "run-completion", "deliverable"},
                          {path.stem for path in graders.glob("*.md")})
+        self.assertNotIn("max:", (graders / "lead-assignment.md").read_text(encoding="utf-8"))
         for path in graders.glob("*.md"):
             self.assertNotIn("type: llm", path.read_text(encoding="utf-8"))
 
@@ -3657,6 +3657,7 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
         for name, good, bad, count in (
             ("hosted-registration-smoke", [
                 smoke, {**smoke, "calls": smoke["calls"] + [smoke["calls"][1]]},
+                {**smoke, "calls": smoke["calls"] + [smoke["calls"][1]] * 2},
                 {**smoke, "last_message": report.replace("duplicate header", "duplicate column name").replace("field count", "row-width")},
                 {**smoke, "last_message": report.replace("field count", "field-count")},
             ], [
@@ -3664,12 +3665,13 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 *[{**smoke, "trace": json.dumps({**terminal, "subagent_stats": {**stats, field: value}})}
                   for field, value in (("spawned", 3), ("completed", 1), ("spawned_by_subagents", 1), ("failed", 1))],
                 {**smoke, "trace": json.dumps({**terminal, "subtype": "error_max_turns"})},
+                {**smoke, "trace": json.dumps({**terminal, "subtype": "error_timeout"})},
                 {**smoke, "trace": smoke["trace"] + "\n" + json.dumps({**terminal, "subagent_stats": {**stats, "spawned": 3}})},
                 {**smoke, "trace": json.dumps({**terminal, "parent_tool_use_id": "child-call"})},
                 {**smoke, "trace": smoke["trace"] + "\n" + json.dumps({"type": "assistant", "text": "still running"})},
                 {**smoke, "calls": smoke["calls"] + [smoke["calls"][0]]},
-                {**smoke, "calls": smoke["calls"] + [smoke["calls"][1]] * 2},
-            ], 7),
+                {**smoke, "calls": [smoke["calls"][0]]},
+            ], 6),
             ("mismatch-refusal", [
                 mismatch, {**mismatch, "last_message": " \n" + refusal + "\n "},
                 {**mismatch, "last_message": " \n" + refusal.replace("\n", "\n\n\t") + "\n "},
@@ -3695,7 +3697,7 @@ for (const [name, graders, good, bad] of JSON.parse(fs.readFileSync(0, 'utf8')))
     if (grader.type === 'regex') return new RegExp(grader.pattern, grader.flags).test(evidence[grader.target]);
     if (grader.type !== 'tool_used') throw new Error('Unsupported grader type');
     const calls = evidence.calls.filter(call => call.name === grader.tool && (!grader.input_match || new RegExp(grader.input_match).test(JSON.stringify(call.input))));
-    return calls.length >= Number(grader.min) && calls.length <= Number(grader.max);
+    return calls.length >= Number(grader.min ?? 1) && calls.length <= Number(grader.max ?? Infinity);
   });
   for (const evidence of good) if (!passes(evidence)) throw new Error(name + ': rejected complete evidence');
   for (const evidence of bad) if (passes(evidence)) throw new Error(name + ': accepted missing evidence: ' + JSON.stringify(evidence));
