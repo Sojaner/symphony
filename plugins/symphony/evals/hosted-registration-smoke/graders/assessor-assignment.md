@@ -1,7 +1,7 @@
 ---
 type: tool_used
 tool: Agent
-input_match: '"description"\s*:\s*"symphony_assessor \[[^/\]]+/[^\]]+\]:'
+input_match: '"description"\s*:\s*"symphony_assessor \[opus/high\]:'
 min: 1
 max: 1
 ---

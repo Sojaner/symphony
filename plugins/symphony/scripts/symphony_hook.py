@@ -70,6 +70,17 @@ ASSESSMENT_REASON_RE = re.compile(
     r"([^\r\n]*?)[ \t]*(?:`|\*\*)?[ \t]*\r?$",
     re.IGNORECASE | re.MULTILINE,
 )
+LEAD_ROUTE_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])SYMPHONY_LEAD_ROUTE:([a-f0-9]{16}):"
+    r"([A-Za-z0-9._-]+):(low|medium|high|xhigh|max|ultra):"
+    r"(none|occasional|consultant-heavy):(\d+)(?![A-Za-z0-9_-])",
+    re.IGNORECASE,
+)
+ROUTE_POLICY = {
+    "small": ({"none"}, {"medium", "high"}),
+    "medium": ({"occasional"}, {"medium"}),
+    "large": ({"consultant-heavy"}, {"low", "medium"}),
+}
 REGISTRATION_RE = re.compile(
     r"^[ \t]*(?:`|\*\*)?SYMPHONY_REGISTER:([a-f0-9]{16}):(assessor|lead):"
     r"([A-Za-z0-9_-]{1,128})[ \t]*(?:`|\*\*)?[ \t]*$",
@@ -88,6 +99,17 @@ MEMORY_UNAVAILABLE_RE = re.compile(
     r"(?<![A-Za-z0-9_-])SYMPHONY_MEMORY_UNAVAILABLE:([a-f0-9]+):codebase-memory-mcp(?![A-Za-z0-9_-])",
     re.IGNORECASE,
 )
+CONSULTATION_RE = re.compile(r"^SYMPHONY_CONSULTATION:([a-f0-9]{16})$", re.IGNORECASE | re.MULTILINE)
+DECISION_COUNT_RE = re.compile(r"^SYMPHONY_DECISION_COUNT:(\d+)$", re.IGNORECASE | re.MULTILINE)
+DECISION_RE = re.compile(
+    r"^SYMPHONY_DECISION:(\d+):(small|medium|large):(low|medium|high):([^\r\n]+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+ACTION_RE = re.compile(r"^SYMPHONY_ACTION:(\d+):([^\r\n]+)$", re.IGNORECASE | re.MULTILINE)
+CONSULTATION_BLOCKED_RE = re.compile(
+    r"^SYMPHONY_CONSULTATION_BLOCKED:([a-f0-9]{16}):([^\r\n]+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 HOOK_DECLARATION_PATH = PLUGIN_ROOT / "hooks" / (
     "codex.json" if os.environ.get("PLUGIN_DATA") else "hooks.json"
@@ -97,6 +119,35 @@ HOOK_DECLARATION_PATH = PLUGIN_ROOT / "hooks" / (
 def memory_paths(project_root, run_id):
     root = Path(project_root)
     return root / MEMORY_ROOT / "current.md", root / MEMORY_ROOT / "history" / f"{run_id}.md"
+
+
+def _consultation_result(message, run_id):
+    blocked = CONSULTATION_BLOCKED_RE.findall(message or "")
+    has_actionable = bool(CONSULTATION_RE.search(message or "") or DECISION_RE.search(message or "") or ACTION_RE.search(message or ""))
+    if len(blocked) == 1 and not has_actionable and blocked[0][0].lower() == run_id.lower() and blocked[0][1].strip():
+        return {"blocked": blocked[0][1].strip()[:500]}, None
+    if blocked:
+        return None, "A blocked consultation cannot also contain actionable decisions."
+    headers = CONSULTATION_RE.findall(message or "")
+    counts = DECISION_COUNT_RE.findall(message or "")
+    decisions = DECISION_RE.findall(message or "")
+    actions = ACTION_RE.findall(message or "")
+    if len(headers) != 1 or headers[0].lower() != run_id.lower() or len(counts) != 1:
+        return None, "Consultation result requires one matching header and decision count."
+    count = int(counts[0])
+    decision_map = {int(index): (size.lower(), complexity.lower(), text.strip()[:500])
+                    for index, size, complexity, text in decisions}
+    action_map = {int(index): text.strip()[:500] for index, text in actions}
+    expected = set(range(1, count + 1))
+    if count < 1 or len(decisions) != count or len(actions) != count or set(decision_map) != expected or set(action_map) != expected:
+        return None, "Consultation decisions and actions must form one complete indexed set."
+    if any(not decision_map[index][2] or not action_map[index] for index in expected):
+        return None, "Consultation decisions and actions must be nonempty."
+    return {"decisions": [
+        {"index": index, "size": decision_map[index][0], "complexity": decision_map[index][1],
+         "decision": decision_map[index][2], "action": action_map[index]}
+        for index in range(1, count + 1)
+    ]}, None
 
 
 def _record_memory_receipt(run, message, now):
@@ -191,6 +242,38 @@ def _valid_profile(value):
     return value is None or isinstance(value, str) and value in ("small", "medium", "large")
 
 
+def _valid_lead_route(value):
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("model"), str) and bool(value["model"])
+        and value.get("effort") in {"low", "medium", "high", "xhigh", "max", "ultra"}
+        and value.get("consulting") in {"none", "occasional", "consultant-heavy"}
+        and type(value.get("max_parallel_workers")) is int
+        and value["max_parallel_workers"] >= 0
+    )
+
+
+def _parse_lead_route(message, run_id, mode):
+    matches = LEAD_ROUTE_RE.findall(message or "")
+    if len(matches) != 1:
+        return None
+    receipt_run_id, model, effort, consulting, worker_limit = matches[0]
+    effort, consulting = effort.lower(), consulting.lower()
+    strategies, efforts = ROUTE_POLICY.get(mode, (set(), set()))
+    if (
+        receipt_run_id.lower() != (run_id or "").lower()
+        or consulting not in strategies
+        or effort not in efforts
+    ):
+        return None
+    return {
+        "model": model,
+        "effort": effort,
+        "consulting": consulting,
+        "max_parallel_workers": int(worker_limit),
+    }
+
+
 def _valid_assessment(assessment):
     return (
         isinstance(assessment, dict)
@@ -213,6 +296,8 @@ def _normalize_assessment_state(state):
     run.setdefault("assessment_due", True)
     run.setdefault("mode_history", [])
     run.setdefault("assessor_agent_id", None)
+    run.setdefault("lead_route", None)
+    run.setdefault("pending_child_spawns", [])
     run.setdefault("strong_assessment_required", not _has_accepted_assessment(run))
     run.setdefault("dry_run", False)
     run.setdefault("interrupted_at", None)
@@ -232,8 +317,13 @@ def _normalize_assessment_state(state):
             and type(run["ownership_transferred_at"]) is not int)
         or not isinstance(run["mode_history"], list)
         or (run["assessor_agent_id"] is not None and not isinstance(run["assessor_agent_id"], str))
+        or (run["lead_route"] is not None and not _valid_lead_route(run["lead_route"]))
+        or not isinstance(run["pending_child_spawns"], list)
     ):
         raise ValueError("invalid assessment run state")
+    if run.get("mode") in ROUTE_POLICY and run["mode_revision"] > 0 and not run["lead_route"]:
+        run["assessment_due"] = True
+        run["strong_assessment_required"] = True
 
 
 def _atomic_write(path, value):
@@ -368,6 +458,7 @@ def _new_run(payload, objective, now, project_root, *, dry_run=False):
         "mode_history": [],
         "lead_agent_id": None,
         "assessor_agent_id": None,
+        "lead_route": None,
         "agents": [],
         "agent_records": {},
         "objective": objective.strip()[:8000],
@@ -387,6 +478,7 @@ def _has_accepted_assessment(run):
     return (
         run.get("mode") in ("small", "medium", "large")
         and type(run.get("mode_revision")) is int and run["mode_revision"] > 0
+        and _valid_lead_route(run.get("lead_route"))
     )
 
 
@@ -568,6 +660,72 @@ def _label_slug(value):
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
 
+def _spawn_role(payload):
+    arguments = payload.get("tool_input")
+    if not isinstance(arguments, dict):
+        return None
+    if payload.get("tool_name") == "spawn_agent":
+        match = re.fullmatch(r"symphony_([a-z0-9_]+)__[a-z0-9_]+__[a-z0-9_]+", arguments.get("task_name") or "")
+    else:
+        match = re.match(r"^symphony_([a-z0-9_]+) \[[^\]]+\]:", arguments.get("description") or "")
+    return match.group(1) if match else None
+
+
+def _child_spawn_error(run, payload):
+    role = _spawn_role(payload)
+    if not role:
+        return "Symphony child spawns require a provider-visible role/model/effort label."
+    if role in {"assessor", "lead"}:
+        return "Only the thin root may spawn Symphony assessor or lead roles."
+    arguments = payload.get("tool_input")
+    model = arguments.get("model")
+    effort = arguments.get("reasoning_effort") or arguments.get("effort")
+    if not isinstance(model, str) or not model or not isinstance(effort, str) or not effort:
+        return "Symphony child spawns require explicit model and effort values."
+    if payload.get("tool_name") == "spawn_agent":
+        expected = f"symphony_{role}__{_label_slug(model)}__{_label_slug(effort)}"
+        if arguments.get("task_name") != expected:
+            return f"Use provider-visible Codex task_name `{expected}` for this spawn."
+    else:
+        labelled = re.match(r"^symphony_[a-z0-9_]+ \[([^/\]]+)/([^\]]+)\]:", arguments.get("description") or "")
+        if not labelled or labelled.group(2) != effort or not (
+            labelled.group(1) == model or model in {"opus", "sonnet", "haiku"}
+            and re.search(rf"(?:^|[-_]){re.escape(model)}(?:$|[-_])", labelled.group(1))
+        ):
+            return f"Start the provider-visible Claude description with `symphony_{role} [{model}/{effort}]:`."
+    if role != "consultant" and run["lead_route"]["consulting"] == "consultant-heavy":
+        active_workers = sum(
+            record["status"] == "active" and record.get("role", "").startswith("symphony_")
+            and record.get("role") != "symphony_consultant"
+            for record in _agent_records(run)
+            if record["id"] not in {run.get("assessor_agent_id"), run.get("lead_agent_id")}
+        )
+        pending_workers = sum(
+            item.get("role") != "consultant" for item in run.get("pending_child_spawns", [])
+            if isinstance(item, dict)
+        )
+        if active_workers + pending_workers >= run["lead_route"]["max_parallel_workers"]:
+            return "Symphony is reserving consultant capacity; wait for a worker before dispatching another."
+    return None
+
+
+def _lead_route_error(run, model, effort):
+    route = run.get("lead_route")
+    if not _valid_lead_route(route):
+        return "Symphony requires an accepted assessor-selected lead route before spawning the lead."
+    if model != route["model"] or effort != route["effort"]:
+        return (
+            "Symphony lead routing must match the accepted assessor selection: "
+            f"{route['model']}/{route['effort']} ({route['consulting']})."
+        )
+    if route["consulting"] == "consultant-heavy":
+        records = {record["id"]: record for record in _agent_records(run)}
+        assessor = records.get(run.get("assessor_agent_id"), {})
+        if (assessor.get("model"), assessor.get("effort")) == (model, effort):
+            return "A consultant-heavy lead must not reuse the strongest/high assessor route."
+    return None
+
+
 def _spawn_label_error(run, payload):
     arguments = payload.get("tool_input")
     if not isinstance(arguments, dict):
@@ -579,6 +737,15 @@ def _spawn_label_error(run, payload):
     role = "assessor" if owner_spawn and run["strong_assessment_required"] else "lead" if owner_spawn else None
     effort = arguments.get("reasoning_effort") or arguments.get("effort")
     tool_name = payload.get("tool_name")
+    if role == "lead" and not effort and tool_name == "Agent":
+        labelled = re.match(
+            r"^symphony_lead \[[^/\]]+/([^\]]+)\]:", arguments.get("description") or "",
+        )
+        effort = labelled.group(1) if labelled else None
+    if role == "lead":
+        route_error = _lead_route_error(run, model.strip(), effort.strip() if isinstance(effort, str) else effort)
+        if route_error:
+            return route_error
     if tool_name == "spawn_agent":
         if not isinstance(effort, str) or not effort.strip():
             return "Codex Symphony role spawns require an explicit reasoning_effort for their visible label."
@@ -672,7 +839,9 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
         f"host-returned id with `SYMPHONY_REGISTER:{run['id']}:<role>:<agent-id>`. "
         "Relay exactly "
         f"`SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>` and "
-        "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>` from the terminal assessor or same-mode "
+        "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>` and "
+        "`SYMPHONY_LEAD_ROUTE:<run-id>:<model>:<effort>:<consulting>:<max-parallel-workers>` "
+        "from the terminal assessor or same-mode "
         "lead. Both receipt size fields must be small, medium, or large; automatic is a source, "
         "not a project size, and must never appear in the receipt. "
         "Immediately call the host blocking wait/result operation after every spawn and continue until every "
@@ -727,7 +896,8 @@ def _reassessment_context(run):
         f"Continue Symphony run {run['id']}. Reassessment is due: the current execution lead cheaply "
         "reassesses from current evidence. For the same mode it returns exactly "
         f"`SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>` and "
-        "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>`; the current run's root must relay both "
+        "`SYMPHONY_ASSESSMENT_REASON:<single bounded line>` and the unchanged `SYMPHONY_LEAD_ROUTE` line; "
+        "the current run's root must relay all three "
         "lines because an execution-lead SubagentStop receipt is not authorized. A proposed mode change "
         "or unresolved high-risk ambiguity requires a new strong assessor; do not launch duplicate work."
     )
@@ -764,6 +934,11 @@ def _record_assessment_receipt(state, run, message, now, agent_id=None):
         and mode != run["mode"]
     ):
         return False
+    lead_route = _parse_lead_route(message, run.get("id"), mode)
+    if not lead_route:
+        return False
+    if not run.get("strong_assessment_required") and _has_accepted_assessment(run) and lead_route != run.get("lead_route"):
+        return False
     reason = reasons[0].strip()[:500]
     if not reason:
         return False
@@ -777,6 +952,7 @@ def _record_assessment_receipt(state, run, message, now, agent_id=None):
             "assessed_at": int(now),
         })
     run["mode"] = mode
+    run["lead_route"] = lead_route
     run["mode_revision"] += 1
     run["mode_history"] = (run["mode_history"] + [{
         "mode": run["mode"],
@@ -785,6 +961,7 @@ def _record_assessment_receipt(state, run, message, now, agent_id=None):
         "reason": reason,
         "revision": run["mode_revision"],
         "assessed_at": int(now),
+        "lead_route": dict(lead_route),
     }])[-MAX_MODE_HISTORY:]
     run["assessment_due"] = False
     run["strong_assessment_required"] = False
@@ -948,6 +1125,10 @@ def _agent_records(run):
             record["initial_lead_candidate"] = True
         if value.get("initial_lead_stop_reassessment") is True:
             record["initial_lead_stop_reassessment"] = True
+        if isinstance(value.get("consultation"), dict):
+            record["consultation"] = value["consultation"]
+        if isinstance(value.get("consultation_error"), str) and value["consultation_error"]:
+            record["consultation_error"] = value["consultation_error"]
         active_at_start = value.get("active_agent_ids_at_start")
         if isinstance(active_at_start, list):
             record["active_agent_ids_at_start"] = sorted({
@@ -1435,7 +1616,8 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 "automatic is a source, not a project size. "
                 f"Ask the same {role} for a corrected receipt and relay its actual corrected result: "
                 f"SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode> and "
-                "SYMPHONY_ASSESSMENT_REASON:<single bounded line>. "
+                "SYMPHONY_ASSESSMENT_REASON:<single bounded line>, and "
+                f"SYMPHONY_LEAD_ROUTE:{run['id']}:<model>:<effort>:<consulting>:<max-parallel-workers>. "
                 "Do not implement in the root, invent a correction, or repeat the rejected receipt."
             ))
         if background_tasks:
@@ -1462,6 +1644,17 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     ", ".join(agents) + "."
                 ),
             )
+        consultation_errors = [
+            f"{record['id']}: {record['consultation_error']}"
+            for record in _agent_records(run) if record.get("consultation_error")
+        ]
+        if consultation_errors:
+            if memory_changed or assessment_changed:
+                write_project_state(data_dir, state, now)
+            return HookResult(block=True, reason=(
+                "Symphony has invalid consultant results. Replace or correct them before completion: "
+                + "; ".join(consultation_errors)
+            ))
         if run.pop("pending_spawn", None) is not None:
             memory_changed = True
         if run.get("status") == "stopping":
@@ -1667,7 +1860,10 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
     # Only lifecycle observation events may update the root's run from a child.
     if _known_session_id(payload.get("agent_id")) and payload.get("hook_event_name") in {
         "SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "Interrupt",
-    }:
+    } and not (
+        payload.get("hook_event_name") == "PreToolUse"
+        and payload.get("tool_name") in {"Agent", "spawn_agent"}
+    ):
         return HookResult()
     current = int(time.time() if now is None else now)
     project_root = resolve_project_root(payload.get("cwd"))
@@ -1701,6 +1897,22 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
         result = HookResult()
         if event == "PreToolUse" and payload.get("tool_name") in {"Agent", "spawn_agent"}:
             run = state.get("active_run")
+            if (run and _known_session_id(payload.get("agent_id"))
+                    and payload.get("agent_id") == run.get("lead_agent_id")):
+                error = _child_spawn_error(run, payload)
+                if error:
+                    return HookResult(block=True, reason=error)
+                arguments = payload.get("tool_input") or {}
+                run.setdefault("pending_child_spawns", []).append({
+                    "parent_agent_id": payload.get("agent_id"),
+                    "role": _spawn_role(payload),
+                    "model": arguments.get("model"),
+                    "effort": arguments.get("reasoning_effort") or arguments.get("effort"),
+                })
+                write_project_state(data_dir, state, current)
+                return HookResult()
+            if _known_session_id(payload.get("agent_id")):
+                return HookResult()
             pending_lead = _pending_initial_lead_id(run)
             if run and _owns_run(run, payload.get("session_id")) and pending_lead:
                 result = HookResult(block=True, reason=(
@@ -1734,7 +1946,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                         "Symphony requires the assessment handoff before another spawn. "
                         "Wait for the assessor to become terminal, then end this root response in the final channel with "
                         f"`SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>` (observed ids: {', '.join(pending)}), "
-                        "and its exact SYMPHONY_ASSESSMENT and SYMPHONY_ASSESSMENT_REASON lines. "
+                    "and its exact SYMPHONY_ASSESSMENT, SYMPHONY_ASSESSMENT_REASON, and SYMPHONY_LEAD_ROUTE lines. "
                         "Do not call another spawn or include run completion. The Stop hook will persist "
                         "the assessment and return control for execution. "
                         + " ".join(f"SYMPHONY_REGISTER:{run['id']}:assessor:{agent_id}" for agent_id in pending)
@@ -1815,6 +2027,9 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     run.pop("pending_spawn", None)
                     if payload.get("session_id") == run.get("owner_session_id") else None
                 )
+                pending_child = None
+                if pending_spawn is None and run.get("pending_child_spawns"):
+                    pending_child = run["pending_child_spawns"].pop(0)
                 run["agents"] = sorted(set(run.get("agents", [])) | {agent_id})
                 if record is None:
                     record = _agent_record(payload, current)
@@ -1845,6 +2060,12 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     for field in ("model", "effort"):
                         value = pending_spawn.get(field)
                         if isinstance(value, str) and value and record.get(field) in (None, "", NOT_EXPOSED):
+                            record[field] = value
+                if isinstance(pending_child, dict):
+                    record["role"] = f"symphony_{pending_child['role']}"
+                    for field in ("model", "effort"):
+                        value = pending_child.get(field)
+                        if isinstance(value, str) and value:
                             record[field] = value
                 run.setdefault("agent_records", {})[agent_id] = record
                 role = pending_spawn.get("role") if isinstance(pending_spawn, dict) else None
@@ -1886,6 +2107,16 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 record["status"] = "terminal"
                 if was_active:
                     record["stopped_at"] = current
+                if record.get("role") == "symphony_consultant":
+                    consultation, error = _consultation_result(
+                        payload.get("last_assistant_message"), run["id"],
+                    )
+                    if error:
+                        record["consultation_error"] = error
+                        record.pop("consultation", None)
+                    else:
+                        record["consultation"] = consultation
+                        record.pop("consultation_error", None)
                 run["agent_records"] = records if run is active else list(records.values())
                 if run is active:
                     run["agents"] = sorted(set(run.get("agents", [])) - {agent_id})
@@ -1948,6 +2179,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
             run = state.get("active_run")
             if run and _owns_run(run, payload.get("session_id")):
                 run.pop("pending_spawn", None)
+                run.pop("pending_child_spawns", None)
                 run["last_event"] = event
                 run["interrupted_at"] = current
                 run["interruption_recovery_eligible"] = True

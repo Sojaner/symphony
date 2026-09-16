@@ -4,7 +4,7 @@
 
 # Symphony
 
-Symphony is a Codex and Claude Code plugin that routes project work through a strong execution lead. The lead chooses the smallest suitable execution mode, uses the models and workflow skills actually available in the current host, and keeps long-running delegated work recoverable.
+Symphony is a Codex and Claude Code plugin that routes project work through a task-sized execution lead. A strongest/high read-only assessor chooses the smallest suitable execution mode and exact lead route, while lifecycle hooks keep long-running delegated work recoverable.
 
 The root agent can be cheap or weak. Deterministic lifecycle hooks make it a thin session keeper, while a strongest-available high-effort child owns decisions, implementation or delegation, integration, and verification.
 
@@ -12,9 +12,9 @@ The root agent can be cheap or weak. Deterministic lifecycle hooks make it a thi
 
 Each run selects exactly one mode:
 
-- **Small:** the strong lead completes a straightforward task directly.
-- **Medium:** the lead handles fast and integration-sensitive work while delegating independent or specialist units.
-- **Large:** the lead plans, dispatches, and integrates dependency-aware parallel waves.
+- **Small:** a capable lead completes a straightforward task directly.
+- **Medium:** a balanced lead handles fast and integration-sensitive work while delegating independent or specialist units.
+- **Large:** an inexpensive administrative lead plans, dispatches, and integrates worker waves, reserving strong models for bounded consultations.
 
 Mode is selected per run. Enabling Symphony never permanently classifies a project as small, medium, or large.
 
@@ -22,7 +22,7 @@ Mode is selected per run. Enabling Symphony never permanently classifies a proje
 
 `/symphony:assess [small|medium|large|auto]` requests reassessment or sets a persistent project profile. Use `/symphony:assess large` for this repository when its long-running shape calls for that profile; `auto` reverses the override. A project profile is not a per-run execution mode: a long-running large-profile project may still have a small task.
 
-Each new or explicitly reassessed run first uses a separate read-only assessor: a bounded, read-only assessor that returns exactly one concise assessment result and does not implement. A mode-appropriate execution lead follows. Automatic reassessment boundaries are an owner prompt, final worker wave, interrupt, or resume. Every wait and final response replays the cumulative delegation history so earlier routing remains visible.
+Each new or explicitly reassessed run first uses a separate bounded, read-only assessor at strongest/high. It returns exactly one concise assessment result and does not implement. Its machine-readable receipt selects the exact lead model, effort, consulting strategy, and worker limit. Small leads are capable direct executors; medium leads are capable mixed executors with consultation fallback; large leads are inexpensive administrators with reserved consultant capacity. Automatic reassessment boundaries are an owner prompt, planning boundary, final worker wave, interrupt, or resume, so the route adapts as project shape changes. Every wait and final response replays the cumulative delegation history.
 
 ## Persistent project enablement
 
@@ -89,19 +89,19 @@ Start a new session after installation so Claude Code loads the commands, skill,
 
 Help, status, agents (including `--all`), empty enable, assessment controls, and invalid controls end with a single-use control receipt. They do not resume or complete project work, wait for children, or transfer ownership. Assessment controls change only their documented policy. Only an explicit `start --dry-run` run can bypass an accepted current assessment; normal completion requires that assessment and terminal registered children.
 
-When a project is enabled, the first non-control project prompt in a later session automatically arms a guarded run and starts the strong-lead bootstrap.
+When a project is enabled, the first non-control project prompt in a later session automatically arms a guarded run and starts the assessor-led bootstrap.
 
 ## Document memory
 
 Small runs skip optional memory. Medium and large runs may use at most one disposable probe only with a verified host timeout or cancellation that makes the probe terminal within its bound. Otherwise they skip it. Missing, failing, or hanging memory uses fallback to repository documents and source inspection; optional MCP cannot hold up bootstrap or completion.
 
-Extended memory is available only when the strong lead verifies `codebase-memory-mcp`, a healthy project index, and usable memory-path coverage. The lead reads `.symphony/memory/current.md` directly for the active checkpoint and queries `.symphony/memory/history/<run-id>.md` through MCP graph/search tools; stale or uncovered history uses a targeted direct read while indexing catches up. Otherwise Symphony keeps using its compact lifecycle record and does not create or claim indexed memory.
+Extended memory is available only when the execution lead verifies `codebase-memory-mcp`, a healthy project index, and usable memory-path coverage. The lead reads `.symphony/memory/current.md` directly for the active checkpoint and queries `.symphony/memory/history/<run-id>.md` through MCP graph/search tools; stale or uncovered history uses a targeted direct read while indexing catches up. Otherwise Symphony keeps using its compact lifecycle record and does not create or claim indexed memory.
 
 `.symphony/memory/` is project-local and is not automatically ignored, committed, or deleted. `/symphony:disable` and `/symphony:stop --force` preserve it; deleting it manually disables historical recall until it is recreated. Keep no secrets, raw environment values, full transcripts, or copied source bodies in memory.
 
 Manually ignoring `.symphony/memory/` disables indexed history until the ignore policy changes.
 
-Hooks cannot call MCP. The strong lead activates memory only with its verified capability receipt, and hooks enforce that activation with the documented file and checkpoint-receipt checks.
+Hooks cannot call MCP. The execution lead activates memory only with its verified capability receipt, and hooks enforce that activation with the documented file and checkpoint-receipt checks.
 
 If an activated run loses MCP/index health or either memory file, the lead reports the loss with its run-bound `SYMPHONY_MEMORY_UNAVAILABLE:<run-id>:codebase-memory-mcp` receipt. Hooks then disable extended memory, retain the last checkpoint time, and allow normal completion from compact lifecycle recovery. While memory remains active, a missing or stale final checkpoint still blocks completion.
 

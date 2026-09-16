@@ -11,9 +11,9 @@ This file is a compact bootstrap cache for the conductor. The host's live subage
 | Stage | Route |
 |---|---|
 | Assessment | strongest available general reasoning model, `high`, one read-only `symphony_assessor` with no inherited turns; it returns exactly one concise result and never implements. |
-| Small execution | capable direct executor, `medium`; no workers merely to justify Symphony. |
-| Medium execution | balanced agentic lead, `medium`; at most two workers concurrently. |
-| Large execution | capable coordinator, `medium` or `high` by risk; dependency-aware delegated waves. |
+| Small execution | capable direct executor, `medium` or `high`; delegate only long mechanical work. |
+| Medium execution | capable balanced lead, `medium`; at most two workers and occasional consultation with lead fallback. |
+| Large execution | cheapest reliable administrative lead, `low` or `medium`; workers implement and reserved-capacity consultants decide bounded hard questions. |
 | Narrow hard decision or high-risk final review | strongest general reasoning model, `high`. |
 
 Assessment is not execution: wait for its authorized receipt, then start the separate mode-appropriate lead. On resume or compaction, start a fresh lead from bounded lifecycle/document memory after reconciling workers.
@@ -34,6 +34,20 @@ A current Claude Code catalog may describe models such as `claude-fable-5` or `c
 Use only exact ids and efforts exposed by the live tool on the current host.
 
 Effort is a budget, not a quality rank. Start at the cheapest plausible level. Escalate only the narrow unit containing the unresolved uncertainty.
+
+## Consultant decision matrix
+
+Apply each indexed consultant decision independently.
+
+| Size | Complexity | Default handling |
+|---|---|---|
+| Small | Low | Cheapest suitable mechanical worker, or the capable occasional-consulting lead directly |
+| Small | Medium or high | Capable focused worker; high effort only for unresolved reasoning |
+| Medium | Low or medium | Balanced worker at medium |
+| Medium | High | Capable worker at high with bounded verification |
+| Large | Any | Decompose or trigger reassessment before dispatch |
+
+The live host catalog supplies exact ids. The assessor records the exact lead route; the hook enforces it rather than inferring provider tiers.
 
 ## Official vendor sources
 

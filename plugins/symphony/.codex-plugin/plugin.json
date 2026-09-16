@@ -1,7 +1,7 @@
 {
   "name": "symphony",
-  "version": "0.20.3",
-  "description": "Persistent, recoverable project routing through a strong execution lead and task-aware workflow capabilities.",
+  "version": "0.21.0",
+  "description": "Persistent, recoverable project routing through assessed, task-sized execution leads and workflow capabilities.",
   "author": {
     "name": "Sojaner"
   },
@@ -9,8 +9,8 @@
   "hooks": "./hooks/codex.json",
   "interface": {
     "displayName": "Symphony",
-    "shortDescription": "Persistent project routing through a strong execution lead.",
-    "longDescription": "Symphony makes the root a thin session keeper and gives project decisions, execution, delegation, integration, and verification to a strong lead. Lifecycle hooks protect normal stopping and recover interrupted runs. Each task selects direct, mixed, or delegation-heavy execution and uses the workflow and evidence capabilities actually available.",
+    "shortDescription": "Persistent routing through task-sized execution leads.",
+    "longDescription": "Symphony makes the root a thin session keeper, uses a strong read-only assessor to select an exact route, and assigns execution, delegation, integration, and verification to a task-sized lead. Lifecycle hooks protect normal stopping and recover interrupted runs. Each task selects direct, mixed, or delegation-heavy execution and uses the workflow and evidence capabilities actually available.",
     "developerName": "Sojaner",
     "category": "Productivity",
     "capabilities": ["Interactive"],

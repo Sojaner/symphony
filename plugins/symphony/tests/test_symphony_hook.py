@@ -761,6 +761,10 @@ class SymphonyHookTests(unittest.TestCase):
         self.data.mkdir()
 
     def event(self, name, **values):
+        preserve_message = values.pop("preserve_message", False)
+        message = values.get("last_assistant_message")
+        if isinstance(message, str) and not preserve_message and "SYMPHONY_LEAD_ROUTE:" not in message:
+            values["last_assistant_message"] = self.routed_receipt(message)
         payload = {
             "hook_event_name": name,
             "session_id": values.pop("session_id", "session-1"),
@@ -768,6 +772,23 @@ class SymphonyHookTests(unittest.TestCase):
         }
         payload.update(values)
         return payload
+
+    def routed_receipt(self, message, model=None):
+        if "SYMPHONY_LEAD_ROUTE:" in message:
+            return message
+        assessment = re.search(
+            r"SYMPHONY_ASSESSMENT:([a-f0-9]{16}):(small|medium|large):(small|medium|large)",
+            message, re.IGNORECASE,
+        )
+        if not assessment:
+            return message
+        run_id, _, mode = assessment.groups()
+        route = {
+            "small": f"{model or 'gpt-5.6-sol'}:medium:none:1",
+            "medium": f"{model or 'gpt-5.6-terra'}:medium:occasional:2",
+            "large": f"{model or 'gpt-5.6-luna'}:low:consultant-heavy:1",
+        }[mode.lower()]
+        return message + f"\nSYMPHONY_LEAD_ROUTE:{run_id}:{route}"
 
     def state(self):
         return self.hook.read_project_state(self.data, str(self.project))
@@ -792,6 +813,11 @@ class SymphonyHookTests(unittest.TestCase):
             "mode_revision": max(1, run["mode_revision"]),
             "assessment_due": False,
             "strong_assessment_required": False,
+            "lead_route": {
+                "small": {"model": "gpt-5.6-sol", "effort": "medium", "consulting": "none", "max_parallel_workers": 1},
+                "medium": {"model": "gpt-5.6-terra", "effort": "medium", "consulting": "occasional", "max_parallel_workers": 2},
+                "large": {"model": "gpt-5.6-luna", "effort": "low", "consulting": "consultant-heavy", "max_parallel_workers": 1},
+            }[mode],
         })
         run["mode_history"] = run["mode_history"] or [{"mode": mode}]
         self.hook.write_project_state(self.data, state)
@@ -803,8 +829,8 @@ class SymphonyHookTests(unittest.TestCase):
             "model": "gpt-6-astra", "reasoning_effort": "high",
         })
         lead_spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={
-            "task_name": "symphony_lead__gpt_6_astra__high",
-            "model": "gpt-6-astra", "reasoning_effort": "high",
+            "task_name": "symphony_lead__gpt_5_6_sol__medium",
+            "model": "gpt-5.6-sol", "reasoning_effort": "medium",
         })
         self.assertFalse(self.hook.handle_event(assessor_spawn, self.data).block)
         self.hook.handle_event(self.event("SubagentStart", agent_id="assessor"), self.data)
@@ -841,7 +867,8 @@ class SymphonyHookTests(unittest.TestCase):
                 run_id = self.hook.read_project_state(data, str(self.project))["active_run"]["id"]
                 registration = f"SYMPHONY_REGISTER:{run_id}:assessor:assessor"
                 receipt = (f"SYMPHONY_ASSESSMENT:{run_id}:small:small\n"
-                           "SYMPHONY_ASSESSMENT_REASON:One read-only contract")
+                           "SYMPHONY_ASSESSMENT_REASON:One read-only contract\n"
+                           f"SYMPHONY_LEAD_ROUTE:{run_id}:sonnet:medium:none:1")
                 self.hook.handle_event(self.event("SubagentStart", agent_id="assessor"), data)
                 if early_registration:
                     registered = self.hook.handle_event(self.event(
@@ -919,8 +946,8 @@ class SymphonyHookTests(unittest.TestCase):
                     f"SYMPHONY_ASSESSMENT:{run_id}:small:small\nSYMPHONY_ASSESSMENT_REASON:Fresh assessment"
                 )), self.data, stop_wait_seconds=0)
                 lead_spawn = self.event("PreToolUse", tool_name="spawn_agent", tool_input={
-                    "task_name": "symphony_lead__gpt_6_astra__high",
-                    "model": "gpt-6-astra", "reasoning_effort": "high",
+                    "task_name": "symphony_lead__gpt_5_6_sol__medium",
+                    "model": "gpt-5.6-sol", "reasoning_effort": "medium",
                 })
                 self.assertFalse(self.hook.handle_event(lead_spawn, self.data).block)
 
@@ -1060,7 +1087,8 @@ class SymphonyHookTests(unittest.TestCase):
                 run = self.state()["active_run"]
                 receipt = (
                     f"{wrapper}SYMPHONY_ASSESSMENT:{run['id']}:small:small{wrapper}\n"
-                    f"{wrapper}SYMPHONY_ASSESSMENT_REASON:{wrapper} Bounded task"
+                    f"{wrapper}SYMPHONY_ASSESSMENT_REASON:{wrapper} Bounded task\n"
+                    f"SYMPHONY_LEAD_ROUTE:{run['id']}:sonnet:medium:none:1"
                 )
                 self.hook.handle_event(
                     self.event("SubagentStart", agent_id="assessor", agent_type="general-purpose"),
@@ -2614,6 +2642,171 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertFalse(completed.block)
         self.assertIsNone(self.state()["active_run"])
 
+    def test_assessment_requires_and_persists_exact_lead_route(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        self.start_role("assessor", "assessor")
+        run = self.state()["active_run"]
+        without_route = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:large:large\n"
+            "SYMPHONY_ASSESSMENT_REASON:Several dependent worker waves"
+        )
+        self.hook.handle_event(
+            self.event(
+                "SubagentStop", agent_id="assessor", last_assistant_message=without_route,
+                preserve_message=True,
+            ),
+            self.data,
+        )
+        self.assertTrue(self.state()["active_run"]["strong_assessment_required"])
+
+        with_route = (
+            without_route + "\n" +
+            f"SYMPHONY_LEAD_ROUTE:{run['id']}:gpt-5.6-luna:low:consultant-heavy:1"
+        )
+        accepted = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=with_route), self.data,
+            stop_wait_seconds=0,
+        )
+        current = self.state()["active_run"]
+        self.assertIn("accepted assessment", accepted.reason)
+        self.assertEqual({
+            "model": "gpt-5.6-luna", "effort": "low",
+            "consulting": "consultant-heavy", "max_parallel_workers": 1,
+        }, current["lead_route"])
+        self.assertEqual(current["lead_route"], current["mode_history"][-1]["lead_route"])
+        state = self.state()
+        state["active_run"]["assessment_due"] = True
+        state["active_run"]["strong_assessment_required"] = False
+        changed_route = with_route.replace("gpt-5.6-luna", "gpt-5.6-terra")
+        self.assertFalse(self.hook._record_assessment_receipt(
+            state, state["active_run"], changed_route, 1_001,
+        ))
+
+    def test_owner_lead_spawn_must_match_accepted_route(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        self.start_role("assessor", "assessor")
+        run = self.state()["active_run"]
+        receipt = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:large:large\n"
+            "SYMPHONY_ASSESSMENT_REASON:Several dependent worker waves\n"
+            f"SYMPHONY_LEAD_ROUTE:{run['id']}:gpt-5.6-luna:low:consultant-heavy:1"
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor", last_assistant_message=receipt),
+            self.data,
+        )
+        wrong = self.hook.handle_event(self.event(
+            "PreToolUse", tool_name="spawn_agent", tool_input={
+                "task_name": "symphony_lead__gpt_6_astra__high",
+                "model": "gpt-6-astra", "reasoning_effort": "high",
+            },
+        ), self.data)
+        self.assertTrue(wrong.block)
+        self.assertIn("gpt-5.6-luna/low", wrong.reason)
+
+        matching = self.hook.handle_event(self.event(
+            "PreToolUse", tool_name="spawn_agent", tool_input={
+                "task_name": "symphony_lead__gpt_5_6_luna__low",
+                "model": "gpt-5.6-luna", "reasoning_effort": "low",
+            },
+        ), self.data)
+        self.assertFalse(matching.block)
+
+    def test_consultant_heavy_lead_reserves_worker_capacity(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        self.set_current_assessment("large")
+        self.start_role("lead", "lead")
+        worker = self.event(
+            "PreToolUse", agent_id="lead", tool_name="spawn_agent", tool_input={
+                "task_name": "symphony_worker__gpt_5_6_luna__low",
+                "model": "gpt-5.6-luna", "reasoning_effort": "low",
+            },
+        )
+        self.assertFalse(self.hook.handle_event(worker, self.data).block)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="worker"), self.data)
+        self.assertEqual("symphony_worker", self.state()["active_run"]["agent_records"]["worker"]["role"])
+        self.assertTrue(self.hook.handle_event(worker, self.data).block)
+        consultant = self.event(
+            "PreToolUse", agent_id="lead", tool_name="spawn_agent", tool_input={
+                "task_name": "symphony_consultant__gpt_6_astra__high",
+                "model": "gpt-6-astra", "reasoning_effort": "high",
+            },
+        )
+        self.assertFalse(self.hook.handle_event(consultant, self.data).block)
+        mismatched = self.event(
+            "PreToolUse", agent_id="lead", tool_name="spawn_agent", tool_input={
+                "task_name": "symphony_consultant__gpt_5_6_luna__low",
+                "model": "gpt-6-astra", "reasoning_effort": "high",
+            },
+        )
+        self.assertTrue(self.hook.handle_event(mismatched, self.data).block)
+
+    def test_consultation_result_requires_size_and_complexity_per_decision(self):
+        run_id = "0123456789abcdef"
+        valid = (
+            f"SYMPHONY_CONSULTATION:{run_id}\n"
+            "SYMPHONY_DECISION_COUNT:2\n"
+            "SYMPHONY_DECISION:1:small:low:Keep the parser boundary\n"
+            "SYMPHONY_ACTION:1:Patch the shared parser\n"
+            "SYMPHONY_DECISION:2:medium:high:Require exact receipts\n"
+            "SYMPHONY_ACTION:2:Add state validation"
+        )
+        result, error = self.hook._consultation_result(valid, run_id)
+        self.assertIsNone(error)
+        self.assertEqual(("small", "low"), (
+            result["decisions"][0]["size"], result["decisions"][0]["complexity"],
+        ))
+        invalid = valid.replace("SYMPHONY_DECISION:2:medium:high:", "SYMPHONY_DECISION:2:")
+        self.assertIsNone(self.hook._consultation_result(invalid, run_id)[0])
+        mixed = valid + f"\nSYMPHONY_CONSULTATION_BLOCKED:{run_id}:Unavailable"
+        self.assertIsNone(self.hook._consultation_result(mixed, run_id)[0])
+
+    def test_consultant_terminal_result_is_persisted_or_rejected(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        self.set_current_assessment("large")
+        self.start_role("lead", "lead")
+        spawn = self.event(
+            "PreToolUse", agent_id="lead", tool_name="spawn_agent", tool_input={
+                "task_name": "symphony_consultant__gpt_6_astra__high",
+                "model": "gpt-6-astra", "reasoning_effort": "high",
+            },
+        )
+        self.hook.handle_event(spawn, self.data)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="consultant"), self.data)
+        run_id = self.state()["active_run"]["id"]
+        valid = (
+            f"SYMPHONY_CONSULTATION:{run_id}\nSYMPHONY_DECISION_COUNT:1\n"
+            "SYMPHONY_DECISION:1:small:high:Use exact matching\n"
+            "SYMPHONY_ACTION:1:Apply the accepted route"
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="consultant", last_assistant_message=valid),
+            self.data,
+        )
+        record = self.state()["active_run"]["agent_records"]["consultant"]
+        self.assertEqual("small", record["consultation"]["decisions"][0]["size"])
+        self.assertNotIn("consultation_error", record)
+
+        self.hook.handle_event(spawn, self.data)
+        self.hook.handle_event(self.event("SubagentStart", agent_id="invalid-consultant"), self.data)
+        self.hook.handle_event(self.event(
+            "SubagentStop", agent_id="invalid-consultant",
+            last_assistant_message=(
+                f"SYMPHONY_CONSULTATION:{run_id}\nSYMPHONY_DECISION_COUNT:1\n"
+                "SYMPHONY_DECISION:1:Choose a route\nSYMPHONY_ACTION:1:Apply it"
+            ),
+        ), self.data)
+        invalid = self.state()["active_run"]["agent_records"]["invalid-consultant"]
+        self.assertIn("complete indexed set", invalid["consultation_error"])
+
     def test_codex_role_spawn_is_serialized_until_lifecycle_start(self):
         self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:start explain the commands"),
@@ -3024,6 +3217,10 @@ class SymphonyHookTests(unittest.TestCase):
         state["active_run"]["mode_revision"] = 1
         state["active_run"]["assessment_due"] = False
         state["active_run"]["strong_assessment_required"] = False
+        state["active_run"]["lead_route"] = {
+            "model": "gpt-5.6-terra", "effort": "medium",
+            "consulting": "occasional", "max_parallel_workers": 2,
+        }
         self.hook.write_project_state(self.data, state)
 
         for source in ("resume", "compact"):
@@ -3053,6 +3250,10 @@ class SymphonyHookTests(unittest.TestCase):
         state["active_run"].update({
             "mode": "medium", "mode_revision": 1, "assessment_due": False,
             "strong_assessment_required": False,
+            "lead_route": {
+                "model": "gpt-5.6-terra", "effort": "medium",
+                "consulting": "occasional", "max_parallel_workers": 2,
+            },
         })
         self.hook.write_project_state(self.data, state)
         accepted = self.hook.handle_event(self.event("SessionStart", source="resume"), self.data)
@@ -3796,6 +3997,10 @@ class SymphonyHookTests(unittest.TestCase):
             "mode": "medium", "profile": "large", "source": "automatic",
             "reason": "Long-running repository with two independent work units",
             "revision": 1, "assessed_at": 1_002,
+            "lead_route": {
+                "model": "gpt-5.6-terra", "effort": "medium",
+                "consulting": "occasional", "max_parallel_workers": 2,
+            },
         }], run["mode_history"])
 
         before = json.dumps(state, sort_keys=True)
@@ -3815,7 +4020,9 @@ class SymphonyHookTests(unittest.TestCase):
         )
         state = self.state()
         run = state["active_run"]
-        self.assertTrue(self.hook._record_assessment_receipt(state, run, receipt, 1_005))
+        self.assertTrue(self.hook._record_assessment_receipt(
+            state, run, self.routed_receipt(receipt), 1_005,
+        ))
         self.assertEqual(("small", "manual", 2), (
             state["assessment"]["profile"], state["assessment"]["source"], state["assessment"]["revision"],
         ))
@@ -3831,7 +4038,9 @@ class SymphonyHookTests(unittest.TestCase):
         changed = receipt.replace(":large:medium", ":medium:large").replace(
             "Long-running repository with two independent work units", "x" * 600,
         ) + "\nnot retained"
-        self.assertTrue(self.hook._record_assessment_receipt(state, run, changed, 1_007))
+        self.assertTrue(self.hook._record_assessment_receipt(
+            state, run, self.routed_receipt(changed), 1_007,
+        ))
         self.assertEqual(("medium", "automatic", 4), (
             state["assessment"]["profile"], state["assessment"]["source"], state["assessment"]["revision"],
         ))
@@ -3851,7 +4060,7 @@ class SymphonyHookTests(unittest.TestCase):
         def clear_due(now):
             state = self.state()
             self.assertTrue(self.hook._record_assessment_receipt(
-                state, state["active_run"], receipt, now, "assessor",
+                state, state["active_run"], self.routed_receipt(receipt), now, "assessor",
             ))
             self.hook.write_project_state(self.data, state, now=now)
 
@@ -3864,8 +4073,12 @@ class SymphonyHookTests(unittest.TestCase):
         self.hook.handle_event(self.event("SessionStart", source="compact"), self.data, now=1_005)
         self.assertTrue(self.state()["active_run"]["assessment_due"])
         clear_due(1_006)
+        state = self.state()
+        state["active_run"]["pending_child_spawns"] = [{"role": "worker"}]
+        self.hook.write_project_state(self.data, state, now=1_006)
         self.hook.handle_event(self.event("Interrupt"), self.data, now=1_007)
         self.assertTrue(self.state()["active_run"]["assessment_due"])
+        self.assertEqual([], self.state()["active_run"]["pending_child_spawns"])
 
         self.start_role("lead", "lead", now=1_008)
         self.hook.handle_event(
@@ -3964,14 +4177,16 @@ class SymphonyHookTests(unittest.TestCase):
         state = self.state()
         run = state["active_run"]
         receipt = f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\nSYMPHONY_ASSESSMENT_REASON:Routine task"
-        self.assertTrue(self.hook._record_assessment_receipt(state, run, receipt, 1_001, "assessor"))
+        self.assertTrue(self.hook._record_assessment_receipt(
+            state, run, self.routed_receipt(receipt), 1_001, "assessor",
+        ))
         self.hook.write_project_state(self.data, state, now=1_001)
 
         self.hook.handle_event(self.event("SubagentStop", agent_id="worker"), self.data, now=1_002)
         self.assertTrue(self.state()["active_run"]["assessment_due"])
         state = self.state()
         self.assertTrue(self.hook._record_assessment_receipt(
-            state, state["active_run"], receipt, 1_003, "assessor",
+            state, state["active_run"], self.routed_receipt(receipt), 1_003, "assessor",
         ))
         self.hook.write_project_state(self.data, state, now=1_003)
 
@@ -4820,7 +5035,7 @@ for (const [name, graders, good, bad] of JSON.parse(fs.readFileSync(0, 'utf8')))
             "SYMPHONY_ASSESSMENT_REASON:<single bounded line>",
             "current run's root must relay",
             "current execution lead cheaply reassesses",
-            "proposed mode change or unresolved high-risk ambiguity requires a new strong assessor",
+            "proposed mode, route or consulting-strategy change",
             "ordinary reassessment due",
             "strong assessment required",
             "Codex `task_name` is `symphony_<role>__<model-slug>__<effort-slug>`",
@@ -4837,6 +5052,12 @@ for (const [name, graders, good, bad] of JSON.parse(fs.readFileSync(0, 'utf8')))
             "Symphony is the orchestration authority for an active run",
             "Supporting workflow skills are bounded techniques",
             "accepted Symphony mode selects direct execution or delegation",
+            "SYMPHONY_LEAD_ROUTE:<run-id>:<model>:<effort>:<consulting>:<max-parallel-workers>",
+            "SYMPHONY_DECISION:<index>:<small|medium|large>:<low|medium|high>:<precise decision>",
+            "SYMPHONY_ACTION:<index>:<mechanical action or mapping>",
+            "capacity, not an idle long-lived agent",
+            "decide the bounded question itself",
+            "route or consulting-strategy change",
         )
         for text in required:
             self.assertIn(text, skill)
@@ -4908,7 +5129,7 @@ Completed: symphony_lead — planned
         for required in (
             "The root does not inspect the project, inventory capabilities, choose document memory, or run verification.",
             "The assessor owns initial discovery, capability routing, memory choice, and the verification strategy.",
-            "The execution lead owns implementation and authoritative verification.",
+            "The execution lead owns mode-appropriate execution and authoritative verification.",
         ):
             self.assertIn(required, skill)
         self.assertIn(
@@ -4955,7 +5176,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
                 "project profile",
                 "per-run execution mode",
                 "long-running large-profile project may still have a small task",
-                "owner prompt, final worker wave, interrupt, or resume",
+                "owner prompt, planning boundary, final worker wave, interrupt, or resume",
                 "separate read-only assessor",
                 "bounded, read-only assessor",
                 "returns exactly one concise assessment result",
@@ -4983,7 +5204,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.20.3"}, versions)
+        self.assertEqual({"0.21.0"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},
@@ -5060,6 +5281,9 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
                     for command in commands
                 )
             )
+
+        codex = json.loads((PLUGIN_ROOT / "hooks" / "codex.json").read_text(encoding="utf-8"))
+        self.assertEqual(3, codex["hooks"]["Interrupt"][0]["hooks"][0]["timeout"])
 
         manifest = json.loads(
             (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")

@@ -53,16 +53,17 @@ The root may use any model or effort. The root does not inspect the project, inv
 1. Emit `Delegating: assessor [<model>/<effort>] — pending — <bounded objective>` before spawning exactly one `symphony_assessor` with no inherited turns, using the injected strongest-available general reasoning model profile at `high`. Give the Codex spawn the task name `symphony_assessor__<model-slug>__<effort-slug>`. For Claude, set the Agent `model` field explicitly rather than inheriting it and start the description with `symphony_assessor [<model>/<effort>]:`. If `high` is unavailable, use that model's highest available effort. If no stronger child can be spawned, fail closed and explain which capability is missing; do not pretend a weak root is protected.
 2. Give the assessor the injected objective, acceptance criteria, run id, project profile, lifecycle status, exact assessment receipt format, and the absolute paths to `references/model-routing.md` and `references/capability-routing.md`. The assessor owns initial discovery, capability routing, memory choice, and the verification strategy. It reads the current worktree, repository instructions, and its effective skill/tool catalog itself.
 
-The assessor is read-only: it must not implement, edit, delegate, or become the execution lead. It returns exactly one concise assessment result: project profile, run mode, bounded reason, execution-lead model/effort, assignments, and verification strategy, followed by exactly these two lines:
+The assessor is read-only: it must not implement, edit, delegate, or become the execution lead. It returns exactly one concise assessment result: project profile, run mode, bounded reason, execution-lead model/effort, assignments, and verification strategy, followed by exactly these three lines:
 
 ```text
 SYMPHONY_ASSESSMENT:<run-id>:<project-profile>:<run-mode>
 SYMPHONY_ASSESSMENT_REASON:<single bounded line>
+SYMPHONY_LEAD_ROUTE:<run-id>:<model>:<effort>:<consulting>:<max-parallel-workers>
 ```
 
-Bind `<run-id>` to the current run. On Codex, the hook binds the root's `spawn_agent` request to the next child UUID and registers the assessor before its turn; its terminal receipt is accepted directly. After the blocking wait returns, use the child's returned `agent_id`, emit `Completed: <agent id/role> — <status>`, announce `Mode: <mode> — <strategy> — <reason>` from its accepted receipt, and continue in the same turn. On a host without automatic binding, the root relays the exact host-returned id and both receipt lines in an owner control response, then waits for the Stop hook acknowledgment before execution. Never guess an id from a task name.
+Bind `<run-id>` to the current run. On Codex, the hook binds the root's `spawn_agent` request to the next child UUID and registers the assessor before its turn; its terminal receipt is accepted directly. After the blocking wait returns, use the child's returned `agent_id`, emit `Completed: <agent id/role> — <status>`, announce `Mode: <mode> — <strategy> — <reason>` from its accepted receipt, and continue in the same turn. On a host without automatic binding, the root relays the exact host-returned id and all three receipt lines in an owner control response, then waits for the Stop hook acknowledgment before execution. Never guess an id from a task name.
 
-3. Spawn the separate execution lead selected by the accepted assessment. Emit `Delegating: lead [<model>/<effort>] — pending — <bounded objective>` first, naming the actual model and effort you pass to the spawn call. Give the Codex spawn the task name `symphony_lead__<model-slug>__<effort-slug>`. For Claude, set the Agent `model` field explicitly and start the description with `symphony_lead [<model>/<effort>]:`. Give it the assessor result plus the bounded objective, run id, and completion receipt. On Codex, call the blocking wait immediately; automatic binding registers the lead and its result returns its `agent_id`. On a host without automatic binding, register only the exact host-returned id before waiting. The execution lead owns implementation and authoritative verification. After it is terminal, replay the cumulative delegation log described below.
+3. Spawn the separate execution lead using the accepted route exactly; the root never copies the assessor route or chooses a substitute. Emit `Delegating: lead [<model>/<effort>] — pending — <bounded objective>` first, naming the actual model and effort you pass to the spawn call. Give the Codex spawn the task name `symphony_lead__<model-slug>__<effort-slug>`. For Claude, set the Agent `model` field explicitly and start the description with `symphony_lead [<model>/<effort>]:`. Give it the assessor result plus the bounded objective, run id, and completion receipt. On Codex, call the blocking wait immediately; automatic binding registers the lead and its result returns its `agent_id`. On a host without automatic binding, register only the exact host-returned id before waiting. The execution lead owns mode-appropriate execution and authoritative verification. After it is terminal, replay the cumulative delegation log described below.
 
 Only after the assessor is terminal and its assessment is accepted may optional memory work begin. Small runs skip optional memory probing. For medium and large runs, the execution lead may dispatch at most one disposable memory-probe worker, and only when trusted host configuration proves a verified host tool-timeout or cancellation path will make that worker terminal inside the stated bound. If that path cannot be verified, skip optional memory. On memory capability failure, timeout, or hang, ensure the memory-probe worker is terminal before continuing, record the fallback to repository documents and source inspection, and complete the project through that fallback. Never add a monitor, daemon, or retrying probe.
 
@@ -125,7 +126,7 @@ The user must be able to see why a run costs what it costs. After the hook accep
 
 ## Ordinary reassessment
 
-The lifecycle record distinguishes ordinary reassessment due from strong assessment required. Initial runs and explicit `/symphony:assess` require a strong assessor until its authorized receipt clears that requirement. An owner prompt, final worker wave, interrupt, or resume marks ordinary reassessment due only: the current execution lead cheaply reassesses from current evidence, or recovery starts a fresh mode-appropriate lead for that cheap reassessment. For unchanged mode it returns the same two-line current-run receipt above; the current run's root must relay it because an execution-lead `SubagentStop` receipt is not authorized. A proposed mode change or unresolved high-risk ambiguity requires a new strong assessor before further execution. Reassessment reuses current evidence; do not repeat a broad repository scan without drift.
+The lifecycle record distinguishes ordinary reassessment due from strong assessment required. Initial runs and explicit `/symphony:assess` require a strong assessor until its authorized receipt clears that requirement. An owner prompt, planning boundary, final worker wave, interrupt, or resume marks ordinary reassessment due only: the current execution lead cheaply reassesses from current evidence, or recovery starts a fresh mode-appropriate lead for that cheap reassessment. For unchanged mode and route it returns the same three-line current-run receipt above; the current run's root must relay it because an execution-lead `SubagentStop` receipt is not authorized. A proposed mode, route or consulting-strategy change, or unresolved high-risk ambiguity requires a new strong assessor before further execution. Reassessment reuses current evidence; do not repeat a broad repository scan without drift.
 
 ## Select exactly one mode
 
@@ -133,17 +134,32 @@ Choose after a shallow task and project scan. Do not ask the weak root to choose
 
 ### Small
 
-Use when the task is straightforward, sequential, and likely below fifteen minutes for one capable agent. Use a capable direct executor at `medium`. Do not spawn workers merely to justify Symphony.
+Use when the task is straightforward and sequential. Use a capable direct executor at `medium` or `high`. Delegate only long-running mechanical work.
 
 ### Medium
 
-Use when the task mixes fast local work with one or more independent or specialized units. Use a balanced agentic execution lead at `medium`; it performs quick and integration-sensitive work and runs at most two workers concurrently.
+Use when the task mixes fast local work with one or more independent or specialized units. Use a capable balanced lead at `medium`; it performs quick and integration-sensitive work, runs at most two workers concurrently, and must decide the bounded question itself when an occasional consultant slot is unavailable.
 
 ### Large
 
-Use when there are at least three independently dispatchable units, multiple domains or verification surfaces, or a long/high-risk execution path. Use a capable coordinator at `medium` or `high` based on risk; it decomposes work into dependency-aware waves and integrates every result. Reserve strongest/high for narrow hard decisions, architecture, irreversible choices, and high-risk final review.
+Use when there are at least three independently dispatchable units, multiple domains or verification surfaces, or a long/high-risk execution path. Use the cheapest reliable administrative coordinator at `low` or `medium`; it schedules, communicates, integrates, and verifies while workers implement. Reserve strongest/high for bounded hard consultations, architecture, irreversible choices, and high-risk final review.
 
 If evidence changes, the lead may reclassify the active run and records why. Mode is per run, never permanent project configuration.
+
+## Consultations
+
+A consultant receives one bounded decision area with no inherited conversation. It returns either `SYMPHONY_CONSULTATION_BLOCKED:<run-id>:<bounded reason>` or a complete ordered packet:
+
+```text
+SYMPHONY_CONSULTATION:<run-id>
+SYMPHONY_DECISION_COUNT:<count>
+SYMPHONY_DECISION:<index>:<small|medium|large>:<low|medium|high>:<precise decision>
+SYMPHONY_ACTION:<index>:<mechanical action or mapping>
+```
+
+Every actionable decision has its own size and complexity. The lead applies actions in index order and uses those indicators with `references/model-routing.md` for direct work or delegation. A broader decision or changed run shape triggers reassessment.
+
+Consultant-heavy execution reserves one child slot as capacity, not an idle long-lived agent. Worker waves respect the accepted maximum; consultations run before dependent workers when no spare slot exists. Occasional consulting reserves no slot because its capable lead can decide the bounded question itself.
 
 ## Route capabilities
 

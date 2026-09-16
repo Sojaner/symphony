@@ -5,4 +5,4 @@ flags: im
 target: last_message
 ---
 
-Require one `Routing:` line that names the small mode strategy and at least two model/effort pairs, with no unfilled `<...>` placeholder on that line. The runtime hook verifies assessor and lead values against the host ledger; this checks the disclosure reached the user.
+Require one `Routing:` line that names the small mode strategy and at least two model/effort pairs, with no unfilled `<...>` placeholder on that line. The runtime hook verifies the strongest/high assessor and distinct capable/medium direct lead against the accepted route and host ledger; this checks the disclosure reached the user.
