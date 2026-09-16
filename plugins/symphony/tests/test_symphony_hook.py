@@ -3904,6 +3904,10 @@ three independently verifiable cases cover the happy path and both failures.
             "A valid CSV produces the expected objects. A duplicate header fails validation. "
             "A field-count mismatch fails validation.",
         )
+        pass_validation_report = report.replace(
+            "Example 1: valid conversion.",
+            "Rows that pass validation are included in the output array.",
+        )
         refusal = "Orchestrator mismatch\nDeclared: gpt-5.6-terra/medium; actual: claude-haiku-4-5-20251001/unverified\nStart a task configured with the actual model and effort."
         stats = {"spawned": 2, "completed": 2, "spawned_by_subagents": 0, "failed": 0}
         terminal = {"type": "result", "subtype": "success", "subagent_stats": stats}
@@ -3927,6 +3931,10 @@ three independently verifiable cases cover the happy path and both failures.
                 report.replace("JSON array", "JSON string"),
                 report.replace("duplicate header", "repeated column"),
                 report.replace("field count", "record sizes"),
+                pass_validation_report.replace(
+                    "pass validation are included in the output array",
+                    "pass validation but are not included in output",
+                ),
                 heading_report.replace("/symphony_assessor", "/worker"),
                 heading_report.replace("/symphony_lead", "/worker"),
                 heading_report.replace("tokens 10267", "usage unknown"),
@@ -3972,6 +3980,7 @@ three independently verifiable cases cover the happy path and both failures.
                 {**smoke, "last_message": report.replace("field count", "field-count")},
                 {**smoke, "last_message": heading_report},
                 {**smoke, "last_message": prose_report},
+                {**smoke, "last_message": pass_validation_report},
                 {**smoke, "last_message": spaced_report},
                 {**smoke, "last_message": code_report},
             ], [
