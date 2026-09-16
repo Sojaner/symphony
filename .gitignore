@@ -1,1 +1,3 @@
 /eval-traces/
+__pycache__/
+*.py[cod]
