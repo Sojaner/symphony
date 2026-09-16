@@ -4759,6 +4759,7 @@ class HookDeclarationTests(unittest.TestCase):
             "SYMPHONY_ASSESSMENT:<actual-run-id>:small:small",
             "SYMPHONY_ASSESSMENT_REASON:<single bounded line>",
             "SYMPHONY_REGISTER:<run-id>:lead:<agent-id>",
+            "do not spend a separate acknowledgment turn",
             "run_in_background: false",
             "final-channel",
             "exactly two successfully started and completed distinct children",
