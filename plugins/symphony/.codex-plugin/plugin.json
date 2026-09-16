@@ -1,25 +1,20 @@
 {
   "name": "symphony",
-  "version": "0.21.2",
-  "description": "Persistent, recoverable project routing through assessed, task-sized execution leads and workflow capabilities.",
-  "author": {
-    "name": "Sojaner"
-  },
+  "version": "1.0.0",
+  "description": "Capability-aware, recoverable orchestration with a thin root and task-sized leads.",
+  "author": {"name": "Sojaner"},
   "skills": "./skills/",
   "hooks": "./hooks/codex.json",
   "interface": {
     "displayName": "Symphony",
-    "shortDescription": "Persistent routing through task-sized execution leads.",
-    "longDescription": "Symphony makes the root a thin session keeper, uses a strong read-only assessor to select an exact route, and assigns execution, delegation, integration, and verification to a task-sized lead. Lifecycle hooks protect normal stopping and recover interrupted runs. Each task selects direct, mixed, or delegation-heavy execution and uses the workflow and evidence capabilities actually available.",
+    "shortDescription": "Reliable task-sized agent orchestration",
+    "longDescription": "Symphony keeps the root thin, selects execution from a size and complexity matrix, preserves lifecycle state across sessions, and reports compact delegation status.",
     "developerName": "Sojaner",
     "category": "Productivity",
-    "capabilities": ["Interactive"],
+    "capabilities": ["Instructions", "Lifecycle hooks"],
     "brandColor": "#4E808C",
     "logo": "./assets/logo.png",
     "composerIcon": "./assets/logo.png",
-    "defaultPrompt": [
-      "Enable Symphony for this project.",
-      "Start one guarded Symphony task."
-    ]
+    "defaultPrompt": ["Enable Symphony for this project.", "Run this task through Symphony."]
   }
 }

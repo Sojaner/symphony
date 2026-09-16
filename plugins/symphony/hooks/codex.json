@@ -1,86 +1,12 @@
 {
-  "description": "Persistent Symphony lifecycle and recovery guard for Codex.",
+  "description": "Symphony lifecycle observation and completion guard for Codex.",
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Agent|spawn_agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
-            "timeout": 10,
-            "additionalContextLimit": 8192
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
-            "timeout": 10,
-            "additionalContextLimit": 4096
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
-            "timeout": 65,
-            "statusMessage": "Symphony is reconciling active work"
-          }
-        ]
-      }
-    ],
-    "Interrupt": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/env python3 -c \"import pathlib,runpy,sys; r=pathlib.Path(sys.argv[1]); p=r/'scripts'/'symphony_hook.py'; runpy.run_path(str(p if p.is_file() else max(r.parent.glob('*/scripts/symphony_hook.py'), key=lambda x: x.stat().st_mtime_ns)), run_name='__main__')\" \"${CLAUDE_PLUGIN_ROOT}\"",
-            "timeout": 3
-          }
-        ]
-      }
-    ]
+    "SessionStart": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10, "additionalContextLimit": 4096}]}],
+    "PreToolUse": [{"matcher": "Agent|spawn_agent", "hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
+    "SubagentStart": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10, "additionalContextLimit": 2048}]}],
+    "SubagentStop": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 30, "statusMessage": "Symphony is reconciling active work"}]}],
+    "Interrupt": [{"hooks": [{"type": "command", "command": "python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 3}]}]
   }
 }

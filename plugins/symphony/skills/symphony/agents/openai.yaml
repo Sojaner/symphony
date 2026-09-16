@@ -1,4 +1,0 @@
-interface:
-  display_name: "Symphony"
-  short_description: "Route project work through the right model and workflow"
-  default_prompt: "Use $symphony for this project and explain how to enable guarded runs."
