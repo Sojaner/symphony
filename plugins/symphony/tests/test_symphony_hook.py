@@ -3577,6 +3577,7 @@ class HookDeclarationTests(unittest.TestCase):
             "invalid or missing, report the failure plainly",
             "never `automatic`",
             "lifecycle and role assignment, not actual child model/effort",
+            "`description` to start with `symphony_assessor:` or `symphony_lead:`",
         ):
             self.assertIn(required, prompt)
         self.assertRegex(prompt, r"(?m)^max_turns: 12$")
@@ -3627,8 +3628,13 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
         stats = {"spawned": 2, "completed": 2, "spawned_by_subagents": 0, "failed": 0}
         terminal = {"type": "result", "subtype": "success", "subagent_stats": stats}
         smoke = {"last_message": report, "trace": json.dumps(terminal),
-                 "calls": [{"name": "Agent", "input": {"prompt": f"You are assigned symphony_{role}."}}
+                 "calls": [{"name": "Agent", "input": {"description": f"symphony_{role}: bounded task",
+                                                        "prompt": f"You are assigned symphony_{role}."}}
                            for role in ("assessor", "lead")]}
+        lead_with_assessor_context = {"name": "Agent", "input": {
+            "description": "symphony_lead: bounded execution",
+            "prompt": "Accepted Assessment (from symphony_assessor): perform the accepted small task.",
+        }}
         mismatch = {"last_message": refusal, "trace": "", "calls": [
             {"name": "Skill", "input": {"skill": "symphony:symphony"}},
         ]}
@@ -3658,6 +3664,7 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
             ("hosted-registration-smoke", [
                 smoke, {**smoke, "calls": smoke["calls"] + [smoke["calls"][1]]},
                 {**smoke, "calls": smoke["calls"] + [smoke["calls"][1]] * 2},
+                {**smoke, "calls": [smoke["calls"][0], lead_with_assessor_context, lead_with_assessor_context]},
                 {**smoke, "last_message": report.replace("duplicate header", "duplicate column name").replace("field count", "row-width")},
                 {**smoke, "last_message": report.replace("field count", "field-count")},
             ], [
@@ -3671,6 +3678,7 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 {**smoke, "trace": smoke["trace"] + "\n" + json.dumps({"type": "assistant", "text": "still running"})},
                 {**smoke, "calls": smoke["calls"] + [smoke["calls"][0]]},
                 {**smoke, "calls": [smoke["calls"][0]]},
+                {**smoke, "calls": [lead_with_assessor_context]},
             ], 6),
             ("mismatch-refusal", [
                 mismatch, {**mismatch, "last_message": " \n" + refusal + "\n "},
