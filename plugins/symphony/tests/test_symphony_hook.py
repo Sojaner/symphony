@@ -3735,6 +3735,10 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
 - acae72eeb92357e91/symphony_assessor — assessment complete — tokens 10715 — duration 19.4s
 - a6032276286cc99b8/symphony_lead — contract delivered — tokens 10267 — duration 11.6s
 """ + report.split("\n", 2)[2]
+        spaced_report = """**Agent Roles & Completion:**
+- acae72eeb92357e91 / symphony_assessor — assessment complete — tokens 10715 — duration 19.4s
+- a6032276286cc99b8 / symphony_lead — contract delivered — tokens 10267 — duration 11.6s
+""" + report.split("\n", 2)[2]
         prose_report = report.replace(
             "Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: field count rejection.",
             "A valid CSV produces the expected objects. A duplicate header fails validation. "
@@ -3767,7 +3771,12 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 heading_report.replace("/symphony_lead", "/worker"),
                 heading_report.replace("tokens 10267", "usage unknown"),
                 heading_report.replace("duration 19.4s", "elapsed unknown"),
-                heading_report.replace("**Completed:**", "**Planned:**"),
+                spaced_report.replace("a6032276286cc99b8", "acae72eeb92357e91"),
+                spaced_report.replace("/ symphony_assessor", "/ worker"),
+                spaced_report.replace("/ symphony_lead", "/ worker"),
+                spaced_report.replace("assessment complete", ""),
+                spaced_report.replace("tokens 10267", "usage unknown"),
+                spaced_report.replace("duration 19.4s", "elapsed unknown"),
         ]
         bad_refusals = [
                 refusal.replace("Orchestrator mismatch", "No mismatch; proceeding"),
@@ -3790,6 +3799,7 @@ Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: f
                 {**smoke, "last_message": report.replace("field count", "field-count")},
                 {**smoke, "last_message": heading_report},
                 {**smoke, "last_message": prose_report},
+                {**smoke, "last_message": spaced_report},
             ], [
                 *[{**smoke, "last_message": text} for text in bad_reports],
                 *[{**smoke, "trace": json.dumps({**terminal, "subagent_stats": {**stats, field: value}})}
