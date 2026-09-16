@@ -27,7 +27,7 @@ Before doing anything else, inspect the user prompt for an explicit `Orchestrato
 
 When injected context names a Symphony run, its run id, recovery instruction, and completion receipt are authoritative. Keep one run and at most one active execution lead. Recovery may replace the lead after reconciling workers and making the prior lead terminal; retain the run id and use bounded lifecycle/document memory for its replacement.
 
-Read-only inspection commands do not require an active run or a lead. For project work invoked without lifecycle context, state once that hook protection is not armed. Recommend `/symphony:start [--dry-run] <task>` for a guarded one-off run or `/symphony:enable [task]` for persistent project activation. Continue manually only when the user explicitly accepts the weaker guarantee.
+Read-only inspection commands do not require an active run or a lead. An explicit `$symphony:symphony <task>` invocation normally arms a guarded one-off run through the prompt hook. If project work still arrives without lifecycle context, hook protection is genuinely unavailable: do not ask the user to authorize unprotected continuation and do not continue manually. State the failure once and tell the user to trust or enable the plugin hooks, then retry with `/symphony:start [--dry-run] <task>` or use `/symphony:enable [task]` for persistent project activation.
 
 The user commands are:
 

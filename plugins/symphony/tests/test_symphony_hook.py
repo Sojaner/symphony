@@ -2484,6 +2484,31 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIn("must not ask the user to choose", result.context)
         self.assertIn(run["receipt"], result.context)
 
+    def test_explicit_skill_invocation_arms_one_off_run(self):
+        result = self.hook.handle_event(
+            self.event(
+                "UserPromptSubmit",
+                prompt="$symphony:symphony reproduce and fix the timeout",
+            ),
+            self.data,
+        )
+
+        state = self.state()
+        run = state["active_run"]
+        self.assertFalse(state["enabled"])
+        self.assertEqual("reproduce and fix the timeout", run["objective"])
+        self.assertIn("thin root/session keeper", result.context)
+        self.assertIn(run["receipt"], result.context)
+
+    def test_explicit_skill_invocation_routes_control(self):
+        result = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="$symphony:symphony /status"),
+            self.data,
+        )
+
+        self.assertIsNone(self.state()["active_run"])
+        self.assertIn("Symphony project enabled: false", result.context)
+
     def test_start_is_one_off_and_does_not_enable_project(self):
         result = self.hook.handle_event(
             self.event(
@@ -4587,7 +4612,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.20.0"}, versions)
+        self.assertEqual({"0.20.1"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},

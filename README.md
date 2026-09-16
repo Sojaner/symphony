@@ -80,6 +80,7 @@ Start a new session after installation so Claude Code loads the commands, skill,
 - `enable` persistently enables the current working tree and optionally starts a task.
 - `disable` prevents future automatic activation and gracefully stops an active run.
 - `start` starts one guarded run without changing project enablement.
+- `$symphony:symphony <task>` also starts a guarded one-off run when invoked as a skill.
 - `assess` requests reassessment; `small`, `medium`, or `large` set a persistent project profile, while `auto` clears it.
 - `status` reads policy and run state without changing either.
 - `agents` lists the active run's subagents, including terminal agents; `--all` also includes retained historical runs. Model or effort that the host does not provide is shown as `not exposed by host`.

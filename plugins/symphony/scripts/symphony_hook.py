@@ -53,6 +53,7 @@ RAW_CONTROL_RE = re.compile(
     r"\A/symphony:(enable|disable|start|stop|status|agents|assess|help)(?:\s+([\s\S]*))?\Z",
     re.IGNORECASE,
 )
+SYMPHONY_SKILL_RE = re.compile(r"\A[ \t]*\$symphony:symphony\b", re.IGNORECASE)
 CONTROL_RE = re.compile(
     r"^[ \t]*(?:<!--[ \t]*)?SYMPHONY_CONTROL:[ \t]*(enable|disable|start|stop|status|agents|assess|help)"
     r"(?=[ \t]*(?:-->|$))", re.IGNORECASE | re.MULTILINE,
@@ -1080,8 +1081,14 @@ def _invalid_control_args(control, args):
 
 def _handle_prompt(payload, state, now):
     prompt = payload.get("prompt") or ""
-    control, task, args = _parse_prompt(prompt)
+    skill_match = SYMPHONY_SKILL_RE.match(prompt)
+    skill_input = prompt[skill_match.end():].strip() if skill_match else ""
+    control_prompt = (
+        f"/symphony:{skill_input[1:]}" if skill_input.startswith("/") else prompt
+    )
+    control, task, args = _parse_prompt(control_prompt)
     dry_run, task = _dry_run_task(control, task)
+    skill_task = skill_input if skill_match and control is None else ""
 
     if (
         control is None and _looks_like_control(prompt)
@@ -1163,7 +1170,9 @@ def _handle_prompt(payload, state, now):
             )
         return HookResult(context="No Symphony run is active.")
 
-    start_requested = control in {"start", "enable"} and bool(task)
+    start_requested = (
+        control in {"start", "enable"} and bool(task)
+    ) or bool(skill_task)
     if state.get("corrupt"):
         return HookResult(
             context=(
@@ -1194,7 +1203,7 @@ def _handle_prompt(payload, state, now):
         return HookResult(context=f"Continue Symphony run {run['id']}; do not launch a duplicate lead.")
 
     if start_requested or (state.get("enabled") and control is None):
-        objective = task if start_requested else prompt
+        objective = (skill_task or task) if start_requested else prompt
         state["active_run"] = _new_run(
             payload, objective, now, state["project_root"], dry_run=dry_run,
         )
