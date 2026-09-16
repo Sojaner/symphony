@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""Symphony hook entry point; runtime behavior is added in a later unit."""
+"""Symphony hook entry point."""
 
-import json
+from pathlib import Path
 import sys
 
 
-def main() -> int:
-    try:
-        json.load(sys.stdin)
-    except (OSError, ValueError):
-        return 0
-    return 0
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from symphony.runtime import main  # noqa: E402
 
 
 if __name__ == "__main__":

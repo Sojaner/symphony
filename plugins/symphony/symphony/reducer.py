@@ -262,6 +262,8 @@ _HANDLERS: dict[str, _Handler] = {
 def reduce(state: ProjectState, event: Event) -> tuple[ProjectState, tuple[Action, ...]]:
     """Apply one canonical event without side effects."""
     if any(record.event_id == event.event_id for record in state.event_history):
+        if event.kind == "stop_requested":
+            return _stop_requested(state, event)
         return state, ()
     handler = _HANDLERS.get(event.kind)
     if handler is None:

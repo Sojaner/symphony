@@ -4,6 +4,8 @@ Roles exchange explicit packets. Lifecycle changes come from reducer state and h
 
 Compact status shows at most five latest delegation records, ordered failed, active/waiting, then recently completed. `agents --all` shows every retained latest record, not every transition.
 
+Use the host role name `symphony_<role>_<model>_<effort>` when custom names are supported. Every visible delegation line includes `role [model/effort]`, the host-observed identity, and its bounded objective. Omit model, effort, tokens, or duration when the host does not expose them; never infer them.
+
 ## Assessment
 
 Run substantive or uncertain work as a bounded `strongest/high` assessment. The assessor chooses needs, not provider model names, and does not become the lead implicitly.

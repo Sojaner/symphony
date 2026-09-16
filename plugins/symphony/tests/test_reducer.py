@@ -154,7 +154,7 @@ class LifecycleReducerTests(unittest.TestCase):
         self.assertEqual(state.active_run, original.active_run)
         self.assertEqual(actions, (Action("block_stop", {"active": ["worker-1"]}),))
         self.assertEqual(replayed, state)
-        self.assertEqual(replay_actions, ())
+        self.assertEqual(replay_actions, actions)
 
     def test_lead_completion_archives_run_and_permits_completion(self):
         original = running_state(delegations=[delegation("worker-1", "completed")])
