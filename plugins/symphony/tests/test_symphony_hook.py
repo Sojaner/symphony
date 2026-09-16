@@ -449,6 +449,49 @@ class SymphonyHookTests(unittest.TestCase):
             self.event("PreToolUse", tool_name="Bash"), self.data,
         ).block)
 
+    def test_hosted_background_assessor_relay_requires_registration_after_completion(self):
+        prompt = (PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "prompt.md").read_text(encoding="utf-8")
+        for early_registration in (True, False):
+            with self.subTest(early_registration=early_registration):
+                data = Path(self.tmp.name) / f"registration-{early_registration}"
+                self.hook.handle_event(self.event("UserPromptSubmit", prompt=prompt), data)
+                run_id = self.hook.read_project_state(data, str(self.project))["active_run"]["id"]
+                registration = f"SYMPHONY_REGISTER:{run_id}:assessor:assessor"
+                receipt = (f"SYMPHONY_ASSESSMENT:{run_id}:small:small\n"
+                           "SYMPHONY_ASSESSMENT_REASON:One read-only contract")
+                self.hook.handle_event(self.event("SubagentStart", agent_id="assessor"), data)
+                if early_registration:
+                    registered = self.hook.handle_event(self.event(
+                        "Stop", last_assistant_message=registration,
+                    ), data, stop_wait_seconds=0)
+                    self.assertTrue(registered.block)
+                    self.assertIn("Symphony registered roles: assessor=assessor", registered.reason)
+                child = self.hook.handle_event(self.event(
+                    "SubagentStop", agent_id="assessor", last_assistant_message=receipt,
+                ), data)
+                self.assertFalse(child.block)
+                self.assertFalse(child.context)
+                before = self.hook.read_project_state(data, str(self.project))["active_run"]
+                self.assertEqual(int(early_registration), before["mode_revision"])
+                self.assertEqual(not early_registration, before["assessment_due"])
+                spawn = self.event("PreToolUse", tool_name="Agent")
+                self.assertEqual(not early_registration, self.hook.handle_event(spawn, data).block)
+                relay = self.hook.handle_event(self.event(
+                    "Stop", last_assistant_message=registration + "\n" + receipt,
+                ), data, stop_wait_seconds=0)
+                self.assertTrue(relay.block)
+                self.assertEqual(not early_registration, "Symphony accepted assessment: mode=small" in relay.reason)
+                after = self.hook.read_project_state(data, str(self.project))["active_run"]
+                self.assertEqual((run_id, "small", 1, False, False), (
+                    after["id"], after["mode"], after["mode_revision"],
+                    after["assessment_due"], after["strong_assessment_required"],
+                ))
+                self.assertEqual("terminal", after["agent_records"]["assessor"]["status"])
+                self.assertEqual("assessor", after["assessor_agent_id"])
+                self.assertIsNone(after["lead_agent_id"])
+                self.assertFalse(self.hook.handle_event(spawn, data).block)
+        self.assertIn("For a background assessor, collect its terminal result before registration.", prompt)
+
     def test_explicit_reassessment_retires_failed_terminal_assessor_attempts(self):
         for registered in (False, True):
             with self.subTest(registered=registered):

@@ -26,3 +26,11 @@ Changes are limited to eval prompts, two graders, deterministic test coverage, a
 - `git diff --check`: passed.
 
 Local Claude Code is 2.1.236; failed CI used 2.1.273. Local authentication was available. The CI command's `--trust-plugin` option is unsupported by the local version. After omitting only that unsupported option, the one eval invocation exited 1 with `` `plugin eval` is currently in early access `` and produced no results. No hosted pass is claimed, no credentials were changed, and no threshold was lowered. A fresh CI run is required to establish hosted success, especially mismatch refusal and visibility of lifecycle acknowledgments in the truncated judge trace.
+
+## Review follow-up: background assessor registration timing
+
+Review found that the initial repair's generic background-child instruction registered the assessor before collecting its result. In that sequence, its trusted `SubagentStop` accepts the assessment without a root-visible acknowledgment. The subsequent root relay reports registration but cannot report a newly accepted assessment, contradicting this smoke's strict acknowledgment requirement.
+
+Added a deterministic test before editing the prompt. It drives both sequences through the actual hook and verifies persisted mode revision, assessment flags, terminal agent identity, run continuity, and the execution spawn gate, in addition to acknowledgment text. Early registration produces revision 1 at child completion and no accepted-assessment acknowledgment on the later relay. Collecting completion first leaves revision 0 and execution blocked; the combined root registration/assessment relay then acknowledges `Symphony accepted assessment: mode=small`, persists revision 1, clears both assessment flags, and permits execution. The test initially failed because the shipped prompt lacked that required ordering.
+
+The prompt now explicitly collects a background assessor's terminal result before its combined final-channel registration/assessment relay. Immediate background-lead registration and the strict grader remain unchanged. Focused regression, grader JavaScript checks, plugin validation, and diff checks pass. `python3 -m unittest discover -s plugins/symphony/tests -q` passed all 132 tests in 18.170 seconds; hosted CI uncertainty is unchanged.
