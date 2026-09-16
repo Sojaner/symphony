@@ -1,0 +1,84 @@
+import unittest
+from datetime import UTC, datetime, timedelta
+
+from plugins.symphony.symphony.model import CapabilitySnapshot
+from plugins.symphony.symphony.routing import Assessment, resolve_tier, route_for, snapshot_is_stale
+
+
+class RoutingTests(unittest.TestCase):
+    def test_nine_cell_matrix(self):
+        expected = {
+            ("small", "simple"): ("capable", "medium", "direct", "none"),
+            ("small", "mixed"): ("capable", "high", "direct", "optional"),
+            ("small", "complex"): ("strongest", "high", "direct", "independent-check"),
+            ("medium", "simple"): ("balanced", "medium", "mixed", "none"),
+            ("medium", "mixed"): ("balanced", "high", "mixed", "optional"),
+            ("medium", "complex"): ("capable", "high", "mixed", "reserved"),
+            ("large", "simple"): ("economy", "low", "delegated", "none"),
+            ("large", "mixed"): ("economy", "medium", "delegated", "reserved"),
+            ("large", "complex"): ("economy", "medium", "delegated", "strongest"),
+        }
+        actual = {}
+        for axes in expected:
+            route = route_for(Assessment(*axes))
+            actual[axes] = (route.lead_tier, route.lead_effort, route.execution, route.consultation)
+        self.assertEqual(actual, expected)
+
+    def test_high_risk_elevates_effort_without_mutating_axes(self):
+        assessment = Assessment("large", "simple", risk="high")
+        route = route_for(assessment)
+        self.assertEqual((assessment.size, assessment.complexity), ("large", "simple"))
+        self.assertEqual(route.lead_effort, "medium")
+        self.assertTrue(route.independent_review)
+
+    def test_resolver_chooses_lowest_available_model_that_satisfies_tier(self):
+        snapshot = CapabilitySnapshot(
+            provider="codex",
+            available_models=("cheap", "solid", "best"),
+            supported_efforts={
+                "cheap": ("low", "medium"),
+                "solid": ("low", "medium"),
+                "best": ("medium", "high"),
+            },
+            tiers={"economy": "cheap", "capable": "solid", "strongest": "best"},
+            source="live",
+            provider_version=None,
+            refreshed_at="2026-09-17T00:00:00+00:00",
+        )
+        resolved = resolve_tier(route_for(Assessment("small", "simple")), snapshot)
+        self.assertEqual((resolved.lead_model, resolved.lead_effort), ("solid", "medium"))
+
+    def test_resolver_falls_back_to_supported_effort(self):
+        snapshot = CapabilitySnapshot(
+            provider="claude",
+            available_models=("one",),
+            supported_efforts={"one": ("low", "medium")},
+            tiers={"capable": "one"},
+            source="live",
+            provider_version=None,
+            refreshed_at="2026-09-17T00:00:00+00:00",
+        )
+        resolved = resolve_tier(route_for(Assessment("small", "mixed")), snapshot)
+        self.assertEqual(resolved.lead_effort, "medium")
+        self.assertTrue(resolved.degraded)
+
+    def test_snapshot_staleness_defaults_to_twenty_four_hours(self):
+        snapshot = CapabilitySnapshot(
+            provider="codex",
+            available_models=(),
+            supported_efforts={},
+            tiers={},
+            source="cache",
+            provider_version=None,
+            refreshed_at="2026-09-16T00:00:00+00:00",
+        )
+        self.assertFalse(snapshot_is_stale(snapshot, datetime(2026, 9, 16, 23, tzinfo=UTC)))
+        self.assertTrue(snapshot_is_stale(snapshot, datetime(2026, 9, 17, 1, tzinfo=UTC)))
+
+    def test_invalid_axes_are_rejected(self):
+        with self.assertRaises(ValueError):
+            route_for(Assessment("gigantic", "simple"))
+
+
+if __name__ == "__main__":
+    unittest.main()
