@@ -6,22 +6,23 @@ Use the effective runtime catalog for the current root or child. Installed files
 
 1. Explicit user-requested skills.
 2. Repository instructions such as `AGENTS.md` or `CLAUDE.md`.
-3. One primary workflow owner for the unit.
-4. Cross-cutting constraints that do not duplicate the workflow.
-5. Evidence tools required by unresolved facts.
+3. Symphony orchestration authority for an active run.
+4. One bounded workflow technique for the unit.
+5. Cross-cutting constraints that do not duplicate the workflow.
+6. Evidence tools required by unresolved facts.
 
 ## Known capability families
 
 | Signal in the effective catalog | Role | Use when |
 |---|---|---|
-| `superpowers:*` | Primary workflow | Its design approval, planning, debugging, TDD, subagent execution, or verification workflow best fits the unit. |
-| `compound-engineering:*` | Primary workflow | Its end-to-end work, planning, review, POV, PR, or long-running workflow best fits the unit. |
-| `mattpocock-skills:*` | Primary workflow | Focused codebase design, diagnosis, TDD, review, domain modeling, research, or agent-document work fits the unit. |
+| `superpowers:*` | Bounded workflow technique | Its design, planning, debugging, TDD, implementation, or verification technique fits the unit. Return control after the bounded result. |
+| `compound-engineering:*` | Bounded workflow technique | Its planning, implementation, review, POV, PR, or long-running technique fits the unit. Return control after the bounded result. |
+| `mattpocock-skills:*` | Bounded workflow technique | Focused codebase design, diagnosis, TDD, review, domain modeling, research, or agent-document work fits the unit. |
 | `ponytail:*` | Cross-cutting constraint | Coding or design benefits from the smallest correct implementation. Never simplify away validation, safety, accessibility, or required verification. |
 | Context7 query/resolve tools | Evidence tool | Current official library, framework, Codex, or Claude behavior materially affects a decision. |
 | Codebase Memory graph tools | Evidence tool | Existing-code structure, callers, dependencies, data flow, blast radius, or architecture must be discovered. |
 
-Do not run overlapping Superpowers, Compound Engineering, and Matt Pocock planning/delivery ceremonies on the same unit. A narrow specialist skill may support another workflow only when their responsibilities do not overlap.
+During an active run, Symphony owns mode, delegation, waiting, reassessment, and completion. Do not run overlapping Superpowers, Compound Engineering, and Matt Pocock planning/delivery ceremonies on the same unit. A supporting planning skill returns its artifact to the Symphony lead; the accepted mode—not the supporting skill—chooses direct execution or delegation. A narrow specialist skill may support another technique only when their responsibilities do not overlap.
 
 ## Codebase Memory route
 

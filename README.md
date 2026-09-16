@@ -127,9 +127,11 @@ For a small task, the selected lead continues directly as the implementer. The a
 
 ## Usage visibility
 
-Usage is authoritative host observations only; Symphony never estimates usage or cost. Claude synchronous Agent usage may be exposed, but background Agent usage and Codex usage remain `not exposed by host`. Token fields describe the final request only; duration and tool count describe the agent run. No hard token or cost budget is promised.
+Usage is authoritative host observations only; Symphony never estimates usage or cost. Claude synchronous Agent usage may be exposed; unavailable background or Codex usage is omitted. Token fields describe the final request only; host duration and tool count describe the agent run, while lifecycle duration is observed wall time. No hard token or cost budget is promised.
 
-Visible records use `Delegating: <role> — <objective> — <model>/<effort> — <reason>`, `Waiting: <role or wave> — <observed in-progress fact>`, and `Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>`. Waiting reports observed lifecycle state only.
+Visible records use `Delegating: <role> — <objective> — <model>/<effort> — <reason>`, `Waiting: <role or wave> — <observed in-progress fact>`, and `Completed: <agent id/role> — <status>`. Completion adds token or duration segments only when exposed. Waiting reports observed lifecycle state only.
+
+The final completion response is self-contained: it repeats the integrated deliverable, assessor and lead completion records, authoritative verification, selected mode, and completion receipt.
 
 ## Workflow and evidence capabilities
 
@@ -137,14 +139,14 @@ Symphony inspects the effective catalog for the root and each child. It never tr
 
 | Capability | Symphony role |
 |---|---|
-| Superpowers | Primary workflow for its design, planning, debugging, TDD, subagent execution, or verification flows. |
-| Compound Engineering | Primary workflow for end-to-end work, planning, reviews, POV decisions, PRs, or long-running delivery. |
-| Matt Pocock skills | Primary workflow for focused design, diagnosis, TDD, review, domain modeling, research, or agent documentation. |
+| Superpowers | Bounded design, planning, debugging, TDD, implementation, or verification technique. |
+| Compound Engineering | Bounded planning, review, POV, delivery, or PR technique. |
+| Matt Pocock skills | Bounded design, diagnosis, TDD, review, domain-modeling, research, or agent-documentation technique. |
 | Ponytail | Optional cross-cutting simplicity constraint for coding and design. |
 | Context7 | Current official documentation for version-sensitive framework and host behavior. |
 | Codebase Memory MCP | Structural code discovery, callers, dependencies, architecture, and blast-radius evidence. |
 
-Explicit user requests and repository instructions come first. Symphony normally selects one primary workflow owner; it does not stack overlapping Superpowers, Compound Engineering, and Matt Pocock ceremonies on one unit.
+Explicit user requests and repository instructions come first. During an active run, Symphony owns routing, delegation, waiting, reassessment, and completion. It selects at most one supporting Superpowers, Compound Engineering, or Matt Pocock technique for a unit; that technique returns its artifact to the Symphony lead and does not offer a second execution handoff.
 
 When bounded Codebase Memory use is available, the assessor or lead checks the project index and graph. Worker packets include qualified symbols, relevant traces, index freshness, and coverage gaps. A worker without graph tools uses that evidence and does not claim direct MCP access. Targeted source search remains the fallback for literals, configuration, non-code files, and graph coverage gaps.
 

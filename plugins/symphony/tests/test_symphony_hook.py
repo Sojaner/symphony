@@ -99,7 +99,7 @@ class SymphonyHookTests(unittest.TestCase):
             self.assertTrue(result.block)
             self.assertIn("full integrated deliverable rather than a summary", result.reason)
             self.assertIn("both assessor and lead completion records", result.reason)
-            self.assertIn("role, status, tokens, and duration", result.reason)
+            self.assertIn("role and status, plus tokens or duration only when exposed", result.reason)
             self.assertIn("do not spawn", result.reason.lower())
         accepted = self.hook.handle_event(self.event("Stop", last_assistant_message=(
             f"SYMPHONY_REGISTER:{run['id']}:lead:synchronous-lead\n"
@@ -108,6 +108,55 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertFalse(accepted.block)
         self.assertIsNone(self.state()["active_run"])
         self.assertEqual("lead", self.state()["run_history"][-1]["agent_records"][0]["registered_role"])
+
+    def test_normal_completion_requires_self_contained_visible_results(self):
+        self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
+        self.start_role("assessor", "assessor")
+        run = self.state()["active_run"]
+        assessment = (
+            f"SYMPHONY_ASSESSMENT:{run['id']}:small:small\n"
+            "SYMPHONY_ASSESSMENT_REASON:One bounded unit"
+        )
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="assessor", last_assistant_message=assessment),
+            self.data,
+        )
+        self.start_role("lead", "lead")
+        self.hook.handle_event(self.event("SubagentStop", agent_id="lead"), self.data)
+        run = self.state()["active_run"]
+        terse = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                f"small\n<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
+            )),
+            self.data,
+            stop_wait_seconds=0,
+        )
+        self.assertTrue(terse.block)
+        self.assertIn("self-contained final report", terse.reason)
+        self.assertIn("both assessor and lead completion records", terse.reason)
+        bypass = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                "Not completed: assessor/assessor\n"
+                "Not completed: lead/lead\n"
+                "Verification:\n"
+                f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
+            )),
+            self.data,
+            stop_wait_seconds=0,
+        )
+        self.assertTrue(bypass.block)
+        complete = self.hook.handle_event(
+            self.event("Stop", last_assistant_message=(
+                "- **Completed:** `assessor` / `assessor` — completed\n"
+                "- **Completed:** `lead` / `lead` — completed\n"
+                "**Verification:** result.txt contains the exact verified value.\n"
+                f"<!-- SYMPHONY_MODE:small -->\n<!-- {run['receipt']} -->"
+            )),
+            self.data,
+            stop_wait_seconds=0,
+        )
+        self.assertFalse(complete.block)
+        self.assertIsNone(self.state()["active_run"])
 
     def test_synchronous_lead_worker_wave_still_requires_reassessment(self):
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data)
@@ -1278,8 +1327,35 @@ class SymphonyHookTests(unittest.TestCase):
             self.data,
         )
         self.assertIn("worker-1", result.context)
-        self.assertEqual(11, result.context.count("not exposed by host"))
+        self.assertEqual(3, result.context.count("not exposed by host"))
+        self.assertNotIn("tokens", result.context.lower())
+        self.assertNotIn("duration", result.context.lower())
         self.assertEqual(before, state_path.read_bytes())
+
+        status = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:status"), self.data,
+        )
+        self.assertNotIn("tokens", status.context.lower())
+
+    def test_agents_reports_lifecycle_duration_only_after_it_is_observed(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data, now=1_000,
+        )
+        self.hook.handle_event(
+            self.event("SubagentStart", agent_id="worker-1"), self.data, now=1_001,
+        )
+        active = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:agents"), self.data, now=1_002,
+        )
+        self.assertNotIn("Duration", active.context)
+        self.hook.handle_event(
+            self.event("SubagentStop", agent_id="worker-1"), self.data, now=1_004,
+        )
+        terminal = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:agents"), self.data, now=1_005,
+        )
+        self.assertIn("Duration (ms)", terminal.context)
+        self.assertIn("3000", terminal.context)
 
     def test_agents_support_legacy_state_without_rewriting_it(self):
         self.hook.handle_event(
@@ -1297,7 +1373,7 @@ class SymphonyHookTests(unittest.TestCase):
             self.event("UserPromptSubmit", prompt="SYMPHONY_CONTROL: agents"), self.data,
         )
         self.assertIn("legacy-worker", current.context)
-        self.assertEqual(11, current.context.count("not exposed by host"))
+        self.assertEqual(3, current.context.count("not exposed by host"))
         self.assertEqual(before, path.read_bytes())
         self.hook.handle_event(self.event("SubagentStop", agent_id="legacy-worker"), self.data)
         record = self.state()["active_run"]["agent_records"]["legacy-worker"]
@@ -1713,15 +1789,19 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertEqual(before, state_path.read_bytes())
         for heading in (
             "Final-request total tokens", "Final-request input tokens",
-            "Final-request output tokens", "Final-request cache creation tokens",
-            "Final-request cache read tokens", "Run duration", "Run tool uses",
             "Usage source/token scope",
         ):
             self.assertIn(heading, listing.context)
+        for unavailable in (
+            "Final-request output tokens", "Final-request cache creation tokens",
+            "Final-request cache read tokens", "Duration (ms)", "Run tool uses",
+        ):
+            self.assertNotIn(unavailable, listing.context)
         self.assertIn("120", listing.context)
-        self.assertIn("not exposed by host", listing.context)
+        self.assertEqual(6, listing.context.count("not exposed by host"))
+        self.assertNotIn("None", listing.context)
         for line in (line for line in listing.context.splitlines() if line.startswith("|")):
-            self.assertEqual(14, len(line.split("|")[1:-1]))
+            self.assertEqual(9, len(line.split("|")[1:-1]))
 
         self.hook.handle_event(self.event("UserPromptSubmit", prompt="/symphony:stop --force"), self.data)
         historical = self.hook.handle_event(
@@ -1730,12 +1810,28 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIn("known", historical.context)
         self.assertIn("120", historical.context)
         for line in (line for line in historical.context.splitlines() if line.startswith("|")):
-            self.assertEqual(14, len(line.split("|")[1:-1]))
+            self.assertEqual(9, len(line.split("|")[1:-1]))
         status = self.hook.handle_event(
             self.event("UserPromptSubmit", prompt="/symphony:status"), self.data,
         )
         self.assertIn("Observed final-request tokens (partial): 120", status.context)
-        self.assertIn("agents lacking final-request totals: 1", status.context)
+        self.assertNotIn("agents lacking final-request totals", status.context)
+
+    def test_agents_preserves_observed_zero_measurements(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start task"), self.data,
+        )
+        self.hook.handle_event(self.event("SubagentStart", agent_id="zero"), self.data)
+        self.hook.handle_event(
+            self.event("PostToolUse", tool_name="Agent", tool_response={
+                "agentId": "zero", "totalTokens": 0, "usage": {"inputTokens": 0},
+            }), self.data,
+        )
+        listing = self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:agents"), self.data,
+        )
+        row = next(line for line in listing.context.splitlines() if "| zero |" in line)
+        self.assertIn("| 0 | 0 |", row)
 
     def test_status_inspection_is_read_only_and_one_shot_for_active_and_stopping_runs(self):
         for stopping in (False, True):
@@ -2161,6 +2257,8 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertIn("thin root/session keeper", result.context)
         self.assertIn("read-only symphony_assessor", result.context)
         self.assertIn("separate mode-appropriate execution lead", result.context)
+        self.assertIn("Symphony is the orchestration authority", result.context)
+        self.assertIn("must not ask the user to choose", result.context)
         self.assertIn(run["receipt"], result.context)
 
     def test_start_is_one_off_and_does_not_enable_project(self):
@@ -2190,7 +2288,8 @@ class SymphonyHookTests(unittest.TestCase):
             "Project profile: automatic",
             "Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>",
             "Waiting: <role or wave> — <bounded in-progress fact>",
-            "Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>",
+            "Completed: <agent id/role> — <status>",
+            "followed only when exposed",
             f"SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>",
             f"SYMPHONY_ASSESSMENT:{run['id']}:<project-profile>:<run-mode>",
             run["receipt"],
@@ -2201,6 +2300,26 @@ class SymphonyHookTests(unittest.TestCase):
             "verification", "Verify", "skills and tools", "current.md", "history.md",
         ):
             self.assertNotIn(forbidden, result.context)
+
+    def test_stop_recovery_rejects_supporting_workflow_execution_choice(self):
+        self.hook.handle_event(
+            self.event("UserPromptSubmit", prompt="/symphony:start implement the approved plan"),
+            self.data,
+        )
+        result = self.hook.handle_event(
+            self.event(
+                "Stop",
+                last_assistant_message=(
+                    "Plan complete. Two execution options: Subagent-Driven or Inline Execution. "
+                    "Which approach?"
+                ),
+            ),
+            self.data,
+            stop_wait_seconds=0,
+        )
+        self.assertTrue(result.block)
+        self.assertIn("must not ask the user to choose", result.reason)
+        self.assertIn("accepted Symphony mode", result.reason)
 
     def test_normal_completion_requires_an_accepted_current_assessment(self):
         self.hook.handle_event(
@@ -2496,9 +2615,9 @@ class SymphonyHookTests(unittest.TestCase):
                         "Root profile: test/medium\n"
                         "Capability routing: none required.\n"
                         "Delegating: symphony_assessor — assess — strongest/high — read-only\n"
-                        "Completed: symphony_assessor — planned — tokens not exposed by host — duration not exposed by host\n"
+                        "Completed: symphony_assessor — planned\n"
                         "Delegating: symphony_lead — execute — balanced/medium — medium execution\n"
-                        "Completed: symphony_lead — planned — tokens not exposed by host — duration not exposed by host\n"
+                        "Completed: symphony_lead — planned\n"
                         f"<!-- SYMPHONY_MODE:medium -->\n{run['receipt']}"
                     )),
                     data, stop_wait_seconds=0,
@@ -3868,7 +3987,7 @@ class HookDeclarationTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "Hosted eval checks require Node")
     def test_hosted_atomic_graders_reject_missing_evidence(self):
         report = """Completed: acae72eeb92357e91/assessor — complete — tokens 11230 — duration 19999ms
-Completed: a6032276286cc99b8/lead — complete — tokens not exposed by host — duration not exposed by host
+Completed: a6032276286cc99b8/lead — complete
 UTF-8 CSV produces a JSON array of objects; reject duplicate headers and field count mismatch.
 Example 1: valid conversion. Example 2: duplicate header rejection. Example 3: field count rejection.
 <!-- SYMPHONY_MODE:small -->
@@ -3925,7 +4044,7 @@ three independently verifiable cases cover the happy path and both failures.
         bad_reports = [
                 report.replace("a6032276286cc99b8", "acae72eeb92357e91"),
                 report.replace("/assessor", "/worker"), report.replace("/lead", "/worker"),
-                report.replace("tokens 11230", "usage unknown"),
+                report.replace("tokens 11230", "tokens not exposed by host"),
                 report.replace("SYMPHONY_MODE:small", "SYMPHONY_MODE:large"),
                 report.replace("1e27fbb8b95b15c2", "invented"),
                 report.replace("JSON array", "JSON string"),
@@ -3983,6 +4102,7 @@ three independently verifiable cases cover the happy path and both failures.
                 {**smoke, "last_message": pass_validation_report},
                 {**smoke, "last_message": spaced_report},
                 {**smoke, "last_message": code_report},
+                {**smoke, "last_message": report + "\nModel: not exposed by host"},
             ], [
                 *[{**smoke, "last_message": text} for text in bad_reports],
                 *[{**smoke, "trace": json.dumps({**terminal, "subagent_stats": {**stats, field: value}})}
@@ -4045,9 +4165,13 @@ for (const [name, graders, good, bad] of JSON.parse(fs.readFileSync(0, 'utf8')))
             "strong assessment required",
             "Delegating: <role> — <bounded objective> — <model>/<effort> — <reason>",
             "Waiting: <role or wave> — <bounded in-progress fact>",
-            "Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration <value or not exposed by host>",
+            "Completed: <agent id/role> — <status>",
+            "append token or duration segments only for values the host exposed",
             "`Waiting:` may report only observed lifecycle state",
             "fresh execution lead from bounded lifecycle/document memory",
+            "Symphony is the orchestration authority for an active run",
+            "Supporting workflow skills are bounded techniques",
+            "accepted Symphony mode selects direct execution or delegation",
         )
         for text in required:
             self.assertIn(text, skill)
@@ -4086,9 +4210,9 @@ for (const [name, graders, good, bad] of JSON.parse(fs.readFileSync(0, 'utf8')))
             re.search(r"^pattern: '(.*)'$", grader, re.MULTILINE).group(1), re.IGNORECASE | re.DOTALL,
         )
         passing = """Delegating: symphony_assessor — classify task — claude-opus-5/high — bounded read-only assessment
-Completed: symphony_assessor — planned — tokens not exposed by host — duration not exposed by host
+Completed: symphony_assessor — planned
 Delegating: symphony_lead — implement task — claude-sonnet-5/medium — medium execution
-Completed: symphony_lead — planned — tokens not exposed by host — duration not exposed by host
+Completed: symphony_lead — planned
 <!-- SYMPHONY_MODE:medium -->"""
         adversarial = """Delegating: symphony_assessor — classify task — claude-opus-5/medium — assessment
 Completed: symphony_assessor — planned
@@ -4174,9 +4298,8 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
                 "Delegating:",
                 "Completed:",
                 "authoritative host observations only",
-                "not exposed by host",
                 "Claude synchronous Agent usage may be exposed",
-                "background Agent usage and Codex usage remain `not exposed by host`",
+                "unavailable background or Codex usage is omitted",
                 "No hard token or cost budget is promised.",
                 "single-use control receipt",
                 "no active registered agents",
@@ -4195,7 +4318,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             json.loads((PLUGIN_ROOT / relative).read_text(encoding="utf-8"))["version"]
             for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         }
-        self.assertEqual({"0.16.1"}, versions)
+        self.assertEqual({"0.17.0"}, versions)
         self.assertEqual({
             "name": "symphony",
             "interface": {"displayName": "Symphony"},
@@ -4222,7 +4345,7 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
         self.assertIn("SYMPHONY_CONTROL: agents", command)
         self.assertIn("SYMPHONY_ARGS: $ARGUMENTS", command)
         self.assertIn("live agent-listing tool", command)
-        self.assertIn("not exposed by host", command)
+        self.assertIn("never print unavailable token or duration placeholders", command)
         for relative in ("commands/help.md", "skills/symphony/SKILL.md"):
             content = (PLUGIN_ROOT / relative).read_text(encoding="utf-8")
             self.assertIn("/symphony:agents [--all]", content)
@@ -4382,6 +4505,8 @@ for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
             self.assertIn("capability receipt", started["hookSpecificOutput"]["additionalContext"])
             self.assertIn("inherited root bootstrap does not apply", started["hookSpecificOutput"]["additionalContext"])
             self.assertIn("does not need spawn or wait tools", started["hookSpecificOutput"]["additionalContext"])
+            self.assertIn("Symphony is the orchestration authority", started["hookSpecificOutput"]["additionalContext"])
+            self.assertIn("must not ask the user to choose", started["hookSpecificOutput"]["additionalContext"])
             self.assertIsNone(stopped)
             state = load_hook_module().read_project_state(data, str(project))
             self.assertEqual("terminal", state["active_run"]["agent_records"]["worker-1"]["status"])

@@ -24,11 +24,21 @@ TOKEN_USAGE_FIELDS = (
 )
 RUN_USAGE_FIELDS = ("duration_ms", "tool_uses")
 USAGE_FIELDS = TOKEN_USAGE_FIELDS + RUN_USAGE_FIELDS
-AGENT_TABLE_HEADINGS = (
-    "Run", "Id", "Status", "Role", "Model", "Effort", "Final-request total tokens",
-    "Final-request input tokens", "Final-request output tokens",
-    "Final-request cache creation tokens", "Final-request cache read tokens", "Run duration (ms)",
-    "Run tool uses", "Usage source/token scope",
+AGENT_BASE_HEADINGS = ("Run", "Id", "Status", "Role", "Model", "Effort")
+AGENT_MEASUREMENT_FIELDS = (
+    ("Final-request total tokens", "final_request_total_tokens"),
+    ("Final-request input tokens", "final_request_input_tokens"),
+    ("Final-request output tokens", "final_request_output_tokens"),
+    ("Final-request cache creation tokens", "final_request_cache_creation_tokens"),
+    ("Final-request cache read tokens", "final_request_cache_read_tokens"),
+    ("Duration (ms)", "duration_ms"),
+    ("Run tool uses", "tool_uses"),
+)
+AUTHORITY_CONTEXT = (
+    "Symphony is the orchestration authority for this active run. Supporting workflow skills are "
+    "bounded techniques: they return artifacts and control to the Symphony lead, must not start a "
+    "second orchestration lifecycle, and must not ask the user to choose direct versus delegated "
+    "execution. The accepted Symphony mode selects direct execution or delegation."
 )
 RAW_CONTROL_RE = re.compile(
     r"\A/symphony:(enable|disable|start|stop|status|agents|assess|help)(?:\s+([\s\S]*))?\Z",
@@ -426,11 +436,14 @@ def _bootstrap_context(run, state, *, recovery=False, accepted_recovery=False, n
         f"{action} Symphony run. Run id: {run['id']}. "
         f"Objective: {run['objective']}. Project profile: {state['assessment']['profile'] or 'automatic'} "
         f"(revision {state['assessment']['revision']}). You are the thin root/session keeper; perform "
-        f"only announce, spawn, register, relay, and wait control work. {route}"
+        f"only announce, spawn, register, relay, and wait control work. {AUTHORITY_CONTEXT} {route}"
         "Use these exact visible record forms: `Delegating: <role> — <bounded objective> — "
         "<model>/<effort> — <reason>`; `Waiting: <role or wave> — <bounded in-progress fact>`; "
-        "`Completed: <agent id/role> — <status> — tokens <value or not exposed by host> — duration "
-        "<value or not exposed by host>`. `Waiting:` may contain only observed lifecycle state. "
+        "`Completed: <agent id/role> — <status>`, followed only when exposed by ` — tokens "
+        "<observed value>` and/or ` — duration <observed value>`. `Waiting:` may contain only observed "
+        "lifecycle state. The final completion response must be self-contained: repeat the integrated "
+        "deliverable, both assessor and lead completion records, a `Verification:` line, the selected "
+        "mode, and the exact completion receipt. "
         f"After the host exposes an id, emit `SYMPHONY_REGISTER:{run['id']}:assessor:<agent-id>` or "
         f"`SYMPHONY_REGISTER:{run['id']}:lead:<agent-id>` as applicable. "
         "For the initial execution lead and each recovery lead, immediately end a final-channel response "
@@ -458,15 +471,16 @@ def _status_context(state):
         )
     usage = _usage_aggregates(state)
     assessment = state["assessment"]
-    return (
+    context = (
         f"Symphony project enabled: {str(state['enabled']).lower()}. Active run: {run_text}. "
         f"Project profile: {assessment['profile'] or 'unassessed'}; "
         f"profile source: {assessment['source'] or 'none'}; assessment revision: {assessment['revision']}; "
         f"mode revision: {run['mode_revision'] if run else 'none'}; "
-        f"reassessment due: {str(run['assessment_due']).lower() if run else 'no active run'}. "
-        f"Observed final-request tokens (partial): {usage['total_tokens']}; "
-        f"agents lacking final-request totals: {usage['missing_total_tokens']}."
+        f"reassessment due: {str(run['assessment_due']).lower() if run else 'no active run'}."
     )
+    if usage["observed_totals"]:
+        context += f" Observed final-request tokens (partial): {usage['total_tokens']}."
+    return context
 
 
 def _assessment_context(state):
@@ -757,8 +771,19 @@ def _usage_aggregates(state):
     totals = [record.get("usage", {}).get("final_request_total_tokens") for record in records]
     return {
         "total_tokens": sum(value for value in totals if type(value) is int),
-        "missing_total_tokens": sum(type(value) is not int for value in totals),
+        "observed_totals": sum(type(value) is int for value in totals),
     }
+
+
+def _measurement_values(record):
+    usage = _clean_usage(record.get("usage"))
+    values = {field: usage.get(field) for _, field in AGENT_MEASUREMENT_FIELDS}
+    if type(values["duration_ms"]) is not int:
+        started = record.get("started_at")
+        stopped = record.get("stopped_at")
+        if type(started) is int and type(stopped) is int and stopped >= started:
+            values["duration_ms"] = (stopped - started) * 1_000
+    return usage, values
 
 
 def _agents_context(state, include_history=False):
@@ -776,18 +801,30 @@ def _agents_context(state, include_history=False):
         if not records:
             lines.append("No observed subagents.")
             continue
+        prepared = [(record, *_measurement_values(record)) for record in records]
+        measurements = [
+            (heading, field) for heading, field in AGENT_MEASUREMENT_FIELDS
+            if any(type(values.get(field)) is int for _, _, values in prepared)
+        ]
+        include_source = any(usage.get("source") or usage.get("scope") for _, usage, _ in prepared)
+        headings = list(AGENT_BASE_HEADINGS) + [heading for heading, _ in measurements]
+        if include_source:
+            headings.append("Usage source/token scope")
         lines.extend([
-            "| " + " | ".join(AGENT_TABLE_HEADINGS) + " |",
-            "| " + " | ".join("---" for _ in AGENT_TABLE_HEADINGS) + " |",
+            "| " + " | ".join(headings) + " |",
+            "| " + " | ".join("---" for _ in headings) + " |",
         ])
-        for record in records:
+        for record, usage, values_by_field in prepared:
             values = [item["id"], record["id"], record["status"]]
             values.extend(record.get(field) or "not exposed by host" for field in ("role", "model", "effort"))
-            usage = _clean_usage(record.get("usage"))
-            values.extend(usage.get(field, "not exposed by host") for field in USAGE_FIELDS)
-            source = usage.get("source")
-            scope = usage.get("scope")
-            values.append(f"{source}/{scope}" if source and scope else "not exposed by host")
+            values.extend(
+                "" if values_by_field.get(field) is None else values_by_field[field]
+                for _, field in measurements
+            )
+            if include_source:
+                source = usage.get("source")
+                scope = usage.get("scope")
+                values.append(f"{source}/{scope}" if source and scope else source or scope or "")
             lines.append("| " + " | ".join(str(value).replace("|", "\\|").replace("\n", " ").replace("\r", " ") for value in values) + " |")
     return "\n".join(lines)
 
@@ -1152,7 +1189,9 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                 block=True,
                 reason=(
                     control_ack + "Symphony run remains active. Reconcile worker results, integrate and verify the "
-                    f"objective, then include `{run['receipt']}` in the final assistant message."
+                    "objective. Supporting workflow plans return to the lead: you must not ask the user to choose "
+                    "direct versus delegated execution because the accepted Symphony mode makes that choice. "
+                    f"Then include `{run['receipt']}` in the final assistant message."
                 ),
             )
         modes = MODE_RE.findall(message)
@@ -1225,7 +1264,8 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                         f"Register the existing terminal lead with `SYMPHONY_REGISTER:{run['id']}:lead:"
                         f"{pending_lead}` in the owning root's next final-channel self-contained report, "
                         "repeating the full integrated deliverable rather than a summary, both assessor "
-                        "and lead completion records with role, status, tokens, and duration, the selected "
+                        "and lead completion records with role and status, plus tokens or duration only when "
+                        "exposed, the selected "
                         "mode, and the exact run completion receipt. Do not spawn, "
                         "resume, or call Agent for a correction; no additional assessment receipt is "
                         "required for this lead's own synchronous stop."
@@ -1253,6 +1293,27 @@ def _handle_stop(payload, data_dir, project_root, now, stop_wait_seconds):
                     "children cannot be promoted to lead. Do not invent or reuse another role's receipt."
                 ),
             )
+        if not run["dry_run"] and run.get("assessor_agent_id") and run.get("lead_agent_id"):
+            visible_records = all(re.search(
+                rf"(?mi)^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?completed:(?:\*\*)?[ \t]*"
+                rf"`?{re.escape(run[f'{role}_agent_id'])}`?[ \t]*/[ \t]*"
+                rf"`?(?:symphony_)?{role}`?[ \t]+—[ \t]+[^\r\n]*[A-Za-z0-9][^\r\n]*$",
+                message,
+            ) for role in ("assessor", "lead"))
+            visible_verification = re.search(
+                r"(?mi)^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?verification:(?:\*\*)?"
+                r"[^\r\n]*[A-Za-z0-9][^\r\n]*$",
+                message,
+            )
+            if not visible_records or not visible_verification:
+                if memory_changed or assessment_changed:
+                    write_project_state(data_dir, state, now)
+                return HookResult(block=True, reason=(
+                    "Symphony completion requires one self-contained final report. Repeat the integrated "
+                    "deliverable, both assessor and lead completion records as `Completed: <agent-id>/<role> "
+                    "— <status>` with token or duration segments only when exposed, a `Verification:` line "
+                    "with authoritative evidence, the selected mode, and the exact run completion receipt."
+                ))
         memory_error = _memory_checkpoint_error(run, project_root, message)
         if memory_error:
             write_project_state(data_dir, state, now)
@@ -1316,8 +1377,9 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                     "Symphony must register the existing terminal lead before another spawn. "
                     f"End the owning root's next final-channel self-contained report with "
                     f"`SYMPHONY_REGISTER:{run['id']}:lead:{pending_lead}`, the full integrated deliverable "
-                    "rather than a summary, both assessor and lead completion records with role, status, "
-                    "tokens, and duration, the selected mode, and the exact run completion receipt. Do not "
+                    "rather than a summary, both assessor and lead completion records with role and status, "
+                    "plus tokens or duration only when exposed, the selected mode, and the exact run completion "
+                    "receipt. Do not "
                     "spawn, resume, or call Agent for a correction; "
                     "no additional assessment receipt is required."
                 ))
@@ -1429,7 +1491,7 @@ def handle_event(payload, data_dir, now=None, stop_wait_seconds=None):
                 result = HookResult(
                     context=(
                         f"You are an assigned child in Symphony run {run['id']}; inherited root bootstrap does not apply. "
-                        "Perform your assigned role directly. A symphony_assessor is read-only and does not need spawn or wait tools: "
+                        f"Perform your assigned role directly. {AUTHORITY_CONTEXT} A symphony_assessor is read-only and does not need spawn or wait tools: "
                         "inspect the repository and return its assessment, never delegate another assessor or lead. "
                         "A symphony_lead executes and verifies its assignment. Follow explicitly assigned skills; "
                         "return the requested receipts, capability receipt, changed files, checks, and blockers. "

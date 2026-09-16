@@ -11,7 +11,7 @@ description: Show Symphony usage without enabling or starting it
 - `/symphony:start [--dry-run] <task>` — start one guarded run without changing project enablement; `--dry-run` validates only the planned routing and writes no project files.
 - `/symphony:assess [small|medium|large|auto]` — request reassessment or set a persistent project profile; `/symphony:assess large` is suitable for this repository's long-running shape, and `auto` reverses the override.
 - `/symphony:status` — show project and active-run state without changing it.
-- `/symphony:agents [--all]` — list active-run subagents, including terminal agents; `--all` includes retained historical runs. Missing model or effort is `not exposed by host`.
+- `/symphony:agents [--all]` — list active-run subagents, including terminal agents; `--all` includes retained historical runs. Missing model or effort may be labeled unknown; unavailable token and duration measurements are omitted.
 - `/symphony:stop` — gracefully stop the active run while keeping Symphony enabled.
 - `/symphony:stop --force` — release stale protection; a background agent may still be running.
 - `/symphony:help` — show this help without starting a run.
@@ -26,9 +26,9 @@ Help, status, agents, empty enable, assessment controls, and invalid input termi
 
 ## Usage visibility
 
-Usage is authoritative host observations only; Symphony never estimates usage or cost. Claude synchronous Agent usage may be exposed, but background Agent usage and Codex usage remain `not exposed by host`. Token fields are final-request scoped; duration and tool count are agent-run scoped. No hard token or cost budget is promised.
+Usage is authoritative host observations only; Symphony never estimates usage or cost. Claude synchronous Agent usage may be exposed; unavailable background or Codex usage is omitted. Token fields are final-request scoped; host duration and tool count are agent-run scoped, and lifecycle duration is observed wall time. No hard token or cost budget is promised.
 
-`Waiting:` reports only observed in-progress lifecycle state. `Completed:` includes the agent id/role, terminal status, and host token/duration values or `not exposed by host`.
+`Waiting:` reports only observed in-progress lifecycle state. `Completed:` includes the agent id/role and terminal status, adding token or duration values only when exposed.
 
 ## Document memory
 
