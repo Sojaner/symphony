@@ -1,0 +1,10 @@
+{
+  "session_id": "codex-session",
+  "turn_id": "turn-1",
+  "cwd": "/workspace/project",
+  "hook_event_name": "Stop",
+  "model": "codex-model",
+  "permission_mode": "default",
+  "stop_hook_active": false,
+  "last_assistant_message": "done"
+}

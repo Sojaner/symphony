@@ -1,0 +1,8 @@
+{
+  "session_id": "claude-session",
+  "cwd": "/workspace/project",
+  "hook_event_name": "Stop",
+  "permission_mode": "ask",
+  "stop_hook_active": false,
+  "last_assistant_message": "done"
+}

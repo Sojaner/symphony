@@ -1,0 +1,7 @@
+{
+  "session_id": "claude-session",
+  "cwd": "/workspace/project",
+  "hook_event_name": "UserPromptSubmit",
+  "permission_mode": "ask",
+  "prompt": "Implement the feature"
+}
