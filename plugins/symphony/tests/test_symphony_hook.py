@@ -2252,10 +2252,12 @@ class SymphonyHookTests(unittest.TestCase):
         self.assertNotIn("read-only symphony_assessor", recovery.context)
 
     def test_only_explicit_dry_run_bypasses_assessment_completion(self):
+        eval_prompt = (PLUGIN_ROOT / "evals" / "match-proceeds" / "prompt.md").read_text(encoding="utf-8")
         for index, (prompt, expected_dry_run, objective, completes) in enumerate((
             ("/symphony:start --dry-run validate routing", True, "validate routing", True),
             ("SYMPHONY_CONTROL: start\nSYMPHONY_TASK: --dry-run validate markers",
              True, "validate markers", True),
+            (eval_prompt, True, eval_prompt.split("SYMPHONY_TASK:", 1)[1].strip().removeprefix("--dry-run "), True),
             ("/symphony:start validate dry-run behavior", False,
              "validate dry-run behavior", False),
         )):
@@ -3514,6 +3516,24 @@ class CodexSmokeTests(unittest.TestCase):
 
 
 class HookDeclarationTests(unittest.TestCase):
+    def test_hosted_eval_prompts_preserve_registration_and_refusal_contracts(self):
+        prompt = (PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "prompt.md").read_text(encoding="utf-8")
+        for required in (
+            "Task, TaskOutput, TaskStop",
+            "symphony:symphony",
+            "SYMPHONY_ASSESSMENT:<run-id>:<project-profile>:<run-mode>",
+            "SYMPHONY_ASSESSMENT_REASON:<single bounded line>",
+            "SYMPHONY_REGISTER:<run-id>:lead:<agent-id>",
+            "run_in_background: false",
+            "final-channel",
+        ):
+            self.assertIn(required, prompt)
+        mismatch = (PLUGIN_ROOT / "evals" / "mismatch-refusal" / "prompt.md").read_text(encoding="utf-8")
+        self.assertIn("symphony:symphony", mismatch)
+        self.assertIn("trusted runtime metadata", mismatch)
+        grader = (PLUGIN_ROOT / "evals" / "hosted-registration-smoke" / "graders" / "registered-routing.md").read_text(encoding="utf-8")
+        self.assertNotIn("asks only for the missing final mode marker also counts", grader)
+
     def test_skill_separates_assessment_execution_and_exposes_delegations(self):
         skill = (PLUGIN_ROOT / "skills" / "symphony" / "SKILL.md").read_text(encoding="utf-8")
         required = (
@@ -3616,7 +3636,23 @@ Completed: symphony_lead — planned
         result = subprocess.run(["node", "-e", """
 const fs = require('fs');
 for (const [path, pattern, flags] of JSON.parse(fs.readFileSync(0, 'utf8'))) {
-  try { new RegExp(pattern, flags); }
+  try {
+    const regex = new RegExp(pattern, flags);
+    if (path.endsWith('/refuses-with-mismatch.md')) {
+      const refusal = 'Orchestrator mismatch\\nDeclared: gpt-5.6-terra/medium; actual: claude-haiku-4-5-20251001/medium\\nStart a task configured with the actual model and effort.';
+      for (const valid of [refusal, refusal.replace('20251001/medium', '20251001/unverified')]) {
+        if (!regex.test(valid)) throw new Error('valid refusal rejected');
+      }
+      for (const invalid of [
+        refusal.replace('Orchestrator mismatch', 'There is no mismatch; proceeding'),
+        refusal.replace('Start a task configured with the actual model and effort.', 'Proceeding with implementation.'),
+        refusal.replace('claude-haiku-4-5-20251001', 'gpt-5.6-terra'),
+        refusal + '\\nI will now build the API.',
+      ]) {
+        if (regex.test(invalid)) throw new Error('invalid refusal accepted');
+      }
+    }
+  }
   catch (error) { throw new Error(path + ': ' + error.message); }
 }
 """], input=json.dumps(graders), capture_output=True, text=True)
