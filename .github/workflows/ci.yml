@@ -55,6 +55,9 @@ jobs:
           export CODEX_HOME="$RUNNER_TEMP/symphony-codex-home"
           export SYMPHONY_STATE_DIR="$RUNNER_TEMP/symphony-codex-state"
           mkdir -p "$CODEX_HOME" "$SYMPHONY_STATE_DIR"
+          # CODEX_HOME starts empty, and the CLI authenticates through a stored
+          # credential rather than reading OPENAI_API_KEY from the environment.
+          printenv OPENAI_API_KEY | codex login --with-api-key
           codex plugin marketplace add "$GITHUB_WORKSPACE"
           codex plugin add symphony@symphony
           codex exec \
