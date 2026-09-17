@@ -1,0 +1,560 @@
+[
+ {
+  "#": 1,
+  "autofix_class": "manual",
+  "confidence": 100,
+  "file": "plugins/symphony/symphony/runtime.py",
+  "first_evidence": "plugins/symphony/symphony/runtime.py:97-99 -- elif source.kind in {\"stop_requested\", \"interrupt\"}:\n        state, lifecycle_actions = reduce(state, source)",
+  "independent_reviewers": [
+   "adversarial",
+   "agent-native"
+  ],
+  "line": 97,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "adversarial",
+   "agent-native",
+   "fast-pass"
+  ],
+  "severity": "P0",
+  "suggested_fix": "In _transition for stop_requested, read payload['stop_hook_active'] (or count consecutive blocked stops on the run) and after the first blocked retry reduce an interrupt/permit_stop instead of block_stop; render block_stop reasons as actionable text naming `/symphony:stop --force` / `$symphony:symphony stop --force`; and do not open an outcome-required run for a prompt that never spawns a lead (either skip run creation until the assessor is spawned, or let _stop_requested permit stop when no lead was ever registered).",
+  "title": "Stop hook livelocks: re-blocks on every stop_hook_active retry with no agent-reachable escape",
+  "why_it_matters": "On an enabled project every non-control prompt opens a run with no lead, so when the model answers directly the Stop hook returns decision:block with reason lead_outcome_missing. Claude Code re-fires Stop with stop_hook_active=true; nothing reads that flag, the same block is emitted again, and the session cannot end until the user types a force-stop control. The same loop occurs whenever a tracked delegation never reports SubagentStop. Reducer refusal reasons are raw tokens and no agent-visible text names the escape hatch.",
+  "evidence": [
+   "plugins/symphony/symphony/runtime.py:97-99 -- elif source.kind in {\"stop_requested\", \"interrupt\"}:\n        state, lifecycle_actions = reduce(state, source)",
+   "plugins/symphony/symphony/reducer.py:262-263 -- if run.outcome is None: return state, (Action(\"block_stop\", {\"reason\": \"lead_outcome_missing\"}),)",
+   "plugins/symphony/symphony/runtime.py:108-111 -- if not state.enabled: return state, () ... return reduce(state, _task_event(state, source, {\"task\": prompt}))",
+   "grep stop_hook_active plugins/symphony/symphony -> no reader",
+   "plugins/symphony/symphony/reducer.py:262-263 -- if run.outcome is None:\n        return state, (Action(\"block_stop\", {\"reason\": \"lead_outcome_missing\"}),)",
+   "plugins/symphony/symphony/reducer.py:306-308 -- dedup is bypassed for stop_requested so every replay re-evaluates and re-blocks",
+   "plugins/symphony/symphony/reducer.py:244-250 -- def _stop_requested(...): ... active = _active_identities(run) ... if active: return state, (Action(\"block_stop\", {\"active\": active}),)",
+   "plugins/symphony/symphony/runtime.py:140-143 -- if name == \"stop\": kind = \"force_stop\" if argument == \"--force\" else \"stop_requested\" ... (only reachable from _handle_prompt, which only runs on source.kind == \"user_prompt\")"
+  ]
+ },
+ {
+  "#": 2,
+  "autofix_class": "manual",
+  "confidence": 100,
+  "file": "plugins/symphony/symphony/runtime.py",
+  "first_evidence": "plugins/symphony/symphony/runtime.py:75-84 -- active_ids = payload.get(\"active_agent_ids\", payload.get(\"active_ids\"))\n        if state.active_run and isinstance(active_ids, list): ... resume_reconciled ...",
+  "independent_reviewers": [
+   "adversarial",
+   "reliability"
+  ],
+  "line": 76,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "adversarial",
+   "reliability",
+   "fast-pass"
+  ],
+  "severity": "P1",
+  "suggested_fix": "Record payload['session_id'] on the run/delegations; in the session_heartbeat and user_prompt branches, when the session differs from the recorded one (or a delegation's updated_at is older than the current session start), reduce resume_reconciled with the delegations observed since then (empty list if none) so dead children become 'interrupted' and the run reaches recovering; add a SessionStart fixture without active_agent_ids and a smoke assertion that reconciliation occurs.",
+  "title": "Stale delegations are never reconciled: resume needs active_agent_ids no host sends",
+  "why_it_matters": "Neither Claude Code nor Codex SessionStart payloads carry active_agent_ids, so _resume_reconciled never runs in production. A delegation whose SubagentStop was missed (timeout, kill, crash, new session) stays in an active state forever; _stop_requested and _lead_completed then block normal completion for the rest of the run's life, and the only exit is a manual force stop that archives the run as force_stopped.",
+  "evidence": [
+   "plugins/symphony/symphony/runtime.py:75-84 -- active_ids = payload.get(\"active_agent_ids\", payload.get(\"active_ids\"))\n        if state.active_run and isinstance(active_ids, list): ... resume_reconciled ...",
+   "plugins/symphony/symphony/reducer.py:244-250 -- def _stop_requested(state, event): ... active = _active_identities(run)\n    if active:\n        return state, (Action(\"block_stop\", {\"active\": active}),)",
+   "plugins/symphony/symphony/runtime.py:76-77 -- active_ids = payload.get(\"active_agent_ids\", payload.get(\"active_ids\"))\n        if state.active_run and isinstance(active_ids, list):",
+   "plugins/symphony/tests/fixtures/ and scripts/package_smoke.py -- no SessionStart payload includes active_agent_ids/active_ids"
+  ]
+ },
+ {
+  "#": 3,
+  "autofix_class": "manual",
+  "confidence": 100,
+  "file": "plugins/symphony/symphony/runtime.py",
+  "first_evidence": "plugins/symphony/symphony/runtime.py:934-936 -- except Exception as error:  # Hook failures must not block unrelated host work.\n        sys.stderr.write(f\"Symphony hook fault: {type(error).__name__}\\n\")\n        return 0",
+  "independent_reviewers": [
+   "reliability"
+  ],
+  "line": 934,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "reliability"
+  ],
+  "severity": "P1",
+  "suggested_fix": "In main(), catch the exception, still exit 0 (host work must not block), but write a durable faulted marker (e.g. a best-effort sentinel file under the configured SYMPHONY_STATE_DIR, independent of the StateStore lock/write path that just failed) and surface it via `symphony:status`/`agents` so users can discover the loss of guarding instead of only a stderr line most hosts discard.",
+  "title": "Hook fault (e.g. unwritable ~/.symphony) silently disables all guarding; documented faulted state never produced",
+  "why_it_matters": "If the state directory can't be created or written (permission error, read-only $HOME, full disk, NFS hiccup), StateStore.update raises inside store.py's _locked()/_write() and propagates to main()'s bare except, which writes one stderr line and returns exit code 0. Exit 0 tells the host the hook succeeded, so every subsequent tool call, subagent spawn, and Stop proceeds completely unguarded -- no SYMPHONY_ROLE gate, no completion gating, no assessment requirement -- with zero host-visible signal. The project's own docs (skills/symphony/references/provider-activation.md) define a `faulted` activation state for exactly this ('a hook command or packaged file failed'), but no production code path ever writes that state; it only appears in scripts/package_smoke.py's own simulated result list. The fix should make main() distinguish 'hook raised' from 'hook denied a tool' and persist a faulted marker (or at minimum emit an inject_context/stderr message a human is likely to see) instead of a bare stderr line plus exit 0.",
+  "evidence": [
+   "plugins/symphony/symphony/runtime.py:934-936 -- except Exception as error:  # Hook failures must not block unrelated host work.\n        sys.stderr.write(f\"Symphony hook fault: {type(error).__name__}\\n\")\n        return 0",
+   "plugins/symphony/symphony/store.py:298-311 -- _locked() does path.parent.mkdir(...) and, without fcntl, falls back to a process-local lock; either raises OSError/PermissionError on an unwritable home, which is not caught anywhere below main()",
+   "plugins/symphony/skills/symphony/references/provider-activation.md:15 -- `faulted` | A hook command or packaged file failed | Report the event and source once; treat it as an execution or packaging fault",
+   "plugins/symphony/scripts/package_smoke.py:396-397 -- except (OSError, SmokeFailure, subprocess.SubprocessError) as exc: activation.append(\"faulted\") -- the only place in the repo that ever produces the 'faulted' state, and it is the smoke harness, not the runtime"
+  ]
+ },
+ {
+  "#": 4,
+  "autofix_class": "manual",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/adapters.py",
+  "first_evidence": "plugins/symphony/symphony/adapters.py:122-124 -- \"hookSpecificOutput\": {\"hookEventName\": hook_event_name, \"additionalContext\": context}",
+  "independent_reviewers": [
+   "api-contract"
+  ],
+  "line": 124,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "api-contract"
+  ],
+  "severity": "P1",
+  "suggested_fix": "Generalize the deferral runtime.py already uses for Claude (`_defer_parent_actions` / `_consume_parent_actions`, gated on `provider == \"claude\"` at runtime.py:90) to Codex as well, and flush the queued guidance on the next event Codex's schema is confirmed to accept `additionalContext` on -- SubagentStart (of a replacement/retry agent) or UserPromptSubmit -- instead of rendering it directly on SubagentStop. Name the assumption: Codex has no PostToolUse(Agent) equivalent registered either, so the flush point differs from Claude's and needs its own trigger in _transition.",
+  "title": "Codex SubagentStop guidance rendered as additionalContext, a field Codex drops there",
+  "why_it_matters": "On Codex, when an assessor/consultant/lead subagent stops without satisfying Symphony's contract (low-effort assessor, unclassified consultant decision, wrong-tier lead), runtime.py's _observe_delegation produces an inject_context action carrying the corrective instruction (e.g. \"The assessor result was not produced at high effort or above. Retry the assessment...\", \"Lead completion is waiting for the matrix-selected {model}/{effort}...\"). Unlike the Claude path, which defers these actions to the next PostToolUse(Agent) event (runtime.py:90-91), the Codex path renders them immediately on the SubagentStop event itself (runtime.py:92-93), and adapters.py's render() serializes any non-blocking inject_context as `hookSpecificOutput.additionalContext` regardless of hook_event_name. Codex's own hook engine parses SubagentStop output with the same routine as Stop (codex-rs/hooks/src/events/stop.rs::parse_completed), which only reads the top-level `decision`/`reason` fields (plus the universal continue/stopReason) -- it never extracts an `additionalContext` field for this event -- and Codex's wire structs are declared `#[serde(deny_unknown_fields)]`. So the exact JSON shape the test suite hard-codes (tests/test_runtime.py:244 asserts \"gpt-5.6-sol/medium\" appears in `hookSpecificOutput.additionalContext` for a codex SubagentStop payload) is a shape the real Codex host either strips or rejects: the corrective guidance never reaches the agent. This is the one enforcement channel skills/symphony/references/role-contracts.md documents for Codex (\"Codex validates the observed task name, model, effort, and final lifecycle result... withholds managed completion when required result markers are missing\"); if the message never arrives, an operator on Codex gets no explanation for why a delegation didn't count, only an eventual unexplained Stop-time block.",
+  "evidence": [
+   "plugins/symphony/symphony/adapters.py:122-124 -- \"hookSpecificOutput\": {\"hookEventName\": hook_event_name, \"additionalContext\": context}",
+   "plugins/symphony/symphony/runtime.py:88-93 -- elif source.kind in {\"subagent_started\", \"subagent_stopped\"}: state, observed_actions = _observe_delegation(state, source) / if provider == \"claude\" and source.kind == \"subagent_stopped\": state = _defer_parent_actions(state, observed_actions) / else: actions += observed_actions",
+   "plugins/symphony/symphony/runtime.py:276-283 -- Action(\"inject_context\", {\"text\": \"The assessor result was not produced at high effort or above. Retry the assessment with an explicitly strong/high assessor before selecting a lead.\"}) -- produced directly (not deferred) when provider==codex and the terminal event is subagent_stopped",
+   "plugins/symphony/hooks/codex.json:7 -- \"SubagentStop\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"env SYMPHONY_PROVIDER=codex python3 ...\", \"timeout\": 10}]}] -- no additionalContextLimit configured here, unlike the UserPromptSubmit (line 5) and SubagentStart (line 6) entries that do carry one",
+   "plugins/symphony/tests/test_runtime.py:244 -- self.assertIn(\"gpt-5.6-sol/medium\", self.context(result).lower()) where result = handle({..., \"hook_event_name\": \"SubagentStop\", ...}, self.environ) for provider codex -- the test itself assumes additionalContext survives a Codex SubagentStop round-trip",
+   "plugins/symphony/skills/symphony/references/role-contracts.md -- \"Codex validates the observed task name, model, effort, and final lifecycle result, then withholds managed completion when required result markers are missing.\" (states SubagentStop-time feedback is Codex's documented enforcement/guidance channel)",
+   "External (openai/codex, codex-rs/hooks/src/events/stop.rs `parse_completed`, shared Stop/SubagentStop parsing): only `decision`/`reason` and the universal `continue`/`stopReason` fields are read from hook stdout for these two events; no `additionalContext` extraction is present, and sibling wire structs (e.g. PreToolUseCommandOutputWire, SessionStartCommandOutputWire) are declared `#[serde(deny_unknown_fields)]`."
+  ]
+ },
+ {
+  "#": 5,
+  "autofix_class": "gated_auto",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/reducer.py",
+  "first_evidence": "plugins/symphony/symphony/reducer.py:126-127 -- replacing = identity != run.lead_identity and ( run.lead_identity is not None or run.status in {\"interrupted\", \"recovering\"} )",
+  "independent_reviewers": [
+   "correctness"
+  ],
+  "line": 127,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "correctness"
+  ],
+  "severity": "P1",
+  "suggested_fix": "In `_lead_started` define replacement only when a lead exists: `replacing = run.lead_identity is not None and identity != run.lead_identity`. A first lead after interrupt then registers at the current generation (which is what `_observe_delegation` sends). Keep the `safe` check for genuine replacements. Add a reducer test: interrupted run with lead_identity None accepts lead_started at owner_generation.",
+  "title": "First lead after interrupt is rejected when no lead was registered",
+  "why_it_matters": "If a run is interrupted (Codex Interrupt hook, or SessionStart resume reconciliation) before any lead registered, every subsequent lead spawn is refused and the run can never complete: Stop stays blocked with `lead_outcome_missing` until `/symphony:stop --force`. `_lead_started` treats the spawn as a replacement because `run.status in {\"interrupted\",\"recovering\"}` even though `run.lead_identity is None`, and then demands `owner_generation + 1`; but `_observe_delegation` only bumps the generation when `state.active_run.lead_identity` is set, so the request arrives at the current generation and hits `reject_lead_replacement`, an action nothing renders. Executed: start -> Interrupt -> assessor accepted -> lead SubagentStart/SubagentStop -> Stop blocked, `lead_identity=None`, status `interrupted`; the identical sequence without Interrupt completes and archives.",
+  "evidence": [
+   "plugins/symphony/symphony/reducer.py:126-127 -- replacing = identity != run.lead_identity and ( run.lead_identity is not None or run.status in {\"interrupted\", \"recovering\"} )",
+   "plugins/symphony/symphony/reducer.py:130 -- if replacing and (not safe or requested_generation != run.owner_generation + 1): return state, (Action(\"reject_lead_replacement\", ...),)",
+   "plugins/symphony/symphony/runtime.py:217-220 -- and state.active_run.lead_identity and state.active_run.lead_identity != str(identity) ): owner_generation += 1  (no bump when lead_identity is None)",
+   "plugins/symphony/symphony/runtime.py:_render_actions -- reject_lead_replacement is not rendered, so the refusal is invisible to the host",
+   "executed trace (codex): UserPromptSubmit start -> Interrupt -> assessor SubagentStart/Stop with SYMPHONY_ASSESSMENT -> lead SubagentStart/Stop -> Stop => {\"decision\": \"block\", \"reason\": \"lead_outcome_missing\"}, run.status == 'interrupted', lead_identity None; same sequence minus Interrupt => Stop permitted, active_run None"
+  ]
+ },
+ {
+  "#": 6,
+  "autofix_class": "gated_auto",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/runtime.py",
+  "first_evidence": "plugins/symphony/symphony/runtime.py:184 -- return Event(f\"{source.event_id}:{suffix}:{kind}\", kind, source.observed_at, payload or {})",
+  "independent_reviewers": [
+   "correctness"
+  ],
+  "line": 184,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "correctness"
+  ],
+  "severity": "P1",
+  "suggested_fix": "Apply the same collision guard `_task_event` uses to every control-derived event: in `_derived` (or a wrapper used by `_handle_prompt`), if `f\"{source.event_id}:{suffix}:{kind}\"` already appears in `state.event_history`, append `:{source.observed_at}`. Alternatively include `source.observed_at` in `_derived` ids for control kinds (enable/disable/bypass/reassess/stop_requested/force_stop) since host replays of prompts are not a real concern.",
+  "title": "Repeated identical control prompt is silently deduped in Claude sessions",
+  "why_it_matters": "In one Claude Code session, `/symphony:enable`, `/symphony:disable`, `/symphony:enable` leaves the project disabled with no output, and a second `/symphony:stop --force` (the documented escape from a stuck run) is ignored while the host Stop keeps returning `{\"decision\":\"block\"}`. Claude's UserPromptSubmit payload has no per-turn field (session_id, transcript_path, cwd, permission_mode, prompt), so `event_from_payload` hashes to the same event_id, `_derived` builds the same `{id}:control:{kind}` id, and `reduce()` drops it as a replay once the first occurrence landed in event_history. `_task_event` already salts with `observed_at` for exactly this collision but control events do not. Executed against the runtime: enable/disable/enable -> `enabled = False`; start/force-stop/start/force-stop -> second force stop emits nothing and Stop is blocked with `lead_outcome_missing`.",
+  "evidence": [
+   "plugins/symphony/symphony/runtime.py:184 -- return Event(f\"{source.event_id}:{suffix}:{kind}\", kind, source.observed_at, payload or {})",
+   "plugins/symphony/symphony/reducer.py:306-307 -- if any(record.event_id == event.event_id for record in state.event_history): if event.kind == \"stop_requested\": ... return state, ()",
+   "plugins/symphony/symphony/runtime.py:195 -- return replace(candidate, event_id=f\"{candidate.event_id}:{source.observed_at}\")  (task events are salted; control events at :120 and :142 are not)",
+   "plugins/symphony/tests/fixtures/claude/user_prompt.json -- payload fields: session_id, cwd, hook_event_name, permission_mode, prompt (no per-turn nonce)",
+   "executed trace: /symphony:enable, /symphony:disable, /symphony:enable -> third call stdout '' and store.enabled == False; /symphony:start a, /symphony:stop --force, /symphony:start b, /symphony:stop --force -> second force stop stdout '' and Stop -> {\"decision\": \"block\", \"reason\": \"lead_outcome_missing\"}"
+  ]
+ },
+ {
+  "#": 7,
+  "autofix_class": "gated_auto",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/runtime.py",
+  "first_evidence": "plugins/symphony/symphony/runtime.py:736 -- identities.discard(identity)  (only the same identity can clear its own marker)",
+  "independent_reviewers": [
+   "correctness"
+  ],
+  "line": 736,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "correctness"
+  ],
+  "severity": "P1",
+  "suggested_fix": "Key invalid markers by the consultant's objective instead of its identity (the objective is already captured on the Delegation via `_queue_pending_delegation`/`update['objective']`): on a terminal consultant result, discard any marker whose objective matches the finishing consultant's objective, then add the identity/objective only if `not decisions`. Assumption: a retry carries the same objective text; if not, fall back to clearing markers for consultants whose delegation state is terminal when a newer consultant returns valid decisions.",
+  "title": "Invalid consultant marker keyed by agent id can never be cleared by a retry",
+  "why_it_matters": "When a consultant finishes without a valid SYMPHONY_DECISION line, its agent_id is stored in `_invalid_consultants`, and both lead completion (`runtime.py:369`) and the host Stop (`reducer.py:251`) refuse until that exact identity reports valid decisions. The injected guidance says to retry the consultant, but a retry is a new spawn with a new agent_id; `_set_invalid_consultant` only `discard`s the observed identity, so the stale id persists forever and the run cannot complete (Stop blocked with `consultant results still require size/complexity classification: C1`) until a force stop. Executed: consultant C1 invalid, C2 valid, lead completes -> lead completion refused, Stop blocked, `_invalid_consultants == ['C1']`.",
+  "evidence": [
+   "plugins/symphony/symphony/runtime.py:736 -- identities.discard(identity)  (only the same identity can clear its own marker)",
+   "plugins/symphony/symphony/runtime.py:306 -- state = _set_invalid_consultant(state, str(identity), not decisions)",
+   "plugins/symphony/symphony/runtime.py:369 -- if successful and invalid_consultants: ... return state, actions  (lead_completed never reduced)",
+   "plugins/symphony/symphony/reducer.py:251 -- invalid_consultants = run.assessment.get(\"_invalid_consultants\", ()) ... block_stop",
+   "executed trace (codex): C1 SubagentStop 'no marker' -> C2 SubagentStop with valid SYMPHONY_DECISION -> lead SubagentStop 'done' => additionalContext 'Lead completion is waiting for classified consultant results: C1'; Stop => {\"decision\": \"block\", \"reason\": \"consultant results still require size/complexity classification: C1\"}"
+  ]
+ },
+ {
+  "#": 8,
+  "autofix_class": "manual",
+  "confidence": 100,
+  "file": ".github/workflows/ci.yml",
+  "first_evidence": ".github/workflows/ci.yml:46-49 -- if ! command -v codex >/dev/null 2>&1 || [ -z \"$OPENAI_API_KEY\" ]; then\n            echo \"::notice::SKIP real Codex smoke: CLI or credential unavailable\"\n            exit 0\n          fi",
+  "independent_reviewers": [
+   "adversarial",
+   "reliability"
+  ],
+  "line": 46,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "adversarial",
+   "reliability"
+  ],
+  "severity": "P2",
+  "suggested_fix": "Add an install step for the Codex CLI before the step (e.g. `npm install -g @openai/codex`), and change the guard to skip only when OPENAI_API_KEY is empty, failing (exit 1) when the key is present but `codex` is missing.",
+  "title": "Real Codex CI smoke can never run: the codex CLI is never installed on the runner",
+  "why_it_matters": "The workflow installs Claude Code but never installs the Codex CLI, so the guard `command -v codex` always fails on ubuntu-latest and the real-Codex control smoke exits 0 with a notice on every run. Only the synthetic package_smoke harness ever exercises Codex, so a real-host regression ships green.",
+  "evidence": [
+   ".github/workflows/ci.yml:46-49 -- if ! command -v codex >/dev/null 2>&1 || [ -z \"$OPENAI_API_KEY\" ]; then\n            echo \"::notice::SKIP real Codex smoke: CLI or credential unavailable\"\n            exit 0\n          fi",
+   ".github/workflows/ci.yml:31-33 -- Install Claude Code step exists; no equivalent Codex install step"
+  ]
+ },
+ {
+  "#": 9,
+  "autofix_class": "manual",
+  "confidence": 100,
+  "file": "plugins/symphony/scripts/package_smoke.py",
+  "first_evidence": "plugins/symphony/scripts/package_smoke.py:151-152 -- \"model\": model, \"model_reasoning_effort\": effort,  (added for both providers under `elif event in (\"SubagentStart\", \"SubagentStop\")` at :142)",
+  "independent_reviewers": [
+   "adversarial",
+   "correctness"
+  ],
+  "line": 151,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "adversarial",
+   "correctness"
+  ],
+  "severity": "P2",
+  "suggested_fix": "For provider == 'claude' in `_payload`: drop `model`/`model_reasoning_effort`, use `agent_type` = `symphony:symphony-<role>-<model>-<effort>`, and in `_exercise` send a `PreToolUse` event with `tool_name: 'Agent'` and `tool_input: {subagent_type: 'symphony:symphony-<role>-<model>-<effort>', prompt: 'SYMPHONY_ROLE: <role>\\n...'}` (plus a SYMPHONY_ROUTE line for the lead) before each SubagentStart, and a `PostToolUse` with `tool_name: 'Agent'` after each SubagentStop, asserting the deferred additionalContext surfaces there. Mirror the shape used in tests/test_runtime.py::test_claude_assessment_feedback_is_delivered_to_parent_post_tool_use.",
+  "title": "Claude package smoke passes via payload fields Claude never sends and skips the PreToolUse gate",
+  "why_it_matters": "The Claude managed-run smoke feeds SubagentStart/SubagentStop payloads carrying `model` and `model_reasoning_effort` and an underscore `agent_type`, and never sends PreToolUse(Agent) or PostToolUse(Agent). In the real Claude runtime path, model/effort come only from the PreToolUse `subagent_type` label (`_requested_model_effort` -> `_agent_label_model_effort`; the runtime's own denial text says 'generic Claude agents cannot pin effort'), pending delegations are matched by hyphenated `symphony-<role>-<model>-<effort>` labels, and assessor/lead feedback is deferred to PostToolUse. So the smoke exercises the Codex-shaped fallback branch (`source.payload.get('model')` when `current` is None) and would keep passing even if PreToolUse correlation, label parsing, or the deferred-parent-action path broke; conversely a real Claude session with a missed PreToolUse would reject the assessor as 'not produced at high effort'.",
+  "evidence": [
+   "plugins/symphony/scripts/package_smoke.py:151-152 -- \"model\": model, \"model_reasoning_effort\": effort,  (added for both providers under `elif event in (\"SubagentStart\", \"SubagentStop\")` at :142)",
+   "plugins/symphony/scripts/package_smoke.py:156 -- payload[\"status\"] = \"completed\"",
+   "plugins/symphony/symphony/runtime.py:623 -- return _agent_label_model_effort(str(values.get(\"subagent_type\") or \"\"), role)  (Claude model/effort derive only from the PreToolUse label)",
+   "plugins/symphony/symphony/runtime.py:429 -- \"generic Claude agents cannot pin effort.\"",
+   "plugins/symphony/symphony/runtime.py:245-246 -- source.payload.get(\"model\") if \"model\" in child_metadata or not current or not current.requested_tier  (fallback branch the smoke relies on)",
+   "plugins/symphony/scripts/package_smoke.py:319-332 -- managed-run sends UserPromptSubmit, SubagentStart, SubagentStop, SubagentStart, Stop, SubagentStop, Stop; no PreToolUse/PostToolUse",
+   "plugins/symphony/tests/test_runtime.py:1099-1148 -- unit test models the real Claude sequence with PreToolUse(Agent, subagent_type) and PostToolUse(Agent)"
+  ]
+ },
+ {
+  "#": 12,
+  "autofix_class": "gated_auto",
+  "confidence": 100,
+  "file": "plugins/symphony/symphony/store.py",
+  "first_evidence": "plugins/symphony/symphony/store.py:355-359 -- except (OSError, TypeError, ValueError, json.JSONDecodeError):\n            self._archive(path, \"corrupt\")\n            rebuilt = ProjectState(needs_reassessment=True)\n            self._write(path, rebuilt)\n            return rebuilt",
+  "independent_reviewers": [
+   "reliability"
+  ],
+  "line": 357,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "reliability"
+  ],
+  "severity": "P2",
+  "suggested_fix": "Before falling back to a fresh ProjectState() in the except branch, attempt a best-effort raw read of the corrupt JSON (`json.loads` without full validation) and carry forward `enabled` (and other coarse flags) the same way _migrated_state does for the legacy-import path, only discarding fields that fail structural validation.",
+  "title": "Corrupt state file silently discards project enablement",
+  "why_it_matters": "A user who ran `/symphony:enable` for a project loses that durable choice with no warning the moment the JSON store becomes unreadable (torn write from a crash mid-fsync, disk corruption, or any future schema drift that _state_from_dict rejects). _load_unlocked archives the bad file and rebuilds with `ProjectState(needs_reassessment=True)`, whose `enabled` field defaults to False (model.py:69) -- identical to a project that was never enabled. This directly contradicts the stated must-preserve-enablement-across-upgrade guarantee: the legitimate upgrade path (_migrate) correctly carries `enabled` forward from the legacy payload, but the corruption-recovery path (same except clause) does not carry it forward at all, even though the corrupted bytes may still contain a readable `\"enabled\":true` the code never attempts to salvage.",
+  "evidence": [
+   "plugins/symphony/symphony/store.py:355-359 -- except (OSError, TypeError, ValueError, json.JSONDecodeError):\n            self._archive(path, \"corrupt\")\n            rebuilt = ProjectState(needs_reassessment=True)\n            self._write(path, rebuilt)\n            return rebuilt",
+   "plugins/symphony/symphony/model.py:69 -- enabled: bool = False",
+   "plugins/symphony/symphony/store.py:384-395 -- _migrated_state (the sibling recovery path for legacy/schema-mismatch files) does read raw.get(\"enabled\", False) and carries it forward, showing the corrupt-file path is the outlier that drops it"
+  ]
+ },
+ {
+  "#": 13,
+  "autofix_class": "manual",
+  "confidence": 75,
+  "file": ".github/workflows/ci.yml",
+  "first_evidence": ".github/workflows/ci.yml:54-60 -- codex exec \\\n            --dangerously-bypass-hook-trust \\\n            --skip-git-repo-check \\\n            --output-last-message \"$RUNNER_TEMP/codex-help.txt\" \\\n            -C \"$GITHUB_WORKSPACE\" \\\n            '$symphony:symphony help'\n          grep -qi symphony \"$RUNNER_TEMP/codex-help.txt\"",
+  "independent_reviewers": [
+   "testing"
+  ],
+  "line": 58,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "testing"
+  ],
+  "severity": "P2",
+  "suggested_fix": "Extend at least one of the two real-host smoke steps to drive a full delegation cycle through the actual CLI (e.g. a Codex `exec` prompt that forces a subagent tool call and a Stop, or a Claude `--print` run with a Task-tool-triggering prompt), and either assert on the resulting Symphony state file under the isolated HOME, or dump the raw hook stdin the host sends (redirect the hook script to also tee stdin to a file keyed by hook_event_name) so a future review can diff the real field set against what event_from_payload/_transition consume. At minimum, log a warning in the workflow when a run reaches the end without ever having observed a SubagentStart event, so silent absence of that event on the real host is visible.",
+  "title": "CI's real-host smoke steps never exercise the hook payload contract they depend on",
+  "why_it_matters": "The entire runtime -- nine-cell routing, SYMPHONY_ROLE/ROUTE/ASSESSMENT/DECISION marker parsing, Stop-blocking, delegation tracking -- is only ever driven by two kinds of input: hand-written Python dict payloads in test_runtime.py, and package_smoke.py's own synthesized payloads (`_payload()`) that assume field names such as `agent_id`, `agent_type`, `model_reasoning_effort`, `status`, and `active_agent_ids`. Neither of the two 'real host' CI steps (lines 42-60 for Codex, 62-79 for Claude) ever spawns a subagent or reaches Stop through a real Task/Agent tool call -- both only send a plain prompt and grep the transcript for the word 'symphony'. So if the real Claude Code or Codex CLI names these fields differently, never fires `SubagentStart` (only `SubagentStop`), or shapes `tool_input`/`agent_type` differently than assumed throughout runtime.py, nothing in CI would catch it -- the mismatch would only surface in production against a live host.",
+  "evidence": [
+   ".github/workflows/ci.yml:54-60 -- codex exec \\\n            --dangerously-bypass-hook-trust \\\n            --skip-git-repo-check \\\n            --output-last-message \"$RUNNER_TEMP/codex-help.txt\" \\\n            -C \"$GITHUB_WORKSPACE\" \\\n            '$symphony:symphony help'\n          grep -qi symphony \"$RUNNER_TEMP/codex-help.txt\"",
+   ".github/workflows/ci.yml:74-79 -- claude --print \\\n            --model haiku \\\n            --max-budget-usd 0.50 \\\n            --output-format text \\\n            '/symphony:help' > \"$RUNNER_TEMP/claude-help.txt\"\n          grep -qi symphony \"$RUNNER_TEMP/claude-help.txt\"",
+   "plugins/symphony/scripts/package_smoke.py:121-164 -- _payload() synthesizes agent_id/agent_type/model/model_reasoning_effort/status fields itself; package_smoke.py never invokes the real Codex/Claude CLI, only the plugin's own hook script via subprocess"
+  ]
+ },
+ {
+  "#": 14,
+  "autofix_class": "gated_auto",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/reducer.py",
+  "first_evidence": "plugins/symphony/symphony/reducer.py:132-133 -- if not replacing and requested_generation != run.owner_generation:\n        return state, (Action(\"ignore_stale_owner\", {\"identity\": identity}),)",
+  "independent_reviewers": [
+   "testing"
+  ],
+  "line": 133,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "testing"
+  ],
+  "severity": "P2",
+  "suggested_fix": "Add two cases to test_reducer.py: (1) reduce a `lead_started` event for the current lead_identity but with an `owner_generation` that does not match `run.owner_generation`, and assert the action is `ignore_stale_owner` and the run is unchanged; (2) reduce a `lead_completed` event whose `identity`/`owner_generation` no longer match the run's current lead/generation (e.g. after a `lead_started` replacement has already advanced them), and assert `ignore_stale_owner` fires and the run is neither archived nor mutated. Mirror the existing `test_owner_generation_changes_only_for_a_safe_replacement` style already in the file.",
+  "title": "Stale-owner-generation guards in reducer have zero test coverage",
+  "why_it_matters": "If a late-arriving or duplicated host event (a retried SubagentStart, or a SubagentStop from a lead that was already replaced during interrupt/resume) reaches the reducer after a newer owner_generation has taken over, `_lead_started` and `_lead_completed` are the only things standing between that stale event and a corrupted run: a wrongly-accepted stale `lead_started` would silently reassign lead_identity/owner_generation backwards, and a wrongly-accepted stale `lead_completed` would archive/complete a run out from under the actual current lead. Both guards emit `ignore_stale_owner` and return the state unchanged, but no test in test_reducer.py ever constructs a stale-generation `lead_started` (not-replacing case) or a stale-generation/stale-identity `lead_completed`, so a regression that inverts either comparison (e.g. `==` vs `!=`, or comparing the wrong generation) would pass the full suite. This is exactly the interrupt/resume race the 1.0 rewrite's stated intent (\"recover from interrupt/resume; never permanently lock a session\") depends on getting right.",
+  "evidence": [
+   "plugins/symphony/symphony/reducer.py:132-133 -- if not replacing and requested_generation != run.owner_generation:\n        return state, (Action(\"ignore_stale_owner\", {\"identity\": identity}),)",
+   "plugins/symphony/symphony/reducer.py:181-182 -- if identity != run.lead_identity or generation != run.owner_generation:\n        return state, (Action(\"ignore_stale_owner\", {\"identity\": identity}),)",
+   "grep across plugins/symphony/tests/*.py for 'ignore_stale_owner' matches only the production file (reducer.py lines 131 and 182) and never a test assertion"
+  ]
+ },
+ {
+  "#": 16,
+  "autofix_class": "manual",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/reducer.py",
+  "first_evidence": "plugins/symphony/symphony/reducer.py:94-98 -- lifecycle = {key: value for key, value in state.active_run.assessment.items() if str(key).startswith(\"_\")}",
+  "independent_reviewers": [
+   "maintainability"
+  ],
+  "line": 94,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "maintainability"
+  ],
+  "severity": "P2",
+  "suggested_fix": "Add first-class fields to `RunState` (`pending_delegations: tuple[Mapping[str, object], ...] = ()`, `pending_parent_actions: tuple[Mapping[str, object], ...] = ()`, `invalid_consultants: tuple[str, ...] = ()`), update `_run_to_dict`/`_run_from_dict` in store.py to (de)serialize them directly, delete the underscore-prefix preservation block in `_assessment_accepted` (reducer.py:94-98), and rewrite the five runtime.py helpers to `replace(run, pending_delegations=...)` etc. instead of mutating a copied `assessment` dict.",
+  "title": "Delegation bookkeeping smuggled into RunState.assessment via underscore keys",
+  "why_it_matters": "Pending-delegation queues, deferred parent actions, and invalid-consultant tracking are runtime lifecycle state, but they live as `_pending_delegations`/`_pending_parent_actions`/`_invalid_consultants` keys inside `RunState.assessment` (a `Mapping[str, Any]` meant for the assessor's business output). Because `_assessment_accepted` replaces `assessment` wholesale whenever a new assessment is recorded, the reducer has to manually re-scavenge every underscore-prefixed key before overwriting (reducer.py:94-98) or this bookkeeping silently vanishes. Five call sites in runtime.py (`_queue_pending_delegation`, `_consume_pending_delegation`, `_set_invalid_consultant`, `_defer_parent_actions`, `_consume_parent_actions`) each hand-roll `dict(state.active_run.assessment)` mutation to reach these keys, so any future reducer path that touches `assessment` without repeating the same `str(key).startswith(\"_\")` filter drops delegation tracking with no type-level warning. Promoting these to explicit `RunState` fields (e.g. `pending_delegations`, `pending_parent_actions`, `invalid_consultants`) removes the underscore convention, the prefix-preserving merge in `_assessment_accepted`, and the five ad-hoc dict-mutation call sites, since assessment replacement would no longer touch unrelated lifecycle fields at all.",
+  "evidence": [
+   "plugins/symphony/symphony/reducer.py:94-98 -- lifecycle = {key: value for key, value in state.active_run.assessment.items() if str(key).startswith(\"_\")}",
+   "plugins/symphony/symphony/runtime.py:670-682 -- _queue_pending_delegation mutates assessment[\"_pending_delegations\"] via dict(state.active_run.assessment)",
+   "plugins/symphony/symphony/runtime.py:726-741 -- _set_invalid_consultant mutates assessment[\"_invalid_consultants\"] the same way",
+   "plugins/symphony/symphony/runtime.py:744-759 -- _defer_parent_actions mutates assessment[\"_pending_parent_actions\"] the same way"
+  ]
+ },
+ {
+  "#": 17,
+  "autofix_class": "manual",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/runtime.py",
+  "first_evidence": "plugins/symphony/symphony/runtime.py:199 -- def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectState, tuple[Action, ...]]:",
+  "independent_reviewers": [
+   "maintainability"
+  ],
+  "line": 199,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "maintainability"
+  ],
+  "severity": "P2",
+  "suggested_fix": "Keep `_observe_delegation` for the shared identity/status/delegation-record update (lines 199-265), then dispatch the terminal per-role logic to three extracted functions (`_finalize_assessor`, `_finalize_consultant`, `_finalize_lead`) taking `(state, source, identity, status)` and returning `(state, actions)`, called from a small `if terminal:` block keyed on `role`. This drops the single function from ~200 lines to under ~70 without collapsing the role-specific behavior.",
+  "title": "_observe_delegation mixes state-sync, per-role policy, and UX text in one 200-line function",
+  "why_it_matters": "`_observe_delegation` (runtime.py:199-399) does four different jobs in one function body: generic delegation identity/state bookkeeping (199-265), assessor-completion validation (266-303), consultant-completion validation (304-315), and lead-completion validation including route-mismatch recovery (316-399). A maintainer touching lead-completion logic must read and hold the whole function -- including unrelated assessor/consultant branches -- to be sure a change is safe, and any new role added later grows this same function rather than a bounded unit. Splitting the shared identity/state update from three per-role completion handlers keeps each concern independently readable and testable without changing behavior.",
+  "evidence": [
+   "plugins/symphony/symphony/runtime.py:199 -- def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectState, tuple[Action, ...]]:",
+   "plugins/symphony/symphony/runtime.py:266-303 -- assessor terminal-validation block nested inside the same function",
+   "plugins/symphony/symphony/runtime.py:316-399 -- lead terminal-validation and route-mismatch recovery block nested in the same function"
+  ]
+ },
+ {
+  "#": 18,
+  "autofix_class": "gated_auto",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/runtime.py",
+  "first_evidence": "plugins/symphony/symphony/runtime.py:98 -- state, lifecycle_actions = reduce(state, source)",
+  "independent_reviewers": [
+   "security"
+  ],
+  "line": 98,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "security"
+  ],
+  "severity": "P2",
+  "suggested_fix": "In _transition, replace `reduce(state, source)` for stop_requested/interrupt with a derived event carrying only lifecycle facts: `reduce(state, Event(source.event_id, source.kind, source.observed_at, {\"provider\": provider, \"session_id\": payload.get(\"session_id\"), \"stop_hook_active\": payload.get(\"stop_hook_active\")}))` (mirroring the heartbeat construction at runtime.py:55-68; keep source.event_id so idempotency is unchanged). In _observe_delegation drop `outcome[\"message\"] = message` (runtime.py:382-384) or truncate it to the SYMPHONY_ marker lines only. Optionally also skip the write entirely when `not state.enabled and not state.active_run`. Add a store test asserting `last_assistant_message`, `transcript_path` never appear in the written file.",
+  "title": "Stop and SubagentStop persist full last_assistant_message and prompts into ~/.symphony/state",
+  "why_it_matters": "On every turn end in every project where the plugin is installed (enabled or not), the root agent's complete final answer is written verbatim into ~/.symphony/state/<hash>.json and retained for up to 200 events; the lead's full final message is likewise stored as run.outcome.message for 20 runs. Reproduced locally: a never-enabled project's Stop with `GITHUB_TOKEN=ghp_...` in last_assistant_message landed on disk unredacted, as did `OPENAI_API_KEY=sk-proj-...` and a `postgres://admin:Sup3rS3cret@...` URL, because redact_secrets only matches bare `api_key=`/`password=`/Bearer/PEM shapes (`\\b` fails on `OPENAI_API_KEY`, and `token` is only a dict-key rule). The design spec explicitly excludes transcript mirroring and secret persistence, and the persisted fields (last_assistant_message, transcript_path, permission_mode) are never read back by any reducer or renderer. Deriving a minimal event, as the heartbeat path already does at runtime.py:55-68, removes the exposure without changing lifecycle behavior.",
+  "evidence": [
+   "plugins/symphony/symphony/runtime.py:98 -- state, lifecycle_actions = reduce(state, source)",
+   "plugins/symphony/symphony/adapters.py:44 -- canonical = dict(payload)  (source.payload is the raw host hook payload)",
+   "plugins/symphony/symphony/reducer.py:317 -- history = tuple(deque((*next_state.event_history, event), maxlen=_EVENT_HISTORY_LIMIT))",
+   "plugins/symphony/symphony/store.py:196 -- \"event_history\": [_event_to_dict(item) for item in state.event_history],",
+   "plugins/symphony/symphony/runtime.py:382-384 -- message = str(source.payload.get(\"last_assistant_message\") or \"\").strip(); if message: outcome[\"message\"] = message",
+   "plugins/symphony/symphony/memory.py:25 -- r\"(?i)\\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token)\\b\\s*[:=]\\s*\\S+\"  (does not match OPENAI_API_KEY=, GITHUB_TOKEN=, token:, or credential URLs)",
+   "docs/superpowers/specs/2026-09-16-symphony-1-0-clean-room-rewrite-design.md:312 -- No daemon, external database, transcript mirroring, inferred cost, automatic plugin installation, secret persistence, or workspace rollback is introduced.",
+   "reproduction: SYMPHONY_STATE_DIR=<tmp> with cwd=/tmp/never-enabled-proj, hook_event_name=Stop, last_assistant_message='... GITHUB_TOKEN=ghp_zzz' -> state file written with enabled=false and event_history[-1].payload.last_assistant_message containing the token verbatim"
+  ]
+ },
+ {
+  "#": 19,
+  "autofix_class": "gated_auto",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/store.py",
+  "first_evidence": "plugins/symphony/symphony/store.py:49-50 -- def legacy_project_key(project: Path) -> str:\n    return project_key(project)[:24]",
+  "independent_reviewers": [
+   "adversarial"
+  ],
+  "line": 49,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "adversarial"
+  ],
+  "severity": "P2",
+  "suggested_fix": "In legacy_project_key, derive the digest from the git toplevel when available (subprocess `git -C <project> rev-parse --show-toplevel`, 3s timeout, fall back to the resolved cwd) exactly as f165772:plugins/symphony/scripts/symphony_hook.py:194-212 did, and try both candidate keys in _import_legacy; add a test whose legacy file is keyed by the toplevel while the hook cwd is a subdirectory.",
+  "title": "Legacy key uses cwd, old hook used git toplevel: enablement silently lost",
+  "why_it_matters": "The pre-1.0 hook stored project state under sha256(git rev-parse --show-toplevel)[:24]; the new _import_legacy looks for sha256(resolved cwd)[:24]. For any user who runs Claude/Codex from a subdirectory of a repo (monorepo package, docs/ folder) the two digests differ, the legacy file is never found, and the project comes up disabled after the 1.0 upgrade with no message, contradicting the 'preserve enablement across upgrade' requirement. The upgrade smoke and test_legacy_provider_data_is_imported_once compute the legacy key with the new function, so they cannot detect the mismatch.",
+  "evidence": [
+   "plugins/symphony/symphony/store.py:49-50 -- def legacy_project_key(project: Path) -> str:\n    return project_key(project)[:24]",
+   "plugins/symphony/symphony/store.py:44-46 -- canonical = os.path.normcase(str(Path(project).resolve())) (cwd, not repo root)",
+   "f165772:plugins/symphony/scripts/symphony_hook.py:198 -- [\"git\", \"-C\", str(cwd_path), \"rev-parse\", \"--show-toplevel\"] and :211 -- digest = hashlib.sha256(root.encode(\"utf-8\")).hexdigest()[:24]",
+   "plugins/symphony/tests/test_runtime.py:1153 -- legacy file is written at legacy_project_key(self.project), so the test cannot observe the derivation change"
+  ]
+ },
+ {
+  "#": 20,
+  "autofix_class": "gated_auto",
+  "confidence": 100,
+  "file": "plugins/symphony/symphony/runtime.py",
+  "first_evidence": "plugins/symphony/symphony/runtime.py:470-473 -- snapshot = next((item for item in reversed(state.capabilities) if item.provider == provider), fallback_snapshot(provider))",
+  "independent_reviewers": [
+   "maintainability"
+  ],
+  "line": 470,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "maintainability"
+  ],
+  "severity": "P3",
+  "suggested_fix": "Extract a `_capability_snapshot(state, provider)` helper for the duplicated `next(...)` lookup (used at runtime.py:470-473 and 522-525), and in `_prepare_delegation` compute `route`/`resolved` once, pass the already-resolved `required_model`/`required_effort` into `_accept_assessment` (or reorder so `_accept_assessment` runs first and `_prepare_delegation` reads the freshly recorded route back) instead of resolving twice.",
+  "title": "Capability-snapshot lookup and route resolution recomputed identically twice per lead spawn",
+  "why_it_matters": "On the first lead spawn for a run (before an assessment is recorded), `_prepare_delegation` builds `snapshot = next((item for item in reversed(state.capabilities) if item.provider == provider), fallback_snapshot(provider))` and calls `resolve_tier(route, snapshot)` purely to gate the spawn, then immediately calls `_accept_assessment`, which recomputes the exact same snapshot lookup and `resolve_tier` call to actually persist the route. The duplicate is easy to miss because both call sites are correct in isolation; a future change to the snapshot-selection rule (e.g. filtering by capability freshness) only has to be applied in one of the two copies to introduce a real mismatch between what a lead was gated on and what got recorded as its route.",
+  "evidence": [
+   "plugins/symphony/symphony/runtime.py:470-473 -- snapshot = next((item for item in reversed(state.capabilities) if item.provider == provider), fallback_snapshot(provider))",
+   "plugins/symphony/symphony/runtime.py:522-525 -- snapshot = next((item for item in reversed(state.capabilities) if item.provider == provider), fallback_snapshot(provider))"
+  ]
+ },
+ {
+  "#": 21,
+  "autofix_class": "gated_auto",
+  "confidence": 75,
+  "file": ".github/workflows/ci.yml",
+  "first_evidence": ".github/workflows/ci.yml:79 -- grep -qi symphony \"$RUNNER_TEMP/claude-help.txt\"",
+  "independent_reviewers": [
+   "adversarial"
+  ],
+  "line": 79,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "adversarial"
+  ],
+  "severity": "P3",
+  "suggested_fix": "Replace `grep -qi symphony` with `grep -q '/symphony:enable, /symphony:start'` (the literal from plugins/symphony/symphony/runtime.py:926) and additionally check `claude plugin list` shows symphony@symphony enabled before invoking.",
+  "title": "Real Claude smoke's `grep -qi symphony` passes on failure output",
+  "why_it_matters": "The real Claude smoke asserts only that the model's text output contains the substring 'symphony'. If the plugin fails to install or the /symphony:help command is not registered, Claude Code forwards '/symphony:help' to the model as plain text and the reply ('I don't have a /symphony:help command...') still contains 'symphony', so the step is green while the plugin is broken. Asserting on a string only the hook can produce (the exact help text from runtime._help, e.g. '/symphony:enable, /symphony:start') makes the check discriminating.",
+  "evidence": [
+   ".github/workflows/ci.yml:79 -- grep -qi symphony \"$RUNNER_TEMP/claude-help.txt\"",
+   ".github/workflows/ci.yml:74-78 -- claude --print --model haiku ... '/symphony:help' > claude-help.txt (model prose is the only thing asserted)",
+   "plugins/symphony/symphony/runtime.py:926 -- the hook's help text contains distinctive literals ('/symphony:enable, /symphony:start, ...') that could be asserted instead"
+  ]
+ },
+ {
+  "#": 22,
+  "autofix_class": "gated_auto",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/runtime.py",
+  "first_evidence": "plugins/symphony/symphony/runtime.py:153-154 -- marker = \"$symphony:symphony\"\n    if marker in prompt:",
+  "independent_reviewers": [
+   "adversarial"
+  ],
+  "line": 153,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "adversarial"
+  ],
+  "severity": "P3",
+  "suggested_fix": "Pass provider into _parse_control; only honor the `$symphony:symphony` marker when provider == \"codex\"; for SYMPHONY_CONTROL accept it only when it is the first non-empty line of the prompt (matching commands/*.md expansion) instead of scanning every line.",
+  "title": "Control markers parsed from arbitrary prompt text start/stop/disable runs",
+  "why_it_matters": "On Claude Code, where the documented syntax is /symphony:<command>, a prompt that merely mentions `$symphony:symphony` (\"why does the README say $symphony:symphony fails?\") is treated as a one-shot start: a run is created even on a disabled project and Stop is then blocked until a lead completes (finding 1). Likewise any line anywhere in a prompt beginning with SYMPHONY_CONTROL: is executed, so pasting commands/disable.md or stop.md for review disables the project or issues a stop with argument \"$ARGUMENTS\". Gating the `$symphony:symphony` branch to provider == \"codex\" and requiring SYMPHONY_CONTROL on the first non-empty line (where the command expansion places it) removes the accidental triggers without changing the supported invocations.",
+  "evidence": [
+   "plugins/symphony/symphony/runtime.py:153-154 -- marker = \"$symphony:symphony\"\n    if marker in prompt:",
+   "plugins/symphony/symphony/runtime.py:162-167 -- task = \" \".join(part for part in (before.strip(), tail) if part).strip() ... return \"start\", task",
+   "plugins/symphony/symphony/runtime.py:174-176 -- for line in lines:\n        if line.strip().startswith(prefix):",
+   "plugins/symphony/commands/disable.md:5 -- SYMPHONY_CONTROL: disable  (pasting this file's content is a disable)",
+   "plugins/symphony/skills/symphony/SKILL.md:10 -- Codex uses `$symphony:symphony ...`; Claude Code uses `/symphony:<command>`",
+   "plugins/symphony/symphony/reducer.py:69 -- one_shot bypasses the enabled check, so the accidental start creates a run on a disabled project"
+  ]
+ },
+ {
+  "#": 23,
+  "autofix_class": "gated_auto",
+  "confidence": 75,
+  "file": "plugins/symphony/symphony/runtime.py",
+  "first_evidence": "plugins/symphony/symphony/runtime.py:474-484 -- recorded_route = recorded.get(\"route\", {}); required_model = (str(recorded_route.get(\"lead_model\") or \"\") if isinstance(recorded_route, Mapping) else \"\") ...",
+  "independent_reviewers": [
+   "maintainability"
+  ],
+  "line": 474,
+  "owner": "downstream-resolver",
+  "pre_existing": false,
+  "requires_verification": true,
+  "reviewers": [
+   "maintainability"
+  ],
+  "severity": "P3",
+  "suggested_fix": "Extract `def _required_route(route: object) -> tuple[str, str]: return (str(route.get(\"lead_model\") or \"\"), str(route.get(\"lead_effort\") or \"\")) if isinstance(route, Mapping) else (\"\", \"\")` and call it from both `_prepare_delegation` (replacing lines 474-484) and `_observe_delegation` (replacing lines 329-331).",
+  "title": "Required lead model/effort extraction duplicated between _prepare_delegation and _observe_delegation",
+  "why_it_matters": "Both the pre-spawn gate (`_prepare_delegation`) and the post-completion gate (`_observe_delegation`, inside the lead-completion branch) independently pull `lead_model`/`lead_effort` out of the stored `route` mapping with the same `isinstance(route, Mapping)` guard. If the route schema ever changes (e.g. a renamed key or a new fallback), only one of the two copies is likely to get updated, letting the pre-spawn check and the post-completion check silently disagree about what a valid lead looks like -- exactly the class of drift this reviewer is asked to catch between sibling classifier paths.",
+  "evidence": [
+   "plugins/symphony/symphony/runtime.py:474-484 -- recorded_route = recorded.get(\"route\", {}); required_model = (str(recorded_route.get(\"lead_model\") or \"\") if isinstance(recorded_route, Mapping) else \"\") ...",
+   "plugins/symphony/symphony/runtime.py:329-331 -- route = assessment.get(\"route\", {}); required_model = route.get(\"lead_model\") if isinstance(route, Mapping) else \"\" ..."
+  ]
+ }
+]
