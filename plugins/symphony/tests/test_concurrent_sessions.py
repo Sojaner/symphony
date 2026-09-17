@@ -161,6 +161,18 @@ class ConcurrentSessionTests(unittest.TestCase):
         accepted = self.state()["activation"]["codex"].get("accepted") or {}
         self.assertEqual("base", accepted.get("old-s", {}).get("profile"))
 
+    def test_a_naive_timestamp_from_an_older_state_file_does_not_crash(self):
+        """Subtracting a naive stamp from an aware one raises TypeError."""
+        self.run_with_live_lead("root-a")
+        path = next(self.state_root.glob("*.json"))
+        document = json.loads(path.read_text())
+        document["active_run"]["owner_seen_at"] = "2020-01-01T00:00:00"
+        path.write_text(json.dumps(document))
+
+        handle(self.payload("later-c", "SessionStart"), self.environ)
+
+        self.assertEqual("later-c", self.state()["active_run"]["session_id"])
+
     # ---- but real recovery must still work --------------------------------
     def test_a_run_whose_owner_has_gone_quiet_is_still_adopted(self):
         self.run_with_live_lead("root-a")

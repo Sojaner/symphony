@@ -272,7 +272,9 @@ def _owner_is_quiet(run, now: str) -> bool:
         return True
     try:
         return datetime.fromisoformat(now) - datetime.fromisoformat(last) >= _OWNER_QUIET_AFTER
-    except ValueError:
+    except (TypeError, ValueError):
+        # A malformed or timezone-naive stamp from an older state file must not
+        # take the hook down; treating it as quiet keeps recovery reachable.
         return True
 
 
