@@ -152,3 +152,19 @@ The package smoke supports `activation`, `managed-run`, `unmarked-spawn`, `inter
 - [Codex hooks](https://learn.chatgpt.com/docs/hooks)
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks)
 - [Claude Code plugins](https://code.claude.com/docs/en/discover-plugins)
+
+### Receiving capability updates
+
+Symphony ships its tier-to-model map inside the release, and a scheduled workflow republishes that map whenever a provider retires a model. Installing does not subscribe you to those releases: both hosts leave a third-party plugin at the version you installed until you ask for a newer one.
+
+```bash
+claude plugin update symphony
+```
+
+On Codex the equivalent refreshes the marketplace snapshot:
+
+```bash
+codex plugin marketplace upgrade symphony
+```
+
+Claude Code can also do this for you at startup. Open `/plugin`, select this marketplace and enable auto-update. Be deliberate about that choice: it lets the map that decides which model your work runs on change between sessions. Symphony will tell you when it notices, and will stop and ask before letting an assessment you already accepted run on something weaker, but the update itself will be silent.

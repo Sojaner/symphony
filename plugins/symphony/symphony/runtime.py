@@ -91,6 +91,9 @@ def _transition(
                 "accepted_profile": _carried_acceptance(
                     state, provider, str(payload.get("session_id") or "")
                 ),
+                "accepted_route": _carried_acceptance(
+                    state, provider, str(payload.get("session_id") or ""), "accepted_route"
+                ),
             },
         )
         state, heartbeat_actions = reduce(state, heartbeat)
@@ -130,14 +133,16 @@ def _transition(
     return state, actions
 
 
-def _carried_acceptance(state: ProjectState, provider: str, session_id: str) -> str:
+def _carried_acceptance(
+    state: ProjectState, provider: str, session_id: str, key: str = "accepted_profile"
+) -> str:
     """An accepted clamp survives the rest of its session and no longer."""
     recorded = state.activation.get(provider, {})
-    if not isinstance(recorded, Mapping) or not recorded.get("accepted_profile"):
+    if not isinstance(recorded, Mapping) or not recorded.get(key):
         return ""
     if session_id and recorded.get("session_id") != session_id:
         return ""
-    return str(recorded["accepted_profile"])
+    return str(recorded[key])
 
 
 def _entitlement_profile(
@@ -263,15 +268,19 @@ def _handle_prompt(state: ProjectState, source: Event, provider: str) -> tuple[P
         return state, (Action("inject_context", {"text": _task_guidance(state, argument, provider)}),)
     if name == "proceed":
         profile = _applied_profile(state, provider)
-        if profile == profiles_for(provider)[0]["id"]:
-            # Fully entitled: there is no weaker route to consent to.
+        standing = _standing_route(state, provider)
+        if not standing and profile == profiles_for(provider)[0]["id"]:
+            # Fully entitled with nothing standing: no weaker route to consent to.
             return state, (
                 Action("inject_context", {"text": "Symphony has no clamped route to accept."}),
             )
         return reduce(
             state,
             _derived(
-                state, source, "route_accepted", {"provider": provider, "profile": profile}
+                state,
+                source,
+                "route_accepted",
+                {"provider": provider, "profile": profile, "route": standing},
             ),
         )
     if name == "bypass":
@@ -669,11 +678,16 @@ def _prepare_delegation(
             )
         else:
             route = route_for(assessment)
-        required_model, required_effort = _required_lead_route(recorded)
-        if not required_model or not required_effort:
-            resolved = resolve_tier(route, _snapshot(state, provider))
-            required_model = required_model or str(resolved["lead_model"])
-            required_effort = required_effort or str(resolved["lead_effort"])
+        snapshot = _snapshot(state, provider)
+        resolved = resolve_tier(route, snapshot)
+        required_model = str(resolved["lead_model"])
+        required_effort = str(resolved["lead_effort"])
+        drift = _route_drift(state, provider, recorded, snapshot, required_model, required_effort)
+        if drift and drift["weaker"]:
+            if _accepted_route(state, provider) != f"{required_model}/{required_effort}":
+                return state, (_drift_block(provider, drift),)
+        elif drift:
+            actions += (_drift_notice(drift),)
         clamp = _clamp_actions(state, provider, route)
         if any(item.kind == "block_tool" for item in clamp):
             return state, clamp
@@ -705,6 +719,12 @@ def _applied_profile(state: ProjectState, provider: str) -> str:
 def _accepted_profile(state: ProjectState, provider: str) -> str:
     activation = state.activation.get(provider, {})
     accepted = activation.get("accepted_profile") if isinstance(activation, Mapping) else None
+    return str(accepted) if accepted else ""
+
+
+def _accepted_route(state: ProjectState, provider: str) -> str:
+    activation = state.activation.get(provider, {})
+    accepted = activation.get("accepted_route") if isinstance(activation, Mapping) else None
     return str(accepted) if accepted else ""
 
 
@@ -751,11 +771,95 @@ def _clamp_actions(
 
 
 def _required_lead_route(recorded: Mapping[str, object]) -> tuple[str, str]:
-    """The model and effort an accepted route already fixed for the lead."""
+    """The model and effort this assessment resolved to when it was accepted.
+
+    No longer an enforcement pin. A run is held to its tier, so that a model
+    disappearing from the map cannot leave the run naming a spawn nobody can
+    make. These two values survive only as the baseline that says whether
+    re-resolving the same tier has weakened the route.
+    """
     route = recorded.get("route", {})
     if not isinstance(route, Mapping):
         return "", ""
     return str(route.get("lead_model") or ""), str(route.get("lead_effort") or "")
+
+
+def _route_drift(
+    state: ProjectState,
+    provider: str,
+    recorded: Mapping[str, object],
+    snapshot,
+    model: str,
+    effort: str,
+) -> dict[str, str] | None:
+    """How a standing assessment's route has moved since it was accepted.
+
+    Only one move needs the user's agreement: the work was sized once, and the
+    route that sizing chose is no longer purchasable, so the same work would now
+    run weaker. A reassessment writes its own baseline, and easier work drawing a
+    cheaper model is the matrix behaving correctly, so neither of those gates.
+    """
+    stored_model, stored_effort = _required_lead_route(recorded)
+    if not stored_model or (stored_model == model and stored_effort == effort):
+        return None
+    stored = recorded.get("route") or {}
+    was = str(stored.get("profile") or "") if isinstance(stored, Mapping) else ""
+    now = _applied_profile(state, provider)
+    order = [profile["id"] for profile in profiles_for(provider)]
+    if was and now and was != now and was in order and now in order:
+        # Profiles ship best-first, so a higher index is a weaker entitlement.
+        # An upgrade moves the other way and nobody needs to consent to that.
+        gone = order.index(now) > order.index(was)
+    else:
+        # Same entitlement, so the shipped map itself moved. The refresh only
+        # ever substitutes downward, so a vanished model means weaker.
+        efforts = snapshot.supported_efforts.get(stored_model) or ()
+        gone = stored_model not in snapshot.available_models or stored_effort not in efforts
+    return {
+        "stored_model": stored_model,
+        "stored_effort": stored_effort,
+        "model": model,
+        "effort": effort,
+        "weaker": "yes" if gone else "",
+    }
+
+
+def _drift_block(provider: str, drift: Mapping[str, str]) -> Action:
+    control = "/symphony:proceed" if provider == "claude" else "$symphony:symphony proceed"
+    return _block_tool(
+        f"The route this assessment accepted is gone: {drift['stored_model']} at "
+        f"{drift['stored_effort']} effort is no longer available, so the same work would "
+        f"now run on {drift['model']} at {drift['effort']} effort. Run `{control}` to "
+        "accept the weaker route, or reassess so the sizing matches what you can buy."
+    )
+
+
+def _drift_notice(drift: Mapping[str, str]) -> Action:
+    return Action(
+        "inject_context",
+        {
+            "text": f"Symphony re-resolved this route to {drift['model']} at "
+            f"{drift['effort']} effort; the assessment accepted {drift['stored_model']} at "
+            f"{drift['stored_effort']}. The tier the matrix chose is unchanged."
+        },
+    )
+
+
+def _standing_route(state: ProjectState, provider: str) -> str:
+    """What the standing assessment resolves to right now, if one stands."""
+    run = state.active_run
+    recorded = run.assessment if run else None
+    if not isinstance(recorded, Mapping) or not recorded.get("size"):
+        return ""
+    route = route_for(
+        Assessment(
+            str(recorded["size"]),
+            str(recorded["complexity"]),
+            str(recorded.get("risk", "normal")),
+        )
+    )
+    resolved = resolve_tier(route, _snapshot(state, provider))
+    return f"{resolved['lead_model']}/{resolved['lead_effort']}"
 
 
 def _accept_assessment(
@@ -774,6 +878,9 @@ def _accept_assessment(
         "independent_review": route.independent_review,
     }
     route_data.update(resolve_tier(route, _snapshot(state, provider)))
+    # Which entitlement priced this route, so a later move can be read as a
+    # downgrade or an upgrade rather than merely a difference.
+    route_data["profile"] = _applied_profile(state, provider)
     accepted = {
         "size": assessment.size,
         "complexity": assessment.complexity,

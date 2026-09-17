@@ -38,6 +38,8 @@ def _heartbeat(state: ProjectState, event: Event):
         "profile": event.payload.get("profile"),
         # A clamp the user accepted, carried for the rest of this session.
         "accepted_profile": event.payload.get("accepted_profile"),
+        # A weakened route the user accepted, carried for this session.
+        "accepted_route": event.payload.get("accepted_route"),
     }
     activation[provider] = {key: value for key, value in facts.items() if value is not None}
     return replace(state, activation=activation), ()
@@ -52,6 +54,7 @@ def _route_accepted(state: ProjectState, event: Event):
     activation = dict(state.activation)
     record = dict(activation.get(provider, {}))
     record["accepted_profile"] = str(profile or "")
+    record["accepted_route"] = str(event.payload.get("route") or "")
     activation[provider] = record
     return replace(state, activation=activation), (Action("route_acceptance_recorded"),)
 

@@ -46,6 +46,7 @@ PERSISTED_EVENT_KEYS = frozenset(
         "last_fault",
         "profile",
         "accepted_profile",
+        "accepted_route",
         "task",
         "objective",
         "rationale",
