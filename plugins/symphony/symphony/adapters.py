@@ -25,8 +25,6 @@ EVENT_KINDS = {
 @dataclass(frozen=True)
 class HookResult:
     stdout: str = ""
-    stderr: str = ""
-    exit_code: int = 0
 
 
 def detect_provider(payload: dict[str, Any]) -> str:

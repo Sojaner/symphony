@@ -2,7 +2,7 @@
 
 **Goal:** Close the validated livelock and persistence defects found in the 1.0.0 review, then replace the unbuildable runtime capability discovery with CI-maintained entitlement profiles.
 
-**Status:** Plan agreed 2026-09-17. Wave 1 commit A complete; commit B next.
+**Status:** Plan agreed 2026-09-17. Wave 1 complete (commits A and B). Wave 2 not started.
 
 **Branch:** `claude/code-review-testing-8c2fa0`
 
@@ -88,19 +88,19 @@ Bumps the version and cuts the release.
 
 No version bump, so no release fires.
 
-- [ ] Delete `state.capabilities`, `CapabilitySnapshot` persistence, `MemoryStatus`, `capability_suggestions`, and their store serializers. Keep `fallback_snapshot`. (Q5, ADR 0002)
-- [ ] Delete `memory.py` except `redact_secrets`: `ALLOWED_CONTEXT_SECTIONS`, `context_update_path`, `validated_context_sections`, `capability_refresh_due`, `record_missing_capability_suggestion`.
-- [ ] Delete `snapshot_is_stale`.
-- [ ] Delete `Delegation.tokens` and `duration_seconds` plumbing.
-- [ ] Delete `detect_provider`; both hook manifests always set `SYMPHONY_PROVIDER`.
-- [ ] Reduce `HookResult` to its stdout payload.
-- [ ] Delete `StateStore.load` and `save`; tests use `update`.
-- [ ] Replace the hand-rolled `_to_dict` helpers with `dataclasses.asdict`; keep the validators.
-- [ ] Drop `ResolvedRoute`; have `resolve_tier` return the flattened mapping.
-- [ ] Drop the `fcntl`-less threading lock fallback.
-- [ ] Simplify the recursive smoke helpers to the known state shape.
-- [ ] Delete the tests for the removed helpers.
-- [ ] Review, test, commit, push. Manifests stay at `1.0.1`.
+- [x] Delete `state.capabilities`, `CapabilitySnapshot` persistence, `MemoryStatus`, `capability_suggestions`, and their store serializers. Keep `fallback_snapshot`. (Q5, ADR 0002)
+- [x] Delete `memory.py` except `redact_secrets`: `ALLOWED_CONTEXT_SECTIONS`, `context_update_path`, `validated_context_sections`, `capability_refresh_due`, `record_missing_capability_suggestion`.
+- [x] Delete `snapshot_is_stale`.
+- [x] Delete `Delegation.tokens` and `duration_seconds` plumbing.
+- [~] **Withdrawn:** delete `detect_provider`. The manifests do set the variable, but this is the path every runtime test exercises, and without it a missing variable raises inside a hook that exits zero, leaving the session silently unguarded.
+- [x] Reduce `HookResult` to its stdout payload; `stderr` and `exit_code` were never set to anything but their defaults.
+- [~] **Withdrawn:** delete `StateStore.load` and `save`. They have no production callers but 67 test call sites; deleting nine lines by rewriting 67 call sites moves complexity into the tests rather than removing it.
+- [x] Replace the hand-rolled `_to_dict` helpers with `dataclasses.asdict`; keep the validators.
+- [x] Drop `ResolvedRoute`; have `resolve_tier` return the flattened mapping.
+- [~] **Withdrawn:** drop the `fcntl`-less threading lock fallback. Deleting it turns a weak lock into a hard crash that the hook's own error handling would swallow. It already carries a comment naming its ceiling, so it stays as the documented shortcut it is.
+- [x] Simplify `_has_active_run` to the known state shape. `_contains` keeps its exact-value recursion: a substring match on the serialised document would be shorter but looser, and loosening a guard is what this release exists to stop.
+- [x] Delete the tests for the removed helpers.
+- [x] Review, test, commit, push. Manifests stay at `1.0.1`.
 
 ---
 

@@ -305,12 +305,6 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
         update["requested_tier"] = str(model)
     if effort:
         update["requested_effort"] = str(effort)
-    tokens = source.payload.get("tokens")
-    if isinstance(tokens, int) and not isinstance(tokens, bool):
-        update["tokens"] = tokens
-    duration = source.payload.get("duration_seconds")
-    if isinstance(duration, (int, float)) and not isinstance(duration, bool):
-        update["duration_seconds"] = duration
     state, delegation_actions = reduce(
         state, _derived(state, source, "delegation_updated", update, "delegation")
     )
@@ -560,9 +554,9 @@ def _prepare_delegation(
             route = route_for(assessment)
         required_model, required_effort = _required_lead_route(recorded)
         if not required_model or not required_effort:
-            resolved = resolve_tier(route, _snapshot(state, provider))
-            required_model = required_model or resolved.lead_model
-            required_effort = required_effort or resolved.lead_effort
+            resolved = resolve_tier(route, fallback_snapshot(provider))
+            required_model = required_model or str(resolved["lead_model"])
+            required_effort = required_effort or str(resolved["lead_effort"])
         if model != required_model or effort != required_effort:
             return state, (
                 _block_tool(
@@ -579,14 +573,6 @@ def _prepare_delegation(
 
     state = _queue_pending_delegation(state, role, objective, model, effort)
     return state, actions
-
-
-def _snapshot(state: ProjectState, provider: str):
-    """The freshest capability snapshot for a provider, or the shipped fallback."""
-    return next(
-        (item for item in reversed(state.capabilities) if item.provider == provider),
-        fallback_snapshot(provider),
-    )
 
 
 def _required_lead_route(recorded: Mapping[str, object]) -> tuple[str, str]:
@@ -612,14 +598,7 @@ def _accept_assessment(
         "consultation": route.consultation,
         "independent_review": route.independent_review,
     }
-    resolved = resolve_tier(route, _snapshot(state, provider))
-    route_data.update(
-        {
-            "lead_model": resolved.lead_model,
-            "lead_effort": resolved.lead_effort,
-            "degraded": resolved.degraded,
-        }
-    )
+    route_data.update(resolve_tier(route, fallback_snapshot(provider)))
     accepted = {
         "size": assessment.size,
         "complexity": assessment.complexity,
@@ -991,10 +970,6 @@ def format_delegation(item: Delegation) -> str:
     result = f"- {item.state}: {label} — {item.identity}"
     if item.objective:
         result += f" — {item.objective}"
-    if item.tokens is not None:
-        result += f" — tokens {item.tokens}"
-    if item.duration_seconds is not None:
-        result += f" — duration {item.duration_seconds:g}s"
     return result
 
 
@@ -1097,6 +1072,4 @@ def main() -> int:
         return 0
     if result.stdout:
         sys.stdout.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
-    return result.exit_code
+    return 0

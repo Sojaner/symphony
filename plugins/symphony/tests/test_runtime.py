@@ -533,7 +533,7 @@ class RuntimeTests(unittest.TestCase):
         stop = {**self.payload(""), "hook_event_name": "Stop"}
         self.assertEqual(self.output(handle(stop, self.environ))["decision"], "block")
 
-    def test_invalid_optional_metrics_are_ignored_without_losing_guard_state(self):
+    def test_unknown_payload_fields_do_not_disturb_the_guard(self):
         self.open_run("Ship it")
         started = {
             **self.payload(""),
@@ -547,7 +547,7 @@ class RuntimeTests(unittest.TestCase):
 
         state = StateStore(self.state_root).load(self.project)
         self.assertIsNotNone(state.active_run)
-        self.assertIsNone(state.active_run.delegations[-1].tokens)
+        self.assertEqual(state.active_run.delegations[-1].identity, "worker-1")
         stop = {**self.payload(""), "hook_event_name": "Stop"}
         self.assertEqual(self.output(handle(stop, self.environ))["decision"], "block")
 

@@ -7,7 +7,6 @@ from plugins.symphony.symphony.routing import (
     fallback_snapshot,
     resolve_tier,
     route_for,
-    snapshot_is_stale,
 )
 
 
@@ -52,7 +51,7 @@ class RoutingTests(unittest.TestCase):
             refreshed_at="2026-09-17T00:00:00+00:00",
         )
         resolved = resolve_tier(route_for(Assessment("small", "simple")), snapshot)
-        self.assertEqual((resolved.lead_model, resolved.lead_effort), ("solid", "medium"))
+        self.assertEqual((resolved["lead_model"], resolved["lead_effort"]), ("solid", "medium"))
 
     def test_resolver_falls_back_to_supported_effort(self):
         snapshot = CapabilitySnapshot(
@@ -65,8 +64,8 @@ class RoutingTests(unittest.TestCase):
             refreshed_at="2026-09-17T00:00:00+00:00",
         )
         resolved = resolve_tier(route_for(Assessment("small", "mixed")), snapshot)
-        self.assertEqual(resolved.lead_effort, "medium")
-        self.assertTrue(resolved.degraded)
+        self.assertEqual(resolved["lead_effort"], "medium")
+        self.assertTrue(resolved["degraded"])
 
     def test_shipped_provider_fallbacks_resolve_capable_leads(self):
         route = route_for(Assessment("small", "simple"))
@@ -74,21 +73,8 @@ class RoutingTests(unittest.TestCase):
         codex = resolve_tier(route, fallback_snapshot("codex"))
         claude = resolve_tier(route, fallback_snapshot("claude"))
 
-        self.assertEqual((codex.lead_model, codex.lead_effort), ("gpt-5.6-sol", "medium"))
-        self.assertEqual((claude.lead_model, claude.lead_effort), ("opus", "medium"))
-
-    def test_snapshot_staleness_defaults_to_twenty_four_hours(self):
-        snapshot = CapabilitySnapshot(
-            provider="codex",
-            available_models=(),
-            supported_efforts={},
-            tiers={},
-            source="cache",
-            provider_version=None,
-            refreshed_at="2026-09-16T00:00:00+00:00",
-        )
-        self.assertFalse(snapshot_is_stale(snapshot, datetime(2026, 9, 16, 23, tzinfo=UTC)))
-        self.assertTrue(snapshot_is_stale(snapshot, datetime(2026, 9, 17, 1, tzinfo=UTC)))
+        self.assertEqual((codex["lead_model"], codex["lead_effort"]), ("gpt-5.6-sol", "medium"))
+        self.assertEqual((claude["lead_model"], claude["lead_effort"]), ("opus", "medium"))
 
     def test_invalid_axes_are_rejected(self):
         with self.assertRaises(ValueError):

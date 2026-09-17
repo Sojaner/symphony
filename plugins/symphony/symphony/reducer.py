@@ -168,10 +168,6 @@ def _delegation_updated(state: ProjectState, event: Event):
             event.payload.get("requested_effort") or (current.requested_effort if current else "")
         ),
         updated_at=event.observed_at,
-        tokens=event.payload.get("tokens", current.tokens if current else None),
-        duration_seconds=event.payload.get(
-            "duration_seconds", current.duration_seconds if current else None
-        ),
     )
     delegations = tuple(existing for existing in run.delegations if existing.identity != identity) + (item,)
     updated = replace(run, delegations=delegations, updated_at=event.observed_at)

@@ -81,8 +81,6 @@ class Delegation:
     requested_tier: str
     requested_effort: str
     updated_at: str = ""
-    tokens: int | None = None
-    duration_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -113,22 +111,11 @@ class CapabilitySnapshot:
 
 
 @dataclass(frozen=True)
-class MemoryStatus:
-    enabled: bool = False
-    reason: str = "not_probed"
-    indexed_at: str | None = None
-
-
-@dataclass(frozen=True)
 class ProjectState:
-    schema_version: int = 1
     enabled: bool = False
     configuration: Mapping[str, Any] = field(default_factory=dict)
     activation: Mapping[str, Any] = field(default_factory=dict)
-    capabilities: tuple[CapabilitySnapshot, ...] = ()
     active_run: RunState | None = None
     recent_runs: tuple[RunState, ...] = ()
     event_history: tuple[Event, ...] = ()
     needs_reassessment: bool = False
-    memory: MemoryStatus = field(default_factory=MemoryStatus)
-    capability_suggestions: Mapping[str, tuple[str, ...]] = field(default_factory=dict)

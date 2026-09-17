@@ -282,13 +282,7 @@ def _contains(value: Any, expected: str) -> bool:
 
 
 def _has_active_run(value: Any) -> bool:
-    if isinstance(value, dict):
-        if value.get("active_run") is not None:
-            return True
-        return any(_has_active_run(child) for child in value.values())
-    if isinstance(value, list):
-        return any(_has_active_run(child) for child in value)
-    return False
+    return isinstance(value, dict) and value.get("active_run") is not None
 
 
 def _has_guarded_heartbeat(

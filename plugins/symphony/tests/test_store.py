@@ -6,14 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from plugins.symphony.symphony.model import (
-    CapabilitySnapshot,
-    Delegation,
-    Event,
-    MemoryStatus,
-    ProjectState,
-    RunState,
-)
+from plugins.symphony.symphony.model import Delegation, Event, ProjectState, RunState
 from plugins.symphony.symphony.store import StateStore, project_key
 
 
@@ -42,8 +35,6 @@ class StateStoreTests(unittest.TestCase):
             requested_tier="capable",
             requested_effort="high",
             updated_at="2026-09-17T10:01:00+00:00",
-            tokens=120,
-            duration_seconds=2.5,
         )
         run = RunState(
             run_id="run-1",
@@ -56,25 +47,13 @@ class StateStoreTests(unittest.TestCase):
             started_at="2026-09-17T10:00:00+00:00",
             updated_at="2026-09-17T10:01:00+00:00",
         )
-        capability = CapabilitySnapshot(
-            provider="codex",
-            available_models=("gpt-5",),
-            supported_efforts={"gpt-5": ("medium", "high")},
-            tiers={"capable": "gpt-5"},
-            source="live",
-            provider_version="1.2.3",
-            refreshed_at="2026-09-17T09:00:00+00:00",
-        )
         state = ProjectState(
             enabled=True,
             configuration={"default_provider": "codex"},
             activation={"codex": {"state": "guarded", "session_id": "session-1"}},
-            capabilities=(capability,),
             active_run=run,
             recent_runs=(run,),
             event_history=(event,),
-            memory=MemoryStatus(True, "healthy", "2026-09-17T09:30:00+00:00"),
-            capability_suggestions={"context7": ("1.0.0",)},
         )
 
         self.store.save(self.project, state)

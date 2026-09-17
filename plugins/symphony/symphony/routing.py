@@ -1,7 +1,7 @@
 """Fixed task routing with provider-specific capability resolution."""
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from .model import CapabilitySnapshot
 
@@ -26,12 +26,6 @@ class Route:
     execution: str
     consultation: str
     independent_review: bool = False
-
-
-@dataclass(frozen=True)
-class ResolvedRoute(Route):
-    lead_model: str = ""
-    degraded: bool = False
 
 
 MATRIX = {
@@ -89,7 +83,7 @@ def fallback_snapshot(provider: str) -> CapabilitySnapshot:
     )
 
 
-def resolve_tier(route: Route, snapshot: CapabilitySnapshot) -> ResolvedRoute:
+def resolve_tier(route: Route, snapshot: CapabilitySnapshot) -> dict[str, object]:
     """Resolve an abstract tier to the least capable declared matching model."""
     requested = TIERS.index(route.lead_tier)
     candidates = (
@@ -100,15 +94,19 @@ def resolve_tier(route: Route, snapshot: CapabilitySnapshot) -> ResolvedRoute:
     model = next(candidates, snapshot.available_models[-1] if snapshot.available_models else "")
     supported = snapshot.supported_efforts.get(model, ())
     effort = _supported_effort(route.lead_effort, supported)
-    return ResolvedRoute(
-        route.lead_tier,
-        effort,
-        route.execution,
-        route.consultation,
-        route.independent_review,
-        model,
-        not model or model != snapshot.tiers.get(route.lead_tier) or effort != route.lead_effort,
-    )
+    return {
+        "lead_tier": route.lead_tier,
+        "lead_effort": effort,
+        "execution": route.execution,
+        "consultation": route.consultation,
+        "independent_review": route.independent_review,
+        "lead_model": model,
+        "degraded": (
+            not model
+            or model != snapshot.tiers.get(route.lead_tier)
+            or effort != route.lead_effort
+        ),
+    }
 
 
 def _supported_effort(requested: str, supported: tuple[str, ...]) -> str:
@@ -119,14 +117,3 @@ def _supported_effort(requested: str, supported: tuple[str, ...]) -> str:
     target = EFFORTS.index(requested) if requested in EFFORTS else len(EFFORTS)
     lower = [effort for effort in supported if effort in EFFORTS and EFFORTS.index(effort) <= target]
     return max(lower, key=EFFORTS.index) if lower else min(supported, key=EFFORTS.index)
-
-
-def snapshot_is_stale(
-    snapshot: CapabilitySnapshot,
-    now: datetime | None = None,
-    max_age: timedelta = timedelta(hours=24),
-) -> bool:
-    refreshed = datetime.fromisoformat(snapshot.refreshed_at)
-    if refreshed.tzinfo is None:
-        refreshed = refreshed.replace(tzinfo=UTC)
-    return (now or datetime.now(UTC)) - refreshed > max_age

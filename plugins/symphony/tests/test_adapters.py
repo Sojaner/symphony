@@ -78,7 +78,6 @@ class AdapterContractTests(unittest.TestCase):
         body = json.loads(result.stdout)
         self.assertEqual(body["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
         self.assertEqual(body["hookSpecificOutput"]["additionalContext"], "Assess this task.")
-        self.assertEqual(result.exit_code, 0)
 
     def test_codex_stop_block_uses_continuation_decision(self):
         result = render("codex", (Action("block_stop", {"reason": "Worker remains active."}),))
