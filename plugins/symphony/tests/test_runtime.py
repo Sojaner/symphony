@@ -1325,7 +1325,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(state.recent_runs[-1].status, "abandoned")
         self.assertEqual(state.recent_runs[-1].unreconciled, ("assessor-1",))
 
-    def test_new_session_reconciles_delegations_the_host_cannot_list(self):
+    def test_resumed_session_reconciles_delegations_the_host_cannot_list(self):
+        """A host that reports a resume is telling us the old process ended.
+
+        A session id it has never seen is not the same claim: that is also what
+        a second terminal in the same project looks like, and taking the run
+        over on that evidence killed live leads.
+        """
         self.open_run("Ship it")
         handle(
             {
@@ -1341,6 +1347,7 @@ class RuntimeTests(unittest.TestCase):
             **self.payload(""),
             "session_id": "codex-session-2",
             "hook_event_name": "SessionStart",
+            "source": "resume",
         }
         handle(resumed, self.environ)
 

@@ -139,6 +139,7 @@ def _payload(
     session: str,
     agent_role: str = "lead",
     stop_hook_active: bool = False,
+    source: str = "startup",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "session_id": session,
@@ -146,6 +147,11 @@ def _payload(
         "hook_event_name": event,
         "permission_mode": "default",
     }
+    if event == "SessionStart":
+        # A resumed session is the host telling us the previous process ended.
+        # Without it, a fresh session is indistinguishable from a second
+        # terminal and must not seize a run whose owner is still reporting.
+        payload["source"] = source
     if provider == "codex":
         payload.update({"turn_id": f"turn-{session}", "model": "fake-codex"})
     model, effort = _role_model(provider, agent_role)
@@ -196,6 +202,7 @@ def _run_event(
     session: str,
     agent_role: str = "lead",
     stop_hook_active: bool = False,
+    source: str = "startup",
 ) -> dict[str, Any] | None:
     config = _hook_config(root, provider)
     argv = _command_argv(_event_command(config, event), root, provider)
@@ -214,7 +221,7 @@ def _run_event(
     completed = subprocess.run(
         argv,
         input=json.dumps(
-            _payload(provider, event, project, session, agent_role, stop_hook_active)
+            _payload(provider, event, project, session, agent_role, stop_hook_active, source)
         ),
         capture_output=True,
         text=True,
@@ -343,9 +350,11 @@ def _exercise(
         session: str = "fake-session",
         agent_role: str = "lead",
         stop_hook_active: bool = False,
+        source: str = "startup",
     ) -> dict[str, Any] | None:
         output = _run_event(
-            root, provider, event, project, state_dir, session, agent_role, stop_hook_active
+            root, provider, event, project, state_dir, session, agent_role,
+            stop_hook_active, source,
         )
         events.append(event)
         if event == "UserPromptSubmit":
@@ -418,7 +427,7 @@ def _exercise(
             raise SmokeFailure("the assessor spawn did not open a run")
         if provider == "codex":
             send("Interrupt", "before-interrupt")
-        send("SessionStart", "resumed-session")
+        send("SessionStart", "resumed-session", source="resume")
         documents = _state_documents(state_dir)
         if not any(_has_active_run(document) for document in documents):
             raise SmokeFailure("resume lost the interrupted active run")

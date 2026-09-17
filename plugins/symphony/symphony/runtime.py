@@ -1,7 +1,7 @@
 """Fast, offline hook runtime for Symphony's canonical lifecycle."""
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -92,12 +92,21 @@ def _transition(
                     state, provider, str(payload.get("session_id") or "")
                 ),
                 "accepted_route": _carried_acceptance(
-                    state, provider, str(payload.get("session_id") or ""), "accepted_route"
+                    state, provider, str(payload.get("session_id") or ""), "route"
                 ),
+                "accepted": _accepted_map(state, provider),
             },
         )
         state, heartbeat_actions = reduce(state, heartbeat)
         actions += heartbeat_actions
+
+    # Every event from the owning session is evidence it is still alive, which
+    # is what stops a second terminal from declaring this run abandoned.
+    owner_session = str(payload.get("session_id") or "")
+    if state.active_run and owner_session and state.active_run.session_id == owner_session:
+        state = replace(
+            state, active_run=replace(state.active_run, owner_seen_at=source.observed_at)
+        )
 
     if source.kind == "user_prompt":
         state, deferred = _consume_parent_actions(state)
@@ -119,8 +128,13 @@ def _transition(
         state, observed_actions = _observe_delegation(state, source)
         if source.kind == "subagent_stopped":
             # Neither host accepts injected context on a subagent-stop result,
-            # so corrective guidance waits for the next event that does.
-            state = _defer_parent_actions(state, observed_actions)
+            # so corrective guidance waits for the next event that does. Render
+            # before deferring: the deferral keeps only presentable kinds, so
+            # raw lifecycle decisions were being dropped a second time here,
+            # behind the renderer rather than in front of it.
+            state = _defer_parent_actions(
+                state, _render_actions(observed_actions, state, provider, source.kind)
+            )
         else:
             actions += observed_actions
     elif source.kind == "post_tool_use":
@@ -134,15 +148,31 @@ def _transition(
 
 
 def _carried_acceptance(
-    state: ProjectState, provider: str, session_id: str, key: str = "accepted_profile"
+    state: ProjectState, provider: str, session_id: str, key: str = "profile"
 ) -> str:
-    """An accepted clamp survives the rest of its session and no longer."""
+    """An accepted clamp survives the rest of its own session and no longer.
+
+    Held per session. The activation record has one slot per provider, so a
+    heartbeat from a second terminal used to overwrite this session's consent
+    with an empty string, and `proceed` silently stopped holding.
+    """
     recorded = state.activation.get(provider, {})
-    if not isinstance(recorded, Mapping) or not recorded.get(key):
+    if not isinstance(recorded, Mapping) or not session_id:
         return ""
-    if session_id and recorded.get("session_id") != session_id:
-        return ""
-    return str(recorded[key])
+    entry = (recorded.get("accepted") or {}).get(session_id)
+    if isinstance(entry, Mapping):
+        return str(entry.get(key) or "")
+    # Records written before acceptance was keyed by session.
+    legacy = "accepted_profile" if key == "profile" else "accepted_route"
+    if recorded.get("session_id") == session_id:
+        return str(recorded.get(legacy) or "")
+    return ""
+
+
+def _accepted_map(state: ProjectState, provider: str) -> dict:
+    recorded = state.activation.get(provider, {})
+    accepted = recorded.get("accepted") if isinstance(recorded, Mapping) else None
+    return dict(accepted) if isinstance(accepted, Mapping) else {}
 
 
 def _entitlement_profile(
@@ -214,6 +244,27 @@ def _claude_entitlement() -> set[str] | None:
     return {plan} if plan else None
 
 
+# ponytail: wall clock, because neither host reports whether another session is
+# alive. Replace it the day one of them does.
+_OWNER_QUIET_AFTER = timedelta(minutes=30)
+
+# Bookkeeping the host has no use for. Everything else must render.
+INTERNAL_ACTIONS = frozenset(
+    {"archive_run", "permit_completion", "spawn_assessor", "permit_stop"}
+)
+
+
+def _owner_is_quiet(run, now: str) -> bool:
+    """Has the session owning this run stopped reporting long enough to adopt?"""
+    last = run.owner_seen_at or run.updated_at or run.started_at
+    if not last or not now:
+        return True
+    try:
+        return datetime.fromisoformat(now) - datetime.fromisoformat(last) >= _OWNER_QUIET_AFTER
+    except ValueError:
+        return True
+
+
 def _reconcile_session(
     state: ProjectState, source: Event, payload: Mapping[str, object]
 ) -> tuple[ProjectState, tuple[Action, ...]]:
@@ -226,9 +277,18 @@ def _reconcile_session(
     if isinstance(active_ids, list):
         observed = [str(item) for item in active_ids]
     elif run.session_id and session_id and session_id != run.session_id:
-        # Neither host reports a liveness list, so a heartbeat carrying a
-        # different session is the only proof that the process owning these
-        # delegations is gone. Subagents do not outlive their host process.
+        # Neither host reports a liveness list, and a second terminal in the
+        # same project is indistinguishable from a resumed one. Treating that
+        # as proof of death killed live leads, told the root to spawn a
+        # replacement, and handed the run to the stranger, after which the two
+        # sessions rewrote the owner back and forth forever. Adoption now waits
+        # for the owner to actually go quiet.
+        # A host that says it resumed is telling us the earlier process ended,
+        # which is exact. Codex sends no such field, so there the quiet window
+        # is all we have and the conservative branch is the default.
+        resumed = str(payload.get("source") or "").lower() in {"resume", "compact"}
+        if not resumed and not _owner_is_quiet(run, source.observed_at):
+            return state, (Action("run_owned_elsewhere", {"session_id": run.session_id}),)
         observed = []
     else:
         return state, ()
@@ -280,7 +340,12 @@ def _handle_prompt(state: ProjectState, source: Event, provider: str) -> tuple[P
                 state,
                 source,
                 "route_accepted",
-                {"provider": provider, "profile": profile, "route": standing},
+                {
+                    "provider": provider,
+                    "profile": profile,
+                    "route": standing,
+                    "session_id": str(source.payload.get("session_id") or ""),
+                },
             ),
         )
     if name == "bypass":
@@ -1205,6 +1270,34 @@ def _render_actions(
             rendered.append(Action("inject_context", {"text": "The observed lead is unavailable. Spawn one safe replacement at the recorded owner generation."}))
         elif action.kind == "route_run":
             rendered.append(Action("inject_context", {"text": "Symphony accepted the assessed route. Spawn only the selected lead and keep the root thin."}))
+        elif action.kind == "reject_lead_replacement":
+            lead = state.active_run.lead_identity if state.active_run else "the registered lead"
+            rendered.append(Action("inject_context", {"text":
+                f"Symphony refused to register {action.payload.get('identity')} as lead: this run already "
+                f"has one ({lead}). Stop the extra agent and let the registered lead finish. Symphony is "
+                "not tracking the extra agent's work, so anything it does will go unreconciled."}))
+        elif action.kind == "ignore_stale_owner":
+            rendered.append(Action("inject_context", {"text":
+                f"Symphony ignored a lifecycle report from {action.payload.get('identity')}, which is not "
+                "the registered lead of this run. The run is unchanged."}))
+        elif action.kind == "wait_for_delegations":
+            identities = ", ".join(map(str, action.payload.get("active", ())))
+            rendered.append(Action("inject_context", {"text":
+                f"The lead reported completion while these Symphony agents are still active: {identities}. "
+                "Wait for them to finish before completing the run."}))
+        elif action.kind == "block_completion":
+            rendered.append(Action("inject_context", {"text":
+                "Symphony refused this completion because the lead returned no outcome. Report the outcome, "
+                "then complete."}))
+        elif action.kind == "run_owned_elsewhere":
+            rendered.append(Action("inject_context", {"text":
+                f"Symphony run is owned by session {action.payload.get('session_id')}, which is still "
+                "reporting. This session will not take it over. If that session is really gone, release the "
+                "run explicitly before starting work here."}))
+        elif action.kind not in INTERNAL_ACTIONS:
+            # A decision the reducer made must never die on the way out. Seven
+            # of them did, which is how two leads ran at once with nobody told.
+            rendered.append(Action("inject_context", {"text": f"Symphony: {action.kind}."}))
     return tuple(rendered)
 
 
@@ -1226,6 +1319,8 @@ def _assessment_guidance(task: str, provider: str = "") -> str:
         "\"risk\":\"normal|high\",\"rationale\":\"...\",\"topology\":\"...\"}. "
         "Every later worker or consultant spawn needs its matching SYMPHONY_ROLE line and explicit model/effort; "
         "consultants also need SYMPHONY_DECISION JSON with decision-local size and complexity. "
+        "Relay the task in full: the lead cannot see this conversation, so if the request has several parts, "
+        "every part goes in the packet and the acceptance check covers all of them. "
         f"{codex}Task: {task}"
     )
 

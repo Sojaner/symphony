@@ -126,6 +126,7 @@ def _run_from_dict(value: Any) -> RunState:
         started_at=_text(value.get("started_at", ""), "run.started_at"),
         updated_at=_text(value.get("updated_at", ""), "run.updated_at"),
         session_id=_text(value.get("session_id", ""), "run.session_id"),
+        owner_seen_at=_text(value.get("owner_seen_at", ""), "run.owner_seen_at"),
         unreconciled=tuple(
             _text(item, "run.unreconciled item")
             for item in _array(value.get("unreconciled", ()), "run.unreconciled")

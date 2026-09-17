@@ -70,6 +70,8 @@ size: small | medium | large
 complexity: simple | mixed | complex
 ```
 
+**Bounded means scoped, never abridged.** A lead spawned with `fork_turns="none"` cannot see the request the user actually made, so the packet is the only copy. If the user asked for five things, `objective` states all five and `acceptance_check` is satisfied only when every one of them is met. Dropping items to make an objective read as a single sentence loses work silently: nothing downstream compares what was asked against what was done, and the completion gate checks only that no agent is still running. Split a request across several packets when the items are genuinely independent, and say so in each, but never narrow the request to fit the field.
+
 `size` and `complexity` are local to the packet. Each consultant decision is classified separately; a consultant may split one question into multiple packets.
 
 ## Lead

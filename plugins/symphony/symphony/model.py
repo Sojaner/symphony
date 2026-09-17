@@ -99,6 +99,9 @@ class RunState:
     started_at: str = ""
     updated_at: str = ""
     session_id: str = ""
+    # When the session that owns this run last reported. A different
+    # session is not proof the owner died, so takeover needs evidence.
+    owner_seen_at: str = ""
     unreconciled: tuple[str, ...] = ()
 
 

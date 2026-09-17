@@ -40,6 +40,9 @@ def _heartbeat(state: ProjectState, event: Event):
         "accepted_profile": event.payload.get("accepted_profile"),
         # A weakened route the user accepted, carried for this session.
         "accepted_route": event.payload.get("accepted_route"),
+        # Acceptances keyed by session. One slot per provider meant a
+        # second terminal's heartbeat destroyed what this one accepted.
+        "accepted": event.payload.get("accepted"),
     }
     activation[provider] = {key: value for key, value in facts.items() if value is not None}
     return replace(state, activation=activation), ()
@@ -55,6 +58,16 @@ def _route_accepted(state: ProjectState, event: Event):
     record = dict(activation.get(provider, {}))
     record["accepted_profile"] = str(profile or "")
     record["accepted_route"] = str(event.payload.get("route") or "")
+    session = str(event.payload.get("session_id") or "")
+    if session:
+        accepted = dict(record.get("accepted") or {})
+        accepted[session] = {
+            "profile": record["accepted_profile"],
+            "route": record["accepted_route"],
+        }
+        # Bounded: a project does not need the consent history of every
+        # session that ever touched it.
+        record["accepted"] = dict(list(accepted.items())[-4:])
     activation[provider] = record
     return replace(state, activation=activation), (Action("route_acceptance_recorded"),)
 
