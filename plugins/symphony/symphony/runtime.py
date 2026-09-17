@@ -88,13 +88,6 @@ def _transition(
                 "profile": _entitlement_profile(
                     state, provider, str(payload.get("session_id") or ""), environ
                 ),
-                "accepted_profile": _carried_acceptance(
-                    state, provider, str(payload.get("session_id") or "")
-                ),
-                "accepted_route": _carried_acceptance(
-                    state, provider, str(payload.get("session_id") or ""), "route"
-                ),
-                "accepted": _accepted_map(state, provider),
             },
         )
         state, heartbeat_actions = reduce(state, heartbeat)
@@ -116,7 +109,8 @@ def _transition(
     elif source.kind == "session_heartbeat":
         state, resume_actions = _reconcile_session(state, source, payload)
         actions += resume_actions
-        if state.active_run:
+        refused = any(item.kind == "run_owned_elsewhere" for item in resume_actions)
+        if state.active_run and not refused:
             actions += (Action("inject_context", {"text": _recovery_guidance(state)}),)
     elif source.kind == "pre_tool_use":
         state, delegation_actions = _prepare_delegation(state, source, provider)
@@ -167,23 +161,6 @@ def _carried_acceptance(
     if recorded.get("session_id") == session_id:
         return str(recorded.get(legacy) or "")
     return ""
-
-
-def _accepted_map(state: ProjectState, provider: str) -> dict:
-    recorded = state.activation.get(provider, {})
-    if not isinstance(recorded, Mapping):
-        return {}
-    accepted = recorded.get("accepted")
-    accepted = dict(accepted) if isinstance(accepted, Mapping) else {}
-    # Carry a record written before acceptance was keyed by session into the
-    # map, so it stops being destroyable by the next stranger's heartbeat.
-    owner = str(recorded.get("session_id") or "")
-    if owner and owner not in accepted and recorded.get("accepted_profile"):
-        accepted[owner] = {
-            "profile": str(recorded.get("accepted_profile") or ""),
-            "route": str(recorded.get("accepted_route") or ""),
-        }
-    return accepted
 
 
 def _entitlement_profile(
@@ -257,12 +234,17 @@ def _claude_entitlement() -> set[str] | None:
 
 # ponytail: wall clock, because neither host reports whether another session is
 # alive. Replace it the day one of them does.
-_OWNER_QUIET_AFTER = timedelta(minutes=30)
+_OWNER_QUIET_AFTER = timedelta(hours=2)
 
 # Bookkeeping the host has no use for. Everything else must render.
 INTERNAL_ACTIONS = frozenset(
     {"archive_run", "permit_completion", "spawn_assessor", "permit_stop"}
 )
+
+
+def _control_name(name: str, provider: str) -> str:
+    """How a user types a Symphony control on this host."""
+    return f"/symphony:{name}" if provider == "claude" else f"$symphony:symphony {name}"
 
 
 def _owner_is_quiet(run, now: str) -> bool:
@@ -299,7 +281,7 @@ def _reconcile_session(
         # A host that says it resumed is telling us the earlier process ended,
         # which is exact. Codex sends no such field, so there the quiet window
         # is all we have and the conservative branch is the default.
-        resumed = str(payload.get("source") or "").lower() in {"resume", "compact"}
+        resumed = str(payload.get("source") or "").lower() in {"resume", "compact", "clear"}
         if not resumed and not _owner_is_quiet(run, source.observed_at):
             return state, (Action("run_owned_elsewhere", {"session_id": run.session_id}),)
         observed = []
@@ -309,7 +291,14 @@ def _reconcile_session(
         state, _derived(state, source, "resume_reconciled", {"active_ids": observed}, "resume")
     )
     if state.active_run and session_id:
-        state = replace(state, active_run=replace(state.active_run, session_id=session_id))
+        # Stamp the new owner too: leaving the dead one's timestamp in place let
+        # the very next session adopt the run all over again.
+        state = replace(
+            state,
+            active_run=replace(
+                state.active_run, session_id=session_id, owner_seen_at=source.observed_at
+            ),
+        )
     return state, actions
 
 
@@ -756,17 +745,18 @@ def _prepare_delegation(
             )
         else:
             route = route_for(assessment)
+        spawn_session = str(source.payload.get("session_id") or "")
         snapshot = _snapshot(state, provider)
         resolved = resolve_tier(route, snapshot)
         required_model = str(resolved["lead_model"])
         required_effort = str(resolved["lead_effort"])
         drift = _route_drift(state, provider, recorded, snapshot, required_model, required_effort)
         if drift and drift["weaker"]:
-            if _accepted_route(state, provider) != f"{required_model}/{required_effort}":
+            if _accepted_route(state, provider, spawn_session) != f"{required_model}/{required_effort}":
                 return state, (_drift_block(provider, drift),)
         elif drift:
             actions += (_drift_notice(drift),)
-        clamp = _clamp_actions(state, provider, route)
+        clamp = _clamp_actions(state, provider, route, spawn_session)
         if any(item.kind == "block_tool" for item in clamp):
             return state, clamp
         actions += clamp
@@ -794,16 +784,12 @@ def _applied_profile(state: ProjectState, provider: str) -> str:
     return str(profile) if profile else ""
 
 
-def _accepted_profile(state: ProjectState, provider: str) -> str:
-    activation = state.activation.get(provider, {})
-    accepted = activation.get("accepted_profile") if isinstance(activation, Mapping) else None
-    return str(accepted) if accepted else ""
+def _accepted_profile(state: ProjectState, provider: str, session_id: str) -> str:
+    return _carried_acceptance(state, provider, session_id, "profile")
 
 
-def _accepted_route(state: ProjectState, provider: str) -> str:
-    activation = state.activation.get(provider, {})
-    accepted = activation.get("accepted_route") if isinstance(activation, Mapping) else None
-    return str(accepted) if accepted else ""
+def _accepted_route(state: ProjectState, provider: str, session_id: str) -> str:
+    return _carried_acceptance(state, provider, session_id, "route")
 
 
 def _snapshot(state: ProjectState, provider: str):
@@ -812,7 +798,7 @@ def _snapshot(state: ProjectState, provider: str):
 
 
 def _clamp_actions(
-    state: ProjectState, provider: str, route
+    state: ProjectState, provider: str, route, session_id: str = ""
 ) -> tuple[Action, ...] | None:
     """Gate a tier clamp, disclose an effort clamp, stay silent otherwise.
 
@@ -824,9 +810,9 @@ def _clamp_actions(
     profile = _applied_profile(state, provider)
     clamp = clamp_against_best(provider, route, profile or None)
     if clamp["tier_clamped"]:
-        if _accepted_profile(state, provider) == profile and profile:
+        if _accepted_profile(state, provider, session_id) == profile and profile:
             return ()
-        control = "/symphony:proceed" if provider == "claude" else "$symphony:symphony proceed"
+        control = _control_name("proceed", provider)
         reason = (
             f"Your plan routes this work to {clamp['actual_model']} instead of the "
             f"matrix-selected {clamp['intended_model']}"
@@ -903,7 +889,7 @@ def _route_drift(
 
 
 def _drift_block(provider: str, drift: Mapping[str, str]) -> Action:
-    control = "/symphony:proceed" if provider == "claude" else "$symphony:symphony proceed"
+    control = _control_name("proceed", provider)
     return _block_tool(
         f"The route this assessment accepted is gone: {drift['stored_model']} at "
         f"{drift['stored_effort']} effort is no longer available, so the same work would "
@@ -1175,7 +1161,7 @@ def _defer_parent_actions(
     visible = [
         {"kind": action.kind, "payload": dict(action.payload)}
         for action in actions
-        if action.kind in {"inject_context", "replace_lead", "route_run"}
+        if action.kind == "inject_context"
     ]
     if not visible:
         return state
@@ -1305,12 +1291,14 @@ def _render_actions(
         elif action.kind == "run_owned_elsewhere":
             rendered.append(Action("inject_context", {"text":
                 f"Symphony run is owned by session {action.payload.get('session_id')}, which is still "
-                "reporting. This session will not take it over. If that session is really gone, release the "
-                "run explicitly before starting work here."}))
+                "reporting, so this session will not take it over. If that session is really gone, release "
+                f"the run with `{_control_name('stop', provider)} --force` before starting work here."}))
         elif action.kind not in INTERNAL_ACTIONS:
             # A decision the reducer made must never die on the way out. Seven
             # of them did, which is how two leads ran at once with nobody told.
-            rendered.append(Action("inject_context", {"text": f"Symphony: {action.kind}."}))
+            rendered.append(Action("inject_context", {"text":
+                f"Symphony made a lifecycle decision it has no message for ({action.kind}). "
+                "This is a plugin defect; no action is required of you."}))
     return tuple(rendered)
 
 

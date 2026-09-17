@@ -1,7 +1,7 @@
 """Pure lifecycle transitions for provider-neutral Symphony events."""
 
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 
 from .model import Action, Delegation, Event, ProjectState, RunState, persistable
@@ -20,6 +20,23 @@ def _archive(state: ProjectState, run: RunState, status: str, observed_at: str) 
     return replace(state, active_run=None, recent_runs=(*state.recent_runs, archived)[-20:])
 
 
+def _preserved_consent(recorded) -> dict:
+    """Consent survives a heartbeat from any session, including a stranger's."""
+    if not isinstance(recorded, Mapping):
+        return {}
+    accepted = recorded.get("accepted")
+    accepted = dict(accepted) if isinstance(accepted, Mapping) else {}
+    # A record written before consent was keyed by session keeps one flat slot.
+    # Migrate it, so it stops being destroyable by the next stranger.
+    owner = str(recorded.get("session_id") or "")
+    if owner and owner not in accepted and recorded.get("accepted_profile"):
+        accepted[owner] = {
+            "profile": str(recorded.get("accepted_profile") or ""),
+            "route": str(recorded.get("accepted_route") or ""),
+        }
+    return accepted
+
+
 def _heartbeat(state: ProjectState, event: Event):
     provider = event.payload.get("provider")
     if not provider:
@@ -36,13 +53,10 @@ def _heartbeat(state: ProjectState, event: Event):
         "last_fault": event.payload.get("last_fault"),
         # Which shipped entitlement profile this session routes through.
         "profile": event.payload.get("profile"),
-        # A clamp the user accepted, carried for the rest of this session.
-        "accepted_profile": event.payload.get("accepted_profile"),
-        # A weakened route the user accepted, carried for this session.
-        "accepted_route": event.payload.get("accepted_route"),
-        # Acceptances keyed by session. One slot per provider meant a
-        # second terminal's heartbeat destroyed what this one accepted.
-        "accepted": event.payload.get("accepted"),
+        # Consent, keyed by session and preserved rather than replaced. One
+        # slot per provider meant a second terminal's heartbeat destroyed what
+        # this one had accepted, and `proceed` silently stopped holding.
+        "accepted": _preserved_consent(state.activation.get(provider)),
     }
     activation[provider] = {key: value for key, value in facts.items() if value is not None}
     return replace(state, activation=activation), ()
@@ -61,6 +75,7 @@ def _route_accepted(state: ProjectState, event: Event):
     session = str(event.payload.get("session_id") or "")
     if session:
         accepted = dict(record.get("accepted") or {})
+        accepted.pop(session, None)
         accepted[session] = {
             "profile": record["accepted_profile"],
             "route": record["accepted_route"],
