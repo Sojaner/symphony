@@ -53,7 +53,8 @@ jobs:
           # A missing binary is a packaging failure, never a reason to pass.
           command -v codex >/dev/null 2>&1 || { echo "::error::codex CLI missing"; exit 1; }
           export CODEX_HOME="$RUNNER_TEMP/symphony-codex-home"
-          mkdir -p "$CODEX_HOME"
+          export SYMPHONY_STATE_DIR="$RUNNER_TEMP/symphony-codex-state"
+          mkdir -p "$CODEX_HOME" "$SYMPHONY_STATE_DIR"
           codex plugin marketplace add "$GITHUB_WORKSPACE"
           codex plugin add symphony@symphony
           codex exec \
@@ -62,7 +63,7 @@ jobs:
             --output-last-message "$RUNNER_TEMP/codex-help.txt" \
             -C "$GITHUB_WORKSPACE" \
             '$symphony:symphony help'
-          grep -q 'symphony:symphony enable|start' "$RUNNER_TEMP/codex-help.txt"
+          python3 .github/scripts/assert_heartbeat.py codex
 
       - name: Run real Claude control smoke when credential is available
         env:
@@ -73,7 +74,8 @@ jobs:
             exit 0
           fi
           export CLAUDE_CONFIG_DIR="$RUNNER_TEMP/symphony-claude-home"
-          mkdir -p "$CLAUDE_CONFIG_DIR"
+          export SYMPHONY_STATE_DIR="$RUNNER_TEMP/symphony-claude-state"
+          mkdir -p "$CLAUDE_CONFIG_DIR" "$SYMPHONY_STATE_DIR"
           claude plugin marketplace add "$GITHUB_WORKSPACE"
           claude plugin install -y symphony@symphony
           claude --print \
@@ -81,7 +83,7 @@ jobs:
             --max-budget-usd 0.50 \
             --output-format text \
             '/symphony:help' > "$RUNNER_TEMP/claude-help.txt"
-          grep -q '/symphony:enable, /symphony:start' "$RUNNER_TEMP/claude-help.txt"
+          python3 .github/scripts/assert_heartbeat.py claude
 
   release:
     needs: verify
