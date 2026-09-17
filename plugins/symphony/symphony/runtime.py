@@ -171,8 +171,19 @@ def _carried_acceptance(
 
 def _accepted_map(state: ProjectState, provider: str) -> dict:
     recorded = state.activation.get(provider, {})
-    accepted = recorded.get("accepted") if isinstance(recorded, Mapping) else None
-    return dict(accepted) if isinstance(accepted, Mapping) else {}
+    if not isinstance(recorded, Mapping):
+        return {}
+    accepted = recorded.get("accepted")
+    accepted = dict(accepted) if isinstance(accepted, Mapping) else {}
+    # Carry a record written before acceptance was keyed by session into the
+    # map, so it stops being destroyable by the next stranger's heartbeat.
+    owner = str(recorded.get("session_id") or "")
+    if owner and owner not in accepted and recorded.get("accepted_profile"):
+        accepted[owner] = {
+            "profile": str(recorded.get("accepted_profile") or ""),
+            "route": str(recorded.get("accepted_route") or ""),
+        }
+    return accepted
 
 
 def _entitlement_profile(

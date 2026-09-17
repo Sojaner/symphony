@@ -144,6 +144,23 @@ class ConcurrentSessionTests(unittest.TestCase):
         self.assertIn("root-a", accepted, "a stranger's heartbeat erased this session's consent")
         self.assertTrue(accepted["root-a"].get("profile"))
 
+    def test_consent_recorded_before_it_was_keyed_by_session_survives(self):
+        """An upgraded machine carries records with one unkeyed slot."""
+        handle(self.payload("old-s", "SessionStart"), self.environ)
+        path = next(self.state_root.glob("*.json"))
+        document = json.loads(path.read_text())
+        document["activation"]["codex"] = {
+            "session_id": "old-s", "profile": "base", "accepted_profile": "base",
+            "accepted_route": "gpt-5.5/medium", "plugin_version": "1.1.0",
+        }
+        path.write_text(json.dumps(document))
+
+        handle(self.payload("old-s"), self.environ)
+        handle(self.payload("stranger", "SessionStart"), self.environ)
+
+        accepted = self.state()["activation"]["codex"].get("accepted") or {}
+        self.assertEqual("base", accepted.get("old-s", {}).get("profile"))
+
     # ---- but real recovery must still work --------------------------------
     def test_a_run_whose_owner_has_gone_quiet_is_still_adopted(self):
         self.run_with_live_lead("root-a")
