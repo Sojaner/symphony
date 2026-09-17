@@ -11,6 +11,7 @@ description: Show Claude Code commands for Symphony
 - `/symphony:status` — show enablement, hook activation, route, lead, and compact delegations.
 - `/symphony:agents [--all]` — show current latest delegation records; `--all` includes retained history.
 - `/symphony:reassess` — reassess subsequent work at the current evidence boundary.
+- `/symphony:proceed` — accept a route your plan clamps to a weaker model, for this session.
 - `/symphony:stop [--force]` — request a safe stop; `--force` acknowledges interruption of active work.
 - `/symphony:help` — show this help.
 

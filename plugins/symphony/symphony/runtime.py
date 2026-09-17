@@ -13,11 +13,29 @@ from . import HOOK_SCHEMA_VERSION, PLUGIN_VERSION
 from .adapters import HookResult, detect_provider, event_from_payload, render
 from .model import Action, Delegation, Event, ProjectState
 from .reducer import reduce
-from .routing import Assessment, profiles_for, route_for, resolve_tier, snapshot_for
+from .routing import (
+    Assessment,
+    clamp_against_best,
+    profiles_for,
+    resolve_tier,
+    route_for,
+    snapshot_for,
+)
 from .store import StateStore
 
 
-CONTROLS = {"agents", "bypass", "disable", "enable", "help", "reassess", "start", "status", "stop"}
+CONTROLS = {
+    "agents",
+    "bypass",
+    "disable",
+    "enable",
+    "help",
+    "proceed",
+    "reassess",
+    "start",
+    "status",
+    "stop",
+}
 ROLES = {"assessor", "consultant", "lead", "worker"}
 HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 
@@ -70,6 +88,9 @@ def _transition(
                 "profile": _entitlement_profile(
                     state, provider, str(payload.get("session_id") or ""), environ
                 ),
+                "accepted_profile": _carried_acceptance(
+                    state, provider, str(payload.get("session_id") or "")
+                ),
             },
         )
         state, heartbeat_actions = reduce(state, heartbeat)
@@ -107,6 +128,16 @@ def _transition(
         actions += lifecycle_actions
 
     return state, actions
+
+
+def _carried_acceptance(state: ProjectState, provider: str, session_id: str) -> str:
+    """An accepted clamp survives the rest of its session and no longer."""
+    recorded = state.activation.get(provider, {})
+    if not isinstance(recorded, Mapping) or not recorded.get("accepted_profile"):
+        return ""
+    if session_id and recorded.get("session_id") != session_id:
+        return ""
+    return str(recorded["accepted_profile"])
 
 
 def _entitlement_profile(
@@ -230,6 +261,19 @@ def _handle_prompt(state: ProjectState, source: Event, provider: str) -> tuple[P
         if not argument:
             return state, (Action("inject_context", {"text": "Symphony start requires a task."}),)
         return state, (Action("inject_context", {"text": _task_guidance(state, argument, provider)}),)
+    if name == "proceed":
+        profile = _applied_profile(state, provider)
+        if profile == profiles_for(provider)[0]["id"]:
+            # Fully entitled: there is no weaker route to consent to.
+            return state, (
+                Action("inject_context", {"text": "Symphony has no clamped route to accept."}),
+            )
+        return reduce(
+            state,
+            _derived(
+                state, source, "route_accepted", {"provider": provider, "profile": profile}
+            ),
+        )
     if name == "bypass":
         if not argument:
             return state, (Action("inject_context", {"text": "Symphony bypass requires a task."}),)
@@ -630,6 +674,10 @@ def _prepare_delegation(
             resolved = resolve_tier(route, _snapshot(state, provider))
             required_model = required_model or str(resolved["lead_model"])
             required_effort = required_effort or str(resolved["lead_effort"])
+        clamp = _clamp_actions(state, provider, route)
+        if any(item.kind == "block_tool" for item in clamp):
+            return state, clamp
+        actions += clamp
         if model != required_model or effort != required_effort:
             return state, (
                 _block_tool(
@@ -648,11 +696,58 @@ def _prepare_delegation(
     return state, actions
 
 
-def _snapshot(state: ProjectState, provider: str):
-    """The capability snapshot for the profile this session probed."""
+def _applied_profile(state: ProjectState, provider: str) -> str:
     activation = state.activation.get(provider, {})
     profile = activation.get("profile") if isinstance(activation, Mapping) else None
-    return snapshot_for(provider, str(profile) if profile else None)
+    return str(profile) if profile else ""
+
+
+def _accepted_profile(state: ProjectState, provider: str) -> str:
+    activation = state.activation.get(provider, {})
+    accepted = activation.get("accepted_profile") if isinstance(activation, Mapping) else None
+    return str(accepted) if accepted else ""
+
+
+def _snapshot(state: ProjectState, provider: str):
+    """The capability snapshot for the profile this session probed."""
+    return snapshot_for(provider, _applied_profile(state, provider) or None)
+
+
+def _clamp_actions(
+    state: ProjectState, provider: str, route
+) -> tuple[Action, ...] | None:
+    """Gate a tier clamp, disclose an effort clamp, stay silent otherwise.
+
+    A weaker model doing the work is the degradation that must not pass
+    unnoticed, so it waits for the user. A reduced effort on the same model is
+    the dimension the matrix already trades away under risk, so it is announced
+    and the run continues.
+    """
+    profile = _applied_profile(state, provider)
+    clamp = clamp_against_best(provider, route, profile or None)
+    if clamp["tier_clamped"]:
+        if _accepted_profile(state, provider) == profile and profile:
+            return ()
+        control = "/symphony:proceed" if provider == "claude" else "$symphony:symphony proceed"
+        reason = (
+            f"Your plan routes this work to {clamp['actual_model']} instead of the "
+            f"matrix-selected {clamp['intended_model']}"
+            + (" and no entitlement could be read" if not profile else "")
+            + f". Run `{control}` to accept the weaker route for this session, or "
+            "upgrade the plan and start a new session."
+        )
+        return (_block_tool(reason),)
+    if clamp["effort_clamped"]:
+        return (
+            Action(
+                "inject_context",
+                {
+                    "text": f"Symphony reduced effort to {clamp['actual_effort']} from "
+                    f"{clamp['intended_effort']}: {clamp['actual_model']} does not offer it."
+                },
+            ),
+        )
+    return ()
 
 
 def _required_lead_route(recorded: Mapping[str, object]) -> tuple[str, str]:
@@ -971,6 +1066,13 @@ def _render_actions(
                     },
                 )
             )
+        elif action.kind == "route_acceptance_recorded":
+            rendered.append(
+                Action(
+                    "inject_context",
+                    {"text": "Symphony accepted the clamped route for this session."},
+                )
+            )
         elif action.kind == "project_enabled":
             rendered.append(Action("inject_context", {"text": "Symphony is enabled for this project; hooks are guarded."}))
         elif action.kind == "project_disabled":
@@ -1108,8 +1210,8 @@ def _native_help(provider: str) -> str:
 
 def _help(provider: str) -> str:
     if provider == "claude":
-        return "Symphony controls: /symphony:enable, /symphony:start, /symphony:bypass, /symphony:disable, /symphony:status, /symphony:agents, /symphony:reassess, /symphony:stop, /symphony:help."
-    return "Symphony controls: $symphony:symphony enable|start|bypass|disable|status|agents|reassess|stop|help."
+        return "Symphony controls: /symphony:enable, /symphony:start, /symphony:bypass, /symphony:disable, /symphony:status, /symphony:agents, /symphony:reassess, /symphony:proceed, /symphony:stop, /symphony:help."
+    return "Symphony controls: $symphony:symphony enable|start|bypass|disable|status|agents|reassess|proceed|stop|help."
 
 
 def _fault_log(environ: Mapping[str, str]) -> Path:

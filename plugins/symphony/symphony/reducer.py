@@ -36,9 +36,24 @@ def _heartbeat(state: ProjectState, event: Event):
         "last_fault": event.payload.get("last_fault"),
         # Which shipped entitlement profile this session routes through.
         "profile": event.payload.get("profile"),
+        # A clamp the user accepted, carried for the rest of this session.
+        "accepted_profile": event.payload.get("accepted_profile"),
     }
     activation[provider] = {key: value for key, value in facts.items() if value is not None}
     return replace(state, activation=activation), ()
+
+
+def _route_accepted(state: ProjectState, event: Event):
+    """Record that the user accepted a route their entitlement clamps."""
+    provider = event.payload.get("provider")
+    profile = event.payload.get("profile")
+    if not provider:
+        return state, ()
+    activation = dict(state.activation)
+    record = dict(activation.get(provider, {}))
+    record["accepted_profile"] = str(profile or "")
+    activation[provider] = record
+    return replace(state, activation=activation), (Action("route_acceptance_recorded"),)
 
 
 def _enable(state: ProjectState, event: Event):
@@ -310,6 +325,7 @@ _Handler = Callable[[ProjectState, Event], tuple[ProjectState, tuple[Action, ...
 _HANDLERS: dict[str, _Handler] = {
     "session_heartbeat": _heartbeat,
     "enable": _enable,
+    "route_accepted": _route_accepted,
     "disable": _disable,
     "bypass": _bypass,
     "task_received": _task_received,

@@ -59,8 +59,9 @@ class PackageContractTests(unittest.TestCase):
         self.assertNotIn("$symphony", claude)
 
     def test_all_control_wrappers_exist(self):
-        expected = {"agents", "bypass", "disable", "enable", "help", "reassess", "start", "status", "stop"}
-        self.assertEqual({path.stem for path in (PLUGIN / "commands").glob("*.md")}, expected)
+        from plugins.symphony.symphony.runtime import CONTROLS
+
+        self.assertEqual({path.stem for path in (PLUGIN / "commands").glob("*.md")}, CONTROLS)
 
     def test_role_contracts_classify_each_actionable_packet(self):
         roles = (PLUGIN / "skills/symphony/references/role-contracts.md").read_text(encoding="utf-8")

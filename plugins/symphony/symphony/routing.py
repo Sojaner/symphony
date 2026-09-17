@@ -131,3 +131,22 @@ def _supported_effort(requested: str, supported: tuple[str, ...]) -> str:
     target = EFFORTS.index(requested) if requested in EFFORTS else len(EFFORTS)
     lower = [effort for effort in supported if effort in EFFORTS and EFFORTS.index(effort) <= target]
     return max(lower, key=EFFORTS.index) if lower else min(supported, key=EFFORTS.index)
+
+
+def clamp_against_best(provider: str, route: Route, profile_id: str | None) -> dict[str, object]:
+    """How far this account's entitlement moves a route off the matrix.
+
+    A clamp is relative to the best profile the provider ships, not to the
+    applied one: within a profile every tier resolves, so the loss only shows
+    when compared against what a fully entitled account would have run.
+    """
+    best = resolve_tier(route, snapshot_for(provider, profiles_for(provider)[0]["id"]))
+    actual = resolve_tier(route, snapshot_for(provider, profile_id))
+    return {
+        "tier_clamped": actual["lead_model"] != best["lead_model"],
+        "effort_clamped": actual["lead_effort"] != best["lead_effort"],
+        "intended_model": best["lead_model"],
+        "intended_effort": best["lead_effort"],
+        "actual_model": actual["lead_model"],
+        "actual_effort": actual["lead_effort"],
+    }

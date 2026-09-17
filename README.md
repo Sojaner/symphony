@@ -38,6 +38,7 @@ $symphony:symphony bypass <task>
 $symphony:symphony status
 $symphony:symphony agents [--all]
 $symphony:symphony reassess
+$symphony:symphony proceed
 $symphony:symphony stop [--force]
 $symphony:symphony disable
 $symphony:symphony help
@@ -52,6 +53,7 @@ Claude Code exposes native slash commands:
 /symphony:status
 /symphony:agents [--all]
 /symphony:reassess
+/symphony:proceed
 /symphony:stop [--force]
 /symphony:disable
 /symphony:help
@@ -80,6 +82,8 @@ User interruption and host-enforced overrides remain authoritative, so interrupt
 ## Routing
 
 Assessment treats task size and complexity as separate axes. The fixed route is resolved against the capability map shipped with the installed version. Hooks are given no model inventory by either host, so the map is maintained at release time rather than discovered at runtime.
+
+Symphony ships several profiles per provider and routes through the best one your plan is entitled to, falling back to a conservative floor when entitlement cannot be read. When your plan clamps a task to a weaker model, the lead spawn stops and waits for `proceed`, so quality never degrades silently; a reduced effort on the same model is announced and continues.
 
 | Size / complexity | Simple | Mixed | Complex |
 |---|---|---|---|

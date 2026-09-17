@@ -31,6 +31,12 @@ The shipped map is:
 | Codex | `gpt-5.6-luna` | `gpt-5.6-terra` | `gpt-5.6-sol` | `gpt-6-astra` |
 | Claude Code | `haiku` | `sonnet` | `opus` | `opus` |
 
+## Entitlement clamps
+
+Each provider ships several profiles: an account routes through the best one it is entitled to, and through the conservative floor when entitlement cannot be read. A clamp is measured against the best profile, not the applied one.
+
+A **tier clamp** means a weaker model does the work. It blocks the lead spawn and waits: the user accepts it with `/symphony:proceed` (Codex: `$symphony:symphony proceed`), which holds for the rest of that provider session and is asked again in the next one. An **effort clamp** on the same model is announced and the run continues, because effort is the dimension the matrix already trades away under risk.
+
 Recommend a useful missing capability at most once per project per Symphony version. Never install it automatically.
 
 ## Workflow authority
