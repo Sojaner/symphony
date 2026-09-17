@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from typing import Mapping
 
@@ -12,7 +13,7 @@ from . import HOOK_SCHEMA_VERSION, PLUGIN_VERSION
 from .adapters import HookResult, detect_provider, event_from_payload, render
 from .model import Action, Delegation, Event, ProjectState
 from .reducer import reduce
-from .routing import Assessment, fallback_snapshot, route_for, resolve_tier
+from .routing import Assessment, profiles_for, route_for, resolve_tier, snapshot_for
 from .store import StateStore
 
 
@@ -66,6 +67,9 @@ def _transition(
                 ),
                 "hook_schema_version": HOOK_SCHEMA_VERSION,
                 "last_fault": _drain_fault(environ),
+                "profile": _entitlement_profile(
+                    state, provider, str(payload.get("session_id") or ""), environ
+                ),
             },
         )
         state, heartbeat_actions = reduce(state, heartbeat)
@@ -103,6 +107,75 @@ def _transition(
         actions += lifecycle_actions
 
     return state, actions
+
+
+def _entitlement_profile(
+    state: ProjectState, provider: str, session_id: str, environ: Mapping[str, str]
+) -> str:
+    """Which shipped profile this account can run, probed once per session.
+
+    Entitlement does not change within a session, so the stored answer is
+    reused until the session does. A probe that yields nothing returns the
+    empty string, which routes through the conservative floor profile.
+    """
+    pinned = environ.get("SYMPHONY_PROFILE")
+    if pinned:
+        # An explicit pin skips probing entirely: useful when a host's private
+        # caches are unreadable, and what keeps tests off the developer's box.
+        return pinned
+    recorded = state.activation.get(provider, {})
+    if isinstance(recorded, Mapping) and recorded.get("profile"):
+        if not session_id or recorded.get("session_id") == session_id:
+            return str(recorded["profile"])
+    entitled = _entitlement(provider, environ)
+    if entitled is None:
+        return ""
+    for profile in profiles_for(provider):
+        required_all = {str(item) for item in profile.get("requires_all", ())}
+        required_any = {str(item) for item in profile.get("requires_any", ())}
+        if required_all and not required_all <= entitled:
+            continue
+        if required_any and not required_any & entitled:
+            continue
+        return str(profile["id"])
+    return ""
+
+
+def _entitlement(provider: str, environ: Mapping[str, str]) -> set[str] | None:
+    """What the account grants, read without touching any credential file."""
+    if provider == "codex":
+        return _codex_entitlement(environ)
+    return _claude_entitlement()
+
+
+def _codex_entitlement(environ: Mapping[str, str]) -> set[str] | None:
+    home = Path(environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        roster = json.loads((home / "models_cache.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return {
+        str(item.get("slug"))
+        for item in roster.get("models", ())
+        if isinstance(item, Mapping) and item.get("visibility") == "list" and item.get("slug")
+    }
+
+
+def _claude_entitlement() -> set[str] | None:
+    try:
+        completed = subprocess.run(
+            ["claude", "auth", "status"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+        )
+        # Only the plan name is read. The same response carries an email address
+        # and an organisation id, which are none of Symphony's business.
+        plan = str(json.loads(completed.stdout).get("subscriptionType") or "").strip().lower()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return {plan} if plan else None
 
 
 def _reconcile_session(
@@ -554,7 +627,7 @@ def _prepare_delegation(
             route = route_for(assessment)
         required_model, required_effort = _required_lead_route(recorded)
         if not required_model or not required_effort:
-            resolved = resolve_tier(route, fallback_snapshot(provider))
+            resolved = resolve_tier(route, _snapshot(state, provider))
             required_model = required_model or str(resolved["lead_model"])
             required_effort = required_effort or str(resolved["lead_effort"])
         if model != required_model or effort != required_effort:
@@ -573,6 +646,13 @@ def _prepare_delegation(
 
     state = _queue_pending_delegation(state, role, objective, model, effort)
     return state, actions
+
+
+def _snapshot(state: ProjectState, provider: str):
+    """The capability snapshot for the profile this session probed."""
+    activation = state.activation.get(provider, {})
+    profile = activation.get("profile") if isinstance(activation, Mapping) else None
+    return snapshot_for(provider, str(profile) if profile else None)
 
 
 def _required_lead_route(recorded: Mapping[str, object]) -> tuple[str, str]:
@@ -598,7 +678,7 @@ def _accept_assessment(
         "consultation": route.consultation,
         "independent_review": route.independent_review,
     }
-    route_data.update(resolve_tier(route, fallback_snapshot(provider)))
+    route_data.update(resolve_tier(route, _snapshot(state, provider)))
     accepted = {
         "size": assessment.size,
         "complexity": assessment.complexity,

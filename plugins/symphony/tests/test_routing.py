@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from plugins.symphony.symphony.model import CapabilitySnapshot
 from plugins.symphony.symphony.routing import (
     Assessment,
-    fallback_snapshot,
+    snapshot_for,
     resolve_tier,
     route_for,
 )
@@ -70,8 +70,8 @@ class RoutingTests(unittest.TestCase):
     def test_shipped_provider_fallbacks_resolve_capable_leads(self):
         route = route_for(Assessment("small", "simple"))
 
-        codex = resolve_tier(route, fallback_snapshot("codex"))
-        claude = resolve_tier(route, fallback_snapshot("claude"))
+        codex = resolve_tier(route, snapshot_for("codex", "full"))
+        claude = resolve_tier(route, snapshot_for("claude", "opus"))
 
         self.assertEqual((codex["lead_model"], codex["lead_effort"]), ("gpt-5.6-sol", "medium"))
         self.assertEqual((claude["lead_model"], claude["lead_effort"]), ("opus", "medium"))

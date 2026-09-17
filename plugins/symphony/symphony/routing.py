@@ -1,7 +1,9 @@
 """Fixed task routing with provider-specific capability resolution."""
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from functools import lru_cache
+import json
+from pathlib import Path
 
 from .model import CapabilitySnapshot
 
@@ -40,20 +42,47 @@ MATRIX = {
     ("large", "complex"): Route("economy", "medium", "delegated", "strongest"),
 }
 
-_FALLBACK_MODELS = {
-    "codex": {
-        "economy": "gpt-5.6-luna",
-        "balanced": "gpt-5.6-terra",
-        "capable": "gpt-5.6-sol",
-        "strongest": "gpt-6-astra",
-    },
-    "claude": {
-        "economy": "haiku",
-        "balanced": "sonnet",
-        "capable": "opus",
-        "strongest": "opus",
-    },
-}
+PROFILES_PATH = Path(__file__).resolve().parent.parent / "profiles.json"
+
+
+@lru_cache(maxsize=1)
+def _profiles() -> dict:
+    """The shipped tier-to-model profiles, maintained at release time."""
+    return json.loads(PROFILES_PATH.read_text(encoding="utf-8"))["providers"]
+
+
+def profiles_for(provider: str) -> tuple[dict, ...]:
+    """Every shipped profile for a provider, best first, floor last."""
+    return tuple(_profiles()[provider]["profiles"])
+
+
+def snapshot_for(provider: str, profile_id: str | None = None) -> CapabilitySnapshot:
+    """The capability snapshot for one entitlement profile.
+
+    With no profile named, the last profile applies: it is the conservative
+    floor, so an account whose entitlement could not be probed is never routed
+    to a model it may not be able to run.
+    """
+    profiles = profiles_for(provider)
+    profile = next(
+        (item for item in profiles if item["id"] == profile_id),
+        profiles[-1],
+    )
+    tiers = dict(profile["tiers"])
+    efforts = {model: tuple(levels) for model, levels in profile["efforts"].items()}
+    return CapabilitySnapshot(
+        provider=provider,
+        available_models=tuple(dict.fromkeys(tiers.values())),
+        supported_efforts=efforts,
+        tiers=tiers,
+        source=f"profile:{profile['id']}",
+        provider_version=None,
+        refreshed_at=_profiles_generated_at(),
+    )
+
+
+def _profiles_generated_at() -> str:
+    return json.loads(PROFILES_PATH.read_text(encoding="utf-8")).get("generated_at", "")
 
 
 def route_for(assessment: Assessment) -> Route:
@@ -66,21 +95,6 @@ def route_for(assessment: Assessment) -> Route:
         effort = "medium" if route.lead_effort == "low" else route.lead_effort
         return replace(route, lead_effort=effort, independent_review=True)
     return route
-
-
-def fallback_snapshot(provider: str) -> CapabilitySnapshot:
-    """Return the shipped model map used until a provider capability refresh succeeds."""
-    tiers = _FALLBACK_MODELS[provider]
-    models = tuple(dict.fromkeys(tiers.values()))
-    return CapabilitySnapshot(
-        provider=provider,
-        available_models=models,
-        supported_efforts={model: ("low", "medium", "high") for model in models},
-        tiers=tiers,
-        source="shipped-fallback",
-        provider_version=None,
-        refreshed_at=datetime.now(UTC).isoformat(),
-    )
 
 
 def resolve_tier(route: Route, snapshot: CapabilitySnapshot) -> dict[str, object]:

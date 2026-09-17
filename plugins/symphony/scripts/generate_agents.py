@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Generate the packaged Claude agent files from the shipped profiles.
+
+Claude cannot pin reasoning effort on an Agent call, so Symphony encodes the
+model and effort in the agent type name and the runtime parses them back out.
+That makes the filenames part of the routing contract: a profile naming a model
+with no matching file blocks every spawn of that role, permanently, and the bad
+value is persisted into the recorded route. Generating the files from the same
+profiles the router reads keeps the two sides from drifting.
+
+Codex needs none of this. It accepts a model and effort directly on the spawn,
+so no file has to exist for a route to be spawnable there.
+
+    python3 scripts/generate_agents.py           # write the files
+    python3 scripts/generate_agents.py --check   # fail if they are stale
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from symphony.routing import (  # noqa: E402
+    Assessment,
+    MATRIX,
+    profiles_for,
+    resolve_tier,
+    route_for,
+    snapshot_for,
+)
+
+AGENTS = Path(__file__).resolve().parents[1] / "agents"
+PROVIDER = "claude"
+
+DESCRIPTIONS = {
+    ("lead", "low"): "Administers large simple Symphony work through bounded delegation.",
+    ("lead", "medium"): "Leads Symphony work at the matrix-selected route.",
+    ("lead", "high"): "Leads difficult Symphony work at the matrix-selected route.",
+    ("worker", "low"): "Completes a cheap bounded mechanical Symphony task.",
+    ("worker", "medium"): "Completes a bounded routine Symphony task.",
+    ("worker", "high"): "Completes a bounded difficult Symphony task.",
+    ("assessor", "high"): "Classifies a bounded Symphony task without executing it.",
+    ("consultant", "high"): "Resolves a bounded Symphony decision and returns its local classification.",
+}
+
+BODIES = {
+    "lead": "Own execution, integration, verification, and communication for the supplied route.",
+    "worker": (
+        "Complete only the supplied objective and acceptance check. Return evidence to the lead."
+    ),
+    "assessor": (
+        "Assess only. Return size, complexity, risk, rationale, topology, and abstract role "
+        "routes. End with exactly one `SYMPHONY_ASSESSMENT: "
+        '{"size":"small|medium|large","complexity":"simple|mixed|complex","risk":"...",'
+        '"rationale":"...","topology":"..."}` line. Do not become the lead.'
+    ),
+    "consultant": (
+        "Decide only the supplied question. Return recommendation, evidence, uncertainty, and "
+        "consequences. Include one `SYMPHONY_DECISION: "
+        '{"size":"small|medium|large","complexity":"simple|mixed|complex"}` line per actionable '
+        "decision."
+    ),
+}
+
+
+def required_agents() -> dict[tuple[str, str, str], None]:
+    """Every role, model and effort the matrix can actually select."""
+    wanted: dict[tuple[str, str, str], None] = {}
+    for profile in profiles_for(PROVIDER):
+        snapshot = snapshot_for(PROVIDER, profile["id"])
+        for size, complexity in MATRIX:
+            for risk in ("normal", "high"):
+                route = route_for(Assessment(size, complexity, risk))
+                resolved = resolve_tier(route, snapshot)
+                model = str(resolved["lead_model"])
+                effort = str(resolved["lead_effort"])
+                # A worker takes its own packet-local classification, so it can
+                # land on any cell the lead can.
+                wanted[("lead", model, effort)] = None
+                wanted[("worker", model, effort)] = None
+        strongest = snapshot.tiers["strongest"]
+        wanted[("assessor", strongest, "high")] = None
+        wanted[("consultant", strongest, "high")] = None
+    return wanted
+
+
+def render(role: str, model: str, effort: str) -> str:
+    description = DESCRIPTIONS.get(
+        (role, effort), f"Completes bounded Symphony {role} work."
+    )
+    return (
+        "---\n"
+        f"name: symphony-{role}-{model}-{effort}\n"
+        f"description: {description}\n"
+        f"model: {model}\n"
+        f"effort: {effort}\n"
+        "---\n"
+        "\n"
+        f"{BODIES[role]}\n"
+    )
+
+
+def frontmatter(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in text.splitlines()[1:]:
+        if line.strip() == "---":
+            break
+        key, separator, value = line.partition(":")
+        if separator:
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def contract_errors(name: str, text: str) -> list[str]:
+    """Check only what the runtime parses back out of the filename."""
+    role, model, effort = name[len("symphony-") : -len(".md")].split("-", 2)
+    model, _, effort = f"{model}-{effort}".rpartition("-")
+    fields = frontmatter(text)
+    problems = []
+    if fields.get("name") != name[: -len(".md")]:
+        problems.append(f"{name}: frontmatter name is {fields.get('name')!r}")
+    if fields.get("model") != model:
+        problems.append(f"{name}: declares model {fields.get('model')!r}, filename says {model!r}")
+    if fields.get("effort") != effort:
+        problems.append(f"{name}: declares effort {fields.get('effort')!r}, filename says {effort!r}")
+    if not fields.get("description"):
+        problems.append(f"{name}: no description")
+    return problems
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="fail instead of writing")
+    args = parser.parse_args()
+
+    wanted = {
+        f"symphony-{role}-{model}-{effort}.md": (role, model, effort)
+        for role, model, effort in required_agents()
+    }
+    present = {path.name: path.read_text(encoding="utf-8") for path in AGENTS.glob("*.md")}
+
+    missing = sorted(set(wanted) - set(present))
+    extra = sorted(set(present) - set(wanted))
+    broken = [
+        problem
+        for name in sorted(set(wanted) & set(present))
+        for problem in contract_errors(name, present[name])
+    ]
+
+    if args.check:
+        problems = (
+            [f"no agent file for a route the profiles can select: {name}" for name in missing]
+            + [f"no profile can select this agent: {name}" for name in extra]
+            + broken
+        )
+        for problem in problems:
+            print(f"::error::run scripts/generate_agents.py -- {problem}")
+        if problems:
+            return 1
+        print(f"agent files cover every selectable route ({len(wanted)} files)")
+        return 0
+
+    # Descriptions are editorial, so an existing file is left alone.
+    for name in extra:
+        (AGENTS / name).unlink()
+    for name in missing:
+        (AGENTS / name).write_text(render(*wanted[name]), encoding="utf-8")
+    print(f"agents: {len(wanted)} required, {len(missing)} added, {len(extra)} removed")
+    return 1 if broken else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

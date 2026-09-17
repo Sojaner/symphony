@@ -34,6 +34,8 @@ def _heartbeat(state: ProjectState, event: Event):
         "observed_at": event.observed_at,
         # Reported once: the next heartbeat replaces this record wholesale.
         "last_fault": event.payload.get("last_fault"),
+        # Which shipped entitlement profile this session routes through.
+        "profile": event.payload.get("profile"),
     }
     activation[provider] = {key: value for key, value in facts.items() if value is not None}
     return replace(state, activation=activation), ()

@@ -15,7 +15,12 @@ class RuntimeTests(unittest.TestCase):
         self.project = self.root / "project"
         self.project.mkdir()
         self.state_root = self.root / "state"
-        self.environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
+        # Pin the entitlement profile so tests never probe the host machine.
+        self.environ = {
+            "SYMPHONY_STATE_DIR": str(self.state_root),
+            "SYMPHONY_PROFILE": "full",
+        }
+        self.claude_environ = {**self.environ, "SYMPHONY_PROFILE": "opus"}
 
     def tearDown(self):
         self.temp.cleanup()
@@ -52,6 +57,10 @@ class RuntimeTests(unittest.TestCase):
         A prompt alone no longer opens a run, so every test that needs tracked
         work must put an assessor in front of the host.
         """
+        environ = self.claude_environ if provider == "claude" else self.environ
+        # A real session heartbeats before it spawns anything, and that is when
+        # the entitlement profile is recorded.
+        handle({**self.payload("", provider), "hook_event_name": "SessionStart"}, environ)
         hook = {
             **self.payload("", provider),
             "hook_event_name": "PreToolUse",
@@ -68,7 +77,7 @@ class RuntimeTests(unittest.TestCase):
                 "model": "gpt-6-astra",
                 "reasoning_effort": "high",
             }
-        return handle(hook, self.environ)
+        return handle(hook, environ)
 
     def test_enable_persists_and_next_task_requests_bounded_assessment(self):
         enabled = handle(self.payload("$symphony:symphony enable"), self.environ)

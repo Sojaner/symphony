@@ -1,0 +1,133 @@
+{
+  "schema": 1,
+  "generated_at": "2026-09-17",
+  "source": "provider model roster and official documentation",
+  "note": "Machine-maintained. The nine-cell size/complexity grid is product policy and lives in routing.py; only the tier-to-model resolution is edited here. Profiles are ordered best-first: the first whose requirements the account satisfies applies, and the last is the conservative floor used when nothing can be probed. Codex entitlement is a model roster, so requires_all must be a subset of it; Claude entitlement is a plan name, so requires_any must contain it.",
+  "providers": {
+    "codex": {
+      "profiles": [
+        {
+          "id": "full",
+          "tiers": {
+            "economy": "gpt-5.6-luna",
+            "balanced": "gpt-5.6-terra",
+            "capable": "gpt-5.6-sol",
+            "strongest": "gpt-6-astra"
+          },
+          "efforts": {
+            "gpt-5.6-luna": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "gpt-5.6-terra": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ],
+            "gpt-5.6-sol": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ],
+            "gpt-6-astra": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ]
+          },
+          "requires_all": [
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna"
+          ]
+        },
+        {
+          "id": "base",
+          "tiers": {
+            "economy": "gpt-5.5",
+            "balanced": "gpt-5.5",
+            "capable": "gpt-5.5",
+            "strongest": "gpt-5.5"
+          },
+          "efforts": {
+            "gpt-5.5": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          },
+          "requires_all": []
+        }
+      ]
+    },
+    "claude": {
+      "profiles": [
+        {
+          "id": "opus",
+          "tiers": {
+            "economy": "haiku",
+            "balanced": "sonnet",
+            "capable": "opus",
+            "strongest": "opus"
+          },
+          "efforts": {
+            "haiku": [
+              "low",
+              "medium"
+            ],
+            "sonnet": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "opus": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "requires_any": [
+            "max",
+            "enterprise",
+            "team"
+          ]
+        },
+        {
+          "id": "sonnet",
+          "tiers": {
+            "economy": "haiku",
+            "balanced": "sonnet",
+            "capable": "sonnet",
+            "strongest": "sonnet"
+          },
+          "efforts": {
+            "haiku": [
+              "low",
+              "medium"
+            ],
+            "sonnet": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "requires_any": []
+        }
+      ]
+    }
+  }
+}
