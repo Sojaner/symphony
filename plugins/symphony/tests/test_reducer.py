@@ -332,5 +332,74 @@ class LifecycleReducerTests(unittest.TestCase):
         self.assertEqual(actions, ())
 
 
+    def test_repeated_stop_releases_the_session_and_records_abandonment(self):
+        state = running_state(delegations=[delegation("w1")])
+
+        blocked, actions = reduce(state, event("stop_requested", event_id="stop-1"))
+        self.assertEqual([item.kind for item in actions], ["block_stop"])
+        self.assertIsNotNone(blocked.active_run)
+
+        released, retry_actions = reduce(
+            blocked, event("stop_requested", event_id="stop-2", stop_hook_active=True)
+        )
+
+        self.assertIn("permit_stop", [item.kind for item in retry_actions])
+        self.assertIsNone(released.active_run)
+        archived = released.recent_runs[-1]
+        self.assertEqual(archived.status, "abandoned")
+        self.assertEqual(archived.unreconciled, ("w1",))
+
+    def test_run_without_delegations_never_holds_the_session(self):
+        state = running_state(lead=None, delegations=[])
+
+        released, actions = reduce(state, event("stop_requested"))
+
+        self.assertIn("permit_stop", [item.kind for item in actions])
+        self.assertIsNone(released.active_run)
+
+    def test_first_lead_after_interrupt_registers_at_the_current_generation(self):
+        state = running_state(status="interrupted", lead=None)
+
+        registered, actions = reduce(state, event("lead_started", identity="lead-1"))
+
+        self.assertEqual([item.kind for item in actions], [])
+        self.assertEqual(registered.active_run.lead_identity, "lead-1")
+        self.assertEqual(registered.active_run.owner_generation, 1)
+        self.assertEqual(registered.active_run.status, "active")
+
+    def test_stale_generation_is_ignored_for_the_registered_lead(self):
+        state = running_state()
+
+        unchanged, actions = reduce(
+            state, event("lead_started", identity="lead-1", owner_generation=7)
+        )
+
+        self.assertEqual([item.kind for item in actions], ["ignore_stale_owner"])
+        self.assertEqual(unchanged.active_run.owner_generation, 1)
+
+    def test_completion_from_a_stale_owner_is_ignored(self):
+        state = running_state(delegations=[delegation("lead-1", state="completed", role="lead")])
+
+        unchanged, actions = reduce(
+            state,
+            event("lead_completed", identity="lead-9", owner_generation=1, outcome={"status": "completed"}),
+        )
+
+        self.assertEqual([item.kind for item in actions], ["ignore_stale_owner"])
+        self.assertIsNotNone(unchanged.active_run)
+        self.assertIsNone(unchanged.active_run.outcome)
+
+    def test_resume_without_observed_agents_marks_every_delegation_interrupted(self):
+        state = running_state(delegations=[delegation("w1"), delegation("w2")])
+
+        recovered, actions = reduce(state, event("resume_reconciled", active_ids=[]))
+
+        self.assertEqual([item.kind for item in actions], ["replace_lead"])
+        self.assertEqual(recovered.active_run.status, "recovering")
+        self.assertEqual(
+            {item.state for item in recovered.active_run.delegations}, {"interrupted"}
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

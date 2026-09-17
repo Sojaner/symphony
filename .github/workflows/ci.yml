@@ -21,7 +21,7 @@ jobs:
       - name: Run installed-package smokes
         run: |
           for provider in codex claude; do
-            for scenario in activation managed-run interrupt-resume upgrade; do
+            for scenario in activation managed-run unmarked-spawn interrupt-resume upgrade; do
               python3 plugins/symphony/scripts/package_smoke.py \
                 --provider "$provider" \
                 --candidate . \
@@ -39,14 +39,19 @@ jobs:
           claude plugin validate .claude-plugin/marketplace.json
           claude plugin validate plugins/symphony
 
-      - name: Run real Codex control smoke when available
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Run real Codex control smoke when a credential is available
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          if ! command -v codex >/dev/null 2>&1 || [ -z "$OPENAI_API_KEY" ]; then
-            echo "::notice::SKIP real Codex smoke: CLI or credential unavailable"
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::notice::SKIP real Codex smoke: credential unavailable"
             exit 0
           fi
+          # A missing binary is a packaging failure, never a reason to pass.
+          command -v codex >/dev/null 2>&1 || { echo "::error::codex CLI missing"; exit 1; }
           export CODEX_HOME="$RUNNER_TEMP/symphony-codex-home"
           mkdir -p "$CODEX_HOME"
           codex plugin marketplace add "$GITHUB_WORKSPACE"
@@ -57,7 +62,7 @@ jobs:
             --output-last-message "$RUNNER_TEMP/codex-help.txt" \
             -C "$GITHUB_WORKSPACE" \
             '$symphony:symphony help'
-          grep -qi symphony "$RUNNER_TEMP/codex-help.txt"
+          grep -q 'symphony:symphony enable|start' "$RUNNER_TEMP/codex-help.txt"
 
       - name: Run real Claude control smoke when credential is available
         env:
@@ -76,7 +81,7 @@ jobs:
             --max-budget-usd 0.50 \
             --output-format text \
             '/symphony:help' > "$RUNNER_TEMP/claude-help.txt"
-          grep -qi symphony "$RUNNER_TEMP/claude-help.txt"
+          grep -q '/symphony:enable, /symphony:start' "$RUNNER_TEMP/claude-help.txt"
 
   release:
     needs: verify

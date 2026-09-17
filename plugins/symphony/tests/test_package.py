@@ -18,9 +18,14 @@ def handlers(relative: str):
 
 
 class PackageContractTests(unittest.TestCase):
-    def test_both_manifests_are_version_1_0_0(self):
-        self.assertEqual(load_json(".codex-plugin/plugin.json")["version"], "1.0.0")
-        self.assertEqual(load_json(".claude-plugin/plugin.json")["version"], "1.0.0")
+    def test_both_provider_manifests_declare_the_same_released_version(self):
+        from plugins.symphony.symphony import PLUGIN_VERSION
+
+        codex = load_json(".codex-plugin/plugin.json")["version"]
+        claude = load_json(".claude-plugin/plugin.json")["version"]
+        self.assertEqual(codex, claude, "provider manifests must not drift apart")
+        self.assertEqual(codex, PLUGIN_VERSION, "the package must report what it ships as")
+        self.assertRegex(codex, r"^\d+\.\d+\.\d+$")
 
     def test_hook_commands_are_root_relative_and_materialized(self):
         for provider, relative, root_name in (

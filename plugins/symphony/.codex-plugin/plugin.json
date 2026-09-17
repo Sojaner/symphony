@@ -1,8 +1,10 @@
 {
   "name": "symphony",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Capability-aware, recoverable orchestration with a thin root and task-sized leads.",
-  "author": {"name": "Sojaner"},
+  "author": {
+    "name": "Sojaner"
+  },
   "skills": "./skills/",
   "hooks": "./hooks/codex.json",
   "interface": {
@@ -11,10 +13,16 @@
     "longDescription": "Symphony keeps the root thin, selects execution from a size and complexity matrix, preserves lifecycle state across sessions, and reports compact delegation status.",
     "developerName": "Sojaner",
     "category": "Productivity",
-    "capabilities": ["Instructions", "Lifecycle hooks"],
+    "capabilities": [
+      "Instructions",
+      "Lifecycle hooks"
+    ],
     "brandColor": "#4E808C",
     "logo": "./assets/logo.png",
     "composerIcon": "./assets/logo.png",
-    "defaultPrompt": ["Enable Symphony for this project.", "Run this task through Symphony."]
+    "defaultPrompt": [
+      "Enable Symphony for this project.",
+      "Run this task through Symphony."
+    ]
   }
 }

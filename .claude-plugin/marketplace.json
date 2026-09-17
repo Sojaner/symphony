@@ -9,7 +9,8 @@
       "name": "symphony",
       "source": "./plugins/symphony",
       "description": "Task-sized orchestration with durable lifecycle recovery and compact delegation visibility.",
-      "category": "productivity"
+      "category": "productivity",
+      "version": "1.0.1"
     }
   ]
 }

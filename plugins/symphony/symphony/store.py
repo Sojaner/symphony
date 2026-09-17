@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -46,8 +47,37 @@ def project_key(project: Path) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def legacy_project_key(project: Path) -> str:
-    return project_key(project)[:24]
+def _git_toplevel(project: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(Path(project).resolve()), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    output = completed.stdout.strip()
+    return str(Path(output).resolve()) if output else None
+
+
+def legacy_project_keys(project: Path) -> tuple[str, ...]:
+    """Candidate pre-1.0 state keys.
+
+    The pre-1.0 hook keyed project state on the sha256 of the git toplevel,
+    falling back to the resolved working directory. A session started in a
+    subdirectory therefore produces a different key from the one 1.0 derives,
+    so both candidates are tried before concluding there is nothing to import.
+    """
+    candidates: list[str] = []
+    toplevel = _git_toplevel(project)
+    if toplevel:
+        candidates.append(toplevel)
+    resolved = str(Path(project).resolve())
+    if resolved not in candidates:
+        candidates.append(resolved)
+    return tuple(hashlib.sha256(item.encode("utf-8")).hexdigest()[:24] for item in candidates)
 
 
 def _event_to_dict(event: Event) -> dict[str, Any]:
@@ -116,6 +146,8 @@ def _run_to_dict(run: RunState) -> dict[str, Any]:
         "outcome": None if run.outcome is None else dict(run.outcome),
         "started_at": run.started_at,
         "updated_at": run.updated_at,
+        "session_id": run.session_id,
+        "unreconciled": list(run.unreconciled),
     }
 
 
@@ -141,6 +173,11 @@ def _run_from_dict(value: Any) -> RunState:
         outcome=outcome,
         started_at=_text(value.get("started_at", ""), "run.started_at"),
         updated_at=_text(value.get("updated_at", ""), "run.updated_at"),
+        session_id=_text(value.get("session_id", ""), "run.session_id"),
+        unreconciled=tuple(
+            _text(item, "run.unreconciled item")
+            for item in _array(value.get("unreconciled", ()), "run.unreconciled")
+        ),
     )
 
 
@@ -353,25 +390,43 @@ class StateStore:
                 return _state_from_dict(raw)
             return self._migrate(path, raw)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            salvaged = self._salvage(path)
             self._archive(path, "corrupt")
-            rebuilt = ProjectState(needs_reassessment=True)
+            rebuilt = replace(salvaged, needs_reassessment=True)
             self._write(path, rebuilt)
             return rebuilt
 
+    @staticmethod
+    def _salvage(path: Path) -> ProjectState:
+        """Recover enablement and user configuration from a state file we cannot parse."""
+        try:
+            raw = _object(json.loads(path.read_text(encoding="utf-8")), "state")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return ProjectState()
+        enabled = raw.get("enabled", False)
+        configuration = raw.get("configuration", {})
+        return ProjectState(
+            enabled=enabled if isinstance(enabled, bool) else False,
+            configuration=configuration if isinstance(configuration, dict) else {},
+        )
+
     def _import_legacy(self, project: Path, destination: Path) -> ProjectState | None:
-        key = legacy_project_key(project)
+        if not self.legacy_roots:
+            return None
+        keys = legacy_project_keys(project)
         for root in self.legacy_roots:
-            source = root / "projects" / f"{key}.json"
-            if not source.is_file():
-                continue
-            try:
-                raw = _object(json.loads(source.read_text(encoding="utf-8")), "legacy state")
-                migrated = self._migrated_state(raw)
-            except (OSError, TypeError, ValueError, json.JSONDecodeError):
-                continue
-            self._archive(source, "pre-1.0", sanitize=True)
-            self._write(destination, migrated)
-            return migrated
+            for key in keys:
+                source = root / "projects" / f"{key}.json"
+                if not source.is_file():
+                    continue
+                try:
+                    raw = _object(json.loads(source.read_text(encoding="utf-8")), "legacy state")
+                    migrated = self._migrated_state(raw)
+                except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                self._archive(source, "pre-1.0", sanitize=True)
+                self._write(destination, migrated)
+                return migrated
         return None
 
     def _migrate(self, path: Path, raw: dict[str, Any]) -> ProjectState:

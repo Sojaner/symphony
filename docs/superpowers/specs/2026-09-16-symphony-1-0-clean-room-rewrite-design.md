@@ -1,8 +1,14 @@
 # Symphony 1.0 Clean-Room Rewrite Design
 
-**Status:** Approved design  
-**Date:** 2026-09-16  
-**Release target:** 1.0.0
+- **Status:** Approved design, corrected 2026-09-17
+- **Date:** 2026-09-16
+- **Release target:** 1.0.0 (corrections released as 1.0.1)
+
+> **Correction note.** The 1.0.0 review found several promises here that neither
+> Codex nor Claude Code can support through their hook interfaces. Those
+> passages are corrected in place rather than left as aspirations; each change
+> is recorded in `docs/adr/` and in
+> `docs/reviews/2026-09-17-symphony-1-0-spec-review.md`.
 
 ## Objective
 
@@ -29,9 +35,10 @@ The rewrite preserves behavioral knowledge, not implementation structure. Implem
 
 ### Enablement
 
+- Symphony assumes the session root runs at the economy tier. The value proposition inverts when the root is already the strongest model, because the run then pays for an assessor and a lead on top of it. Enablement guidance and the README state this precondition and the provider-native way to set the root model.
 - Symphony is enabled per project and remains enabled across sessions, resumes, and context compaction until the user disables it.
 - Every substantive task in an enabled project is governed automatically.
-- Controls and deterministically trivial tasks do not pay for assessment.
+- Controls do not pay for assessment. A prompt that the root answers directly is ungoverned rather than assessed: Symphony gates work it can observe, and cannot force a root to delegate.
 - An explicit one-shot managed task does not enable the project.
 - A one-task bypass executes outside Symphony without changing project enablement or mutating an active Symphony run.
 - Disabling gracefully stops an active run, archives recovery context, then disables future automatic activation.
@@ -40,11 +47,15 @@ The rewrite preserves behavioral knowledge, not implementation structure. Implem
 
 Symphony guarantees that normal completion is blocked while host-observed tracked work remains active. Explicit user interruption and host-enforced overrides remain authoritative.
 
+A stop is blocked at most once per turn. When the host reports that the stop hook is already active, Symphony permits completion, records the run as **abandoned** with the identities it never reconciled, and reports that in `status`. Blocking a second time cannot make a dead child reappear, and a guarantee that can strand a session is not a guarantee.
+
 A run is called **guarded** only after a Symphony hook has executed successfully in the current provider session and written the expected heartbeat. Installed, configured, or trusted is not equivalent to executed.
 
 ### Provider parity
 
 Codex and Claude Code share one semantic contract and one core state machine. Thin adapters expose provider-native commands, hook events, reload/trust instructions, and telemetry. Parity means equivalent outcomes, not identical provider mechanics.
+
+One asymmetry is not equivalent and is stated rather than glossed: pre-launch route enforcement requires a pre-spawn event, which only Claude Code provides. On Codex a mis-routed or unmarked spawn is detected once the child starts and reported, not prevented, so the expensive route has already been paid for.
 
 ## Architecture
 
@@ -81,9 +92,11 @@ The store atomically persists:
 
 Events are recorded facts. Snapshots are derived acceleration and may be rebuilt.
 
+Persisted records are an allowlist of lifecycle fields: event kind and stable id, host-observed identities, role, requested tier and effort, classification, status, timestamps, provider and plugin identity, and a bounded objective label capped at its first line and 120 characters. User prompts, agent final messages, spawn packet bodies, transcript paths and tool output are never written to the store, to run summaries, or to archives, because no redactor can reliably recognise a credential pasted into free text. State files are created 0600 inside a 0700 directory. See `docs/adr/0003-strict-persistence-allowlist.md`.
+
 ### Agent instructions
 
-Assessor, lead, worker, and consultant instructions consume explicit work packets and return structured results. They do not mutate lifecycle through magic prose or final-answer receipts.
+Assessor, lead, worker, and consultant instructions consume explicit work packets and return structured results as single machine-validated marker lines, carried in the only channels the hosts expose: the spawn packet and the child's final message. A malformed or missing marker makes a result non-actionable; it never opens, transfers, or completes a run. Lifecycle transitions come from host events alone.
 
 ## Thin-root boundary
 
@@ -101,9 +114,9 @@ Repository inspection, capability research, implementation, specialist judgment,
 
 ## Canonical lifecycle
 
-1. An enabled project receives a substantive task.
-2. The adapter emits `task_received`.
-3. The reducer opens one run and requests assessment unless classification is deterministically trivial.
+1. An enabled project receives a substantive task and the root is given assessment guidance.
+2. The adapter emits `task_received` when it observes the assessor being spawned.
+3. The reducer opens one run at that point. A prompt that never produces an assessor spawn produces no run, and therefore nothing that can hold the session open.
 4. The assessor returns the assessment contract.
 5. Routing resolves abstract roles against cached provider capabilities.
 6. The root spawns and registers the selected lead.
@@ -116,12 +129,13 @@ Repository inspection, capability research, implementation, specialist judgment,
 ### Ownership and recovery
 
 - Each run has one owner generation.
-- Resume first reconciles host-observed agents.
+- Neither host reports a list of live agents, so resume reconciles against the session instead: a heartbeat carrying a different provider session proves the process that owned the tracked delegations is gone, and they are marked interrupted before any new ownership is created.
+- A safe boundary is one of the reassessment boundaries listed under Reassessment: completion of a worker wave, an explicit request, a new task, an approved plan, resume or compaction, interruption, or reported scope or risk drift.
 - A live registered lead retains ownership.
 - A missing or terminal lead is replaced only through a recorded safe ownership transition.
 - Reassessment affects subsequent work; active work is not duplicated merely because its matrix cell changed.
 - A lead is replaced only at a safe boundary or when unavailable or materially incapable.
-- Interrupt records recoverable state. It never pretends the host action was prevented.
+- Interrupt records recoverable state where the host reports one. Claude Code exposes no interrupt hook, so there a new session is the observable boundary. Interrupt never pretends the host action was prevented.
 - Controls are inert, single-use operations. They cannot become task objectives, resume project work, or enter a Stop loop.
 
 ## Hook packaging, trust, and activation
@@ -139,18 +153,16 @@ Ponytail's simple manifest-declared hook plus plugin-root-relative command is th
 
 ### Activation states
 
-The provider adapter exposes:
+Symphony records two states, because a hook is the only Symphony code the host runs and it cannot execute in any of the others:
 
-- `not_discovered`;
-- `needs_review` or `pending_reload`;
-- `active_unverified`;
-- `guarded`;
-- `policy_blocked`;
-- `faulted`.
+- `guarded` — a matching current-session heartbeat is stored;
+- pending verification — no such heartbeat exists.
+
+`not_discovered`, `needs_review`, `pending_reload`, `active_unverified` and `policy_blocked` are diagnostic labels for the user to resolve through the provider's own views (`/hooks`, the plugin list); Symphony cannot observe them. A hook that raises records a fault durably outside the state file and reports it once in the next `status`.
 
 `SessionStart` and `UserPromptSubmit` write an atomic heartbeat containing provider session identity, plugin version/root identity, hook-schema version, and observation time. A matching current-session heartbeat is the programmatic proof of guarded execution.
 
-Absence of a heartbeat is reported as **pending verification**, never repeatedly as "unarmed." The notice appears only in `status` or the first explicit managed-run attempt in that session. A host-reported command failure is recorded once as `faulted` with its event and source.
+Absence of a heartbeat is reported as **pending verification**, never repeatedly as "unarmed." The notice appears only in `status` or the first explicit managed-run attempt in that session. Release smoke verification, not the runtime, classifies a failing hook command as a packaging fault with its event and source.
 
 ### Codex activation
 
@@ -166,7 +178,7 @@ Absence of a heartbeat is reported as **pending verification**, never repeatedly
 - Current Claude Code supports `/reload-plugins`; `/reload-plugins --force` is the documented fallback when normal reload is declined. Restart is the fallback, not the default.
 - External updates remain on the old loaded version until reload or restart.
 - The first prompt after reload writes the heartbeat; Symphony does not assume reload re-fires `SessionStart`.
-- `/hooks` is the human-visible registration view. Managed policies such as managed-only hooks or global hook disabling produce `policy_blocked`.
+- `/hooks` is the human-visible registration view. Managed policies such as managed-only hooks or global hook disabling leave the heartbeat absent; Symphony reports pending verification and names managed policy as a likely cause.
 
 ### Degraded execution
 
@@ -187,6 +199,8 @@ Every substantive or uncertain task receives a bounded `strongest/high` assessme
 
 The assessor selects needs, not exact model names. Assessment and execution are separate roles.
 
+The fixed matrix and the risk rules are authoritative for topology. The assessor's recommended topology is advisory input; where the two disagree the matrix wins and the rejected recommendation is recorded.
+
 ### Routing matrix
 
 | Size / complexity | Lead | Execution pattern | Consultation |
@@ -201,19 +215,15 @@ The assessor selects needs, not exact model names. Assessment and execution are 
 | Large / mixed | economy/medium | administrative delegation | reserve one slot |
 | Large / complex | economy/medium | administrative delegation | strongest/high bounded decisions |
 
-Risk may elevate effort, require an independent check, or reserve consultation. It does not silently change size or complexity.
+Risk is `normal` or `high`. `high` raises a lead effort of `low` to `medium` and requires an independent check. Risk never changes the reported size or complexity, and the routing acceptance cases cover each mapping.
 
 ### Capability resolution
 
 The fixed matrix uses abstract tiers: `economy`, `balanced`, `capable`, and `strongest`. The provider snapshot contains available models, supported efforts, relative tier mapping, source, provider version, and refresh time.
 
-Resolution order:
+Tiers resolve against the capability map shipped with the installed version. Hooks are given no model inventory by either host, neither CLI lists available models, and the thin-root boundary forbids the root from doing capability research, so there is no actor that could perform a runtime refresh.
 
-1. live provider capabilities;
-2. cached provider snapshot;
-3. conservative shipped fallback.
-
-At session startup and reassessment, snapshots older than 24 hours refresh without blocking use of an existing cache. Context7 verifies current official model and effort guidance when available. The cache stores dated conclusions so ordinary tasks do not repeat research.
+The map is therefore maintained at release time rather than at runtime, by a scheduled workflow that probes each provider, derives per-entitlement profiles, verifies every model in the proposed matrix against the provider, and opens a pull request. Runtime selects which shipped profile applies; it never learns model names. See `docs/adr/0002-ci-maintained-capability-profiles.md`.
 
 When no suitable assessor can run, Symphony selects and discloses a conservative provider route. A weak root does not perform an improvised assessment.
 
@@ -282,11 +292,11 @@ It excludes transcripts, secrets, raw tool output, inferred telemetry, and routi
 | Intent | Codex | Claude Code |
 |---|---|---|
 | Enable project | `$symphony:symphony enable` | `/symphony:enable` |
-| One managed task | `$symphony:symphony <task>` | `/symphony:start <task>` |
+| One managed task | `$symphony:symphony start <task>` | `/symphony:start <task>` |
 | One ungoverned task | `$symphony:symphony bypass <task>` | `/symphony:bypass <task>` |
 | Other controls | `$symphony:symphony <control>` | `/symphony:<control>` |
 
-Controls are `disable`, `status`, `agents [--all]`, `reassess`, `stop [--force]`, and `help`. Help is provider-specific and never recommends unsupported syntax.
+Controls are `disable`, `status`, `agents [--all]`, `reassess`, `stop [--force]`, and `help`. Help is provider-specific and never recommends unsupported syntax. A leading control word is honoured only when the remainder is empty or a documented flag, so `$symphony:symphony help me fix the login bug` is a task and not the help control.
 
 `status` reports enablement, hook activation, guarded/degraded state, assessment cell, topology, lead identity, and the compact delegation view.
 
@@ -302,7 +312,7 @@ Completed: worker [balanced/medium] — <identity> — <bounded objective>
 
 ## Failure handling
 
-- Stale capability data uses the cache immediately while refresh proceeds.
+- An outdated capability map routes through the shipped profile and discloses the degraded route; nothing blocks on a refresh.
 - Missing optional workflows use the closest native process.
 - Missing Codebase Memory disables extended memory.
 - Corrupt state is preserved for diagnosis. Symphony rebuilds only provider-observable facts and requires reassessment.
@@ -313,7 +323,9 @@ Completed: worker [balanced/medium] — <identity> — <bounded objective>
 
 ## Migration and cutover
 
-Version 1.0 imports only project enablement and user configuration. It archives incompatible active-run state and requires a fresh assessment. Superseded implementation code, tests, and design documents are removed from the active branch; Git history remains the archive.
+Version 1.0 imports only project enablement and user configuration. It archives incompatible active-run state and requires a fresh assessment.
+
+The pre-1.0 state it imports lives in the provider data directory under `projects/<digest>.json`, where the digest is the first 24 hex characters of the sha256 of the repository's git toplevel path, falling back to the resolved working directory. Both candidates are tried, because a session started in a subdirectory otherwise yields a different digest and the import silently finds nothing. Only `enabled` and `configuration` are carried forward; the archived copy is redacted before it is written. Superseded implementation code, tests, and design documents are removed from the active branch; Git history remains the archive.
 
 The release is a replacement only after both provider candidates pass installed-package acceptance. Until then, the current stable release remains available.
 
@@ -329,6 +341,8 @@ The rewrite uses a small table-driven suite:
 6. Installed Codex smokes cover in-session activation, external upgrade plus restart, `/hooks` trust/review, heartbeat, denied trust, active-child Stop protection, interruption/resume, and marketplace path replacement.
 7. Installed Claude smokes cover `/reload-plugins`, forced reload fallback, restart fallback, heartbeat, managed-policy blocking, active-child Stop protection, interruption/resume, and marketplace path replacement.
 8. Both providers cover automatic project activation, one-shot execution, bypass, assessor fallback, route isolation, safe-boundary reassessment, five-record status capping, optional-capability loss, and a complete real lifecycle.
+9. Provider hook fixtures are captured from real installed sessions of the pinned provider versions. Every payload field the reducer or adapter depends on must appear in a captured fixture; a field absent from both the provider documentation and the captures may not be relied on.
+10. The end-to-end run on each provider records host-observed token totals per role beside a direct-root baseline for the same task, so the cost claim in the objective has a measurable basis.
 
 The release gate requires deterministic tests, provider validation, real installed-plugin smoke evidence, clean package contents, and a successful end-to-end run on both providers.
 
@@ -342,7 +356,7 @@ These are requirements, not implementation suggestions:
 - The root waits through a host blocking primitive; commentary such as "standing by" is not waiting.
 - Delegation visibility stores the latest record rather than replacing history with generic waiting labels.
 - Supporting workflows cannot reopen Symphony's topology decision.
-- Lifecycle correctness comes from reducer state and host events, not final-answer strings.
+- Lifecycle correctness comes from reducer state and host events. Structured role results are validated marker lines, never free-form receipts, and never advance the lifecycle by themselves.
 - Help and malformed controls remain inert in every lifecycle state.
 - Active work cannot be completed, promoted, or transferred through stale or untracked receipts.
 - Resume reconciles live host state before creating new ownership.

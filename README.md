@@ -33,7 +33,7 @@ Codex exposes one skill entry point:
 
 ```text
 $symphony:symphony enable
-$symphony:symphony <task>
+$symphony:symphony start <task>
 $symphony:symphony bypass <task>
 $symphony:symphony status
 $symphony:symphony agents [--all]
@@ -57,7 +57,9 @@ Claude Code exposes native slash commands:
 /symphony:help
 ```
 
-Do not use `/symphony:*` in Codex. `$symphony:symphony <task>` and `/symphony:start <task>` each run one managed task without changing project enablement.
+Do not use `/symphony:*` in Codex. `$symphony:symphony start <task>` and `/symphony:start <task>` each run one managed task without changing project enablement. A leading control word counts as a control only when nothing but a documented flag follows it, so `$symphony:symphony help me fix the login bug` is treated as a task.
+
+Symphony assumes the session root runs at the economy tier: it exists to route work to a right-sized lead, so a root that is already the strongest model pays for an assessor and a lead on top of itself. Set the root model to the cheapest capable option before enabling.
 
 ## Persistent enablement
 
@@ -71,17 +73,21 @@ A run is **guarded** only after the loaded Symphony hook has written a matching 
 
 When the heartbeat is absent, `status` reports pending verification and gives the provider-native recovery step. A missing packaged executable or nonzero hook exit is reported as a fault, not as a trust problem. Symphony never silently labels an unverified run guarded; an unguarded one-shot route must be explicit.
 
-Normal completion is blocked while host-observed tracked work remains active. User interruption and host-enforced overrides remain authoritative, so interrupted work is recovered from durable lifecycle state rather than described as uninterruptible.
+Normal completion is blocked while host-observed tracked work remains active. A stop is blocked at most once per turn: when the host reports that the stop hook is already active, Symphony releases the session, records the run as abandoned with the identities it never reconciled, and shows that in `status`. A prompt that never spawned an assessor opens no run and can never hold a session open.
+
+User interruption and host-enforced overrides remain authoritative, so interrupted work is recovered from durable lifecycle state rather than described as uninterruptible. Neither host reports which agents are still alive, so recovery keys on the provider session: a heartbeat from a new session marks unreconciled delegations interrupted before new ownership is created.
 
 ## Routing
 
-Assessment treats task size and complexity as separate axes. The fixed route is resolved against the models and efforts actually available from the provider.
+Assessment treats task size and complexity as separate axes. The fixed route is resolved against the capability map shipped with the installed version. Hooks are given no model inventory by either host, so the map is maintained at release time rather than discovered at runtime.
 
 | Size / complexity | Simple | Mixed | Complex |
 |---|---|---|---|
 | Small | capable/medium, direct | capable/high, direct with optional consultation | strongest/high, direct with independent review |
 | Medium | balanced/medium, mixed | balanced/high, mixed with optional consultation | capable/high, mixed with reserved consultation |
 | Large | economy/low, delegated | economy/medium, delegated with reserved consultation | economy/medium, delegated with strongest consultation |
+
+Pre-launch route enforcement needs a pre-spawn event, which only Claude Code provides; on Codex a mis-routed spawn is detected once the child starts and reported, not prevented.
 
 The assessor is bounded, read-only, and separate from the lead. The lead route never inherits the assessor's expensive model or effort. Large-task leads administer dependency-aware work and reserve capacity for narrow consultant decisions. Small-task leads do straightforward work directly and delegate only genuinely independent or mechanical units.
 
@@ -119,7 +125,9 @@ codex plugin add symphony@symphony
 
 Codex updates loaded outside the current process require a new session and renewed `/hooks` review when the hook hash changes. Claude updates require reload or restart. In both providers, the next prompt confirms the loaded version through its heartbeat.
 
-Symphony 1.0 imports project enablement and user configuration only. Incompatible active-run state is archived and the next managed task receives a fresh assessment.
+Symphony 1.0 imports project enablement and user configuration only. Incompatible active-run state is archived and the next managed task receives a fresh assessment. Pre-1.0 state is located by hashing the repository's git toplevel, with the working directory as a fallback, so an import still succeeds from a subdirectory.
+
+Symphony stores only lifecycle facts: identities, roles, requested tier and effort, classification, status and timestamps, plus a short objective label. Prompts, agent messages, spawn packets and transcript paths are never written to disk.
 
 ## Develop and verify
 
@@ -131,7 +139,7 @@ python3 plugins/symphony/scripts/package_smoke.py --provider claude --candidate 
 git diff --check
 ```
 
-The package smoke supports `activation`, `managed-run`, `interrupt-resume`, and `upgrade`. It installs the candidate in an isolated fake-provider home, executes only materialized hook paths, and emits one JSON result.
+The package smoke supports `activation`, `managed-run`, `unmarked-spawn`, `interrupt-resume`, and `upgrade`. It installs the candidate in an isolated fake-provider home, executes only materialized hook paths, and emits one JSON result.
 
 ## References
 

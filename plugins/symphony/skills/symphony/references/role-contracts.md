@@ -11,7 +11,7 @@ SYMPHONY_ROLE: worker
 SYMPHONY_ROLE: consultant
 ```
 
-Claude blocks unmarked spawns before launch. Codex validates the observed task name, model, effort, and final lifecycle result, then withholds managed completion when required result markers are missing. An assessor must use high effort or above. A lead must use the matrix-selected effort, and workers and consultants cannot start until a lead is registered.
+Claude blocks unmarked spawns before launch. Codex exposes no pre-spawn event, so there a mis-routed or unmarked spawn is detected once the child starts and reported, never prevented: the expensive route has already been paid for by then. An assessor must use high effort or above. A lead must use the matrix-selected effort, and workers and consultants cannot start until a lead is registered.
 
 Provider binding is mechanical:
 

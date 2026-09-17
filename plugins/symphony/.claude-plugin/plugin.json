@@ -1,6 +1,8 @@
 {
   "name": "symphony",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Capability-aware, recoverable orchestration with a thin root and task-sized leads.",
-  "author": {"name": "Sojaner"}
+  "author": {
+    "name": "Sojaner"
+  }
 }

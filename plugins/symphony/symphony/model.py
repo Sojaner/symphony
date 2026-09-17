@@ -12,6 +12,60 @@ class Event:
     payload: Mapping[str, Any] = field(default_factory=dict)
 
 
+# Only lifecycle facts survive into durable history. A hook payload carries the
+# user's prompt, the agent's final message, spawn packets and transcript paths;
+# none of that belongs in a cross-project file under the user's home directory,
+# and no redactor can reliably find a credential pasted into free text.
+PERSISTED_EVENT_KEYS = frozenset(
+    {
+        "provider",
+        "session_id",
+        "hook_event_name",
+        "agent_id",
+        "agent_type",
+        "identity",
+        "role",
+        "state",
+        "status",
+        "requested_tier",
+        "requested_effort",
+        "owner_generation",
+        "run_id",
+        "size",
+        "complexity",
+        "risk",
+        "topology",
+        "route",
+        "outcome",
+        "active_ids",
+        "one_shot",
+        "stop_hook_active",
+        "plugin_version",
+        "plugin_root",
+        "hook_schema_version",
+        "last_fault",
+        "task",
+        "objective",
+        "rationale",
+        "reason",
+    }
+)
+_BOUNDED_TEXT_KEYS = frozenset({"task", "objective", "rationale", "reason"})
+_LABEL_LIMIT = 120
+
+
+def persistable(event: Event) -> Event:
+    """Strip an event down to the facts Symphony is allowed to keep."""
+    kept: dict[str, Any] = {}
+    for key, value in event.payload.items():
+        if key not in PERSISTED_EVENT_KEYS:
+            continue
+        if key in _BOUNDED_TEXT_KEYS and isinstance(value, str):
+            value = value.splitlines()[0][:_LABEL_LIMIT] if value else value
+        kept[key] = value
+    return Event(event.event_id, event.kind, event.observed_at, kept)
+
+
 @dataclass(frozen=True)
 class Action:
     kind: str
@@ -43,6 +97,8 @@ class RunState:
     outcome: Mapping[str, Any] | None = None
     started_at: str = ""
     updated_at: str = ""
+    session_id: str = ""
+    unreconciled: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -37,6 +37,39 @@ class RuntimeTests(unittest.TestCase):
     def context(self, result) -> str:
         return self.output(result).get("hookSpecificOutput", {}).get("additionalContext", "")
 
+    def flush(self, provider: str = "codex") -> str:
+        """Collect guidance deferred from a subagent-stop result.
+
+        Neither host accepts injected context on a stop result, so Symphony
+        holds it until the next event that does accept one.
+        """
+        control = "/symphony:status" if provider == "claude" else "$symphony:symphony status"
+        return self.context(handle(self.payload(control, provider), self.environ))
+
+    def open_run(self, task: str = "Implement the feature", provider: str = "codex"):
+        """Open a run the way the contract requires: by spawning the assessor.
+
+        A prompt alone no longer opens a run, so every test that needs tracked
+        work must put an assessor in front of the host.
+        """
+        hook = {
+            **self.payload("", provider),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent" if provider == "claude" else "spawn_agent",
+        }
+        if provider == "claude":
+            hook["tool_input"] = {
+                "subagent_type": "symphony-assessor-opus-high",
+                "prompt": f"SYMPHONY_ROLE: assessor\n{task}",
+            }
+        else:
+            hook["tool_input"] = {
+                "message": f"SYMPHONY_ROLE: assessor\n{task}",
+                "model": "gpt-6-astra",
+                "reasoning_effort": "high",
+            }
+        return handle(hook, self.environ)
+
     def test_enable_persists_and_next_task_requests_bounded_assessment(self):
         enabled = handle(self.payload("$symphony:symphony enable"), self.environ)
         self.assertIn("enabled", self.context(enabled).lower())
@@ -46,15 +79,22 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("assess", self.context(task).lower())
         state = StateStore(self.state_root).load(self.project)
         self.assertTrue(state.enabled)
+        self.assertIsNone(state.active_run, "a prompt guides; only the assessor opens a run")
+
+        self.open_run("Implement the feature")
+        state = StateStore(self.state_root).load(self.project)
         self.assertIsNotNone(state.active_run)
         self.assertEqual(state.active_run.task, "Implement the feature")
 
     def test_one_shot_start_does_not_enable_project(self):
         result = handle(self.payload("$symphony:symphony start Check the release"), self.environ)
+        self.assertIn("assess", self.context(result).lower())
+        self.assertIn("Check the release", self.context(result))
+
+        self.open_run("Check the release")
         state = StateStore(self.state_root).load(self.project)
         self.assertFalse(state.enabled)
         self.assertEqual(state.active_run.task, "Check the release")
-        self.assertIn("assess", self.context(result).lower())
 
     def test_bypass_does_not_mutate_enablement_or_active_run(self):
         store = StateStore(self.state_root)
@@ -70,7 +110,10 @@ class RuntimeTests(unittest.TestCase):
         state = StateStore(self.state_root).load(self.project)
         self.assertEqual(state.activation["codex"]["state"], "guarded")
         self.assertEqual(state.activation["codex"]["session_id"], "codex-session")
-        self.assertEqual(state.activation["codex"]["plugin_version"], "1.0.0")
+        self.assertEqual(
+            state.activation["codex"]["plugin_version"],
+            __import__("plugins.symphony.symphony", fromlist=["x"]).PLUGIN_VERSION,
+        )
         self.assertTrue(state.activation["codex"]["plugin_root"].endswith("plugins/symphony"))
         self.assertIn("guarded", self.context(result).lower())
         self.assertNotIn("unarmed", self.context(result).lower())
@@ -89,17 +132,21 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("enabled", self.context(result).lower())
 
     def test_raw_claude_start_preserves_the_full_task(self):
-        handle(self.payload("/symphony:start Check the release safely", "claude"), self.environ)
+        result = handle(self.payload("/symphony:start Check the release safely", "claude"), self.environ)
+        self.assertIn("Check the release safely", self.context(result))
 
+        self.open_run("Check the release safely", "claude")
         state = StateStore(self.state_root).load(self.project)
         self.assertEqual(state.active_run.task, "Check the release safely")
 
     def test_claude_command_arguments_start_a_one_shot_run(self):
         prompt = "SYMPHONY_CONTROL: start\nARGUMENTS: Check the release"
         result = handle(self.payload(prompt, "claude"), self.environ)
+        self.assertIn("assess", self.context(result).lower())
+
+        self.open_run("Check the release", "claude")
         state = StateStore(self.state_root).load(self.project)
         self.assertEqual(state.active_run.task, "Check the release")
-        self.assertIn("assess", self.context(result).lower())
 
     def test_help_is_inert_and_uses_provider_native_syntax(self):
         result = handle(self.payload("$symphony:symphony help"), self.environ)
@@ -123,7 +170,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.output(replay)["decision"], "block")
 
     def test_host_observed_lead_completion_allows_normal_stop(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         marker = json.dumps(
             {
                 "size": "small",
@@ -170,7 +217,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(state.recent_runs[-1].status, "completed")
 
     def test_codex_lead_completion_waits_for_accepted_assessment(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         lead = {
             **self.payload(""),
             "hook_event_name": "SubagentStart",
@@ -191,11 +238,12 @@ class RuntimeTests(unittest.TestCase):
             self.environ,
         )
 
-        self.assertIn("accepted assessment", self.context(missing).lower())
+        self.assertEqual(missing.stdout, "", "a stop result carries no injected context")
+        self.assertIn("accepted assessment", self.flush().lower())
         self.assertIsNone(StateStore(self.state_root).load(self.project).active_run.outcome)
 
     def test_codex_lead_completion_waits_for_matrix_effort(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         assessor = {
             **self.payload(""),
             "hook_event_name": "SubagentStart",
@@ -241,7 +289,8 @@ class RuntimeTests(unittest.TestCase):
             self.environ,
         )
 
-        self.assertIn("gpt-5.6-sol/medium", self.context(result).lower())
+        self.assertEqual(result.stdout, "", "a stop result carries no injected context")
+        self.assertIn("gpt-5.6-sol/medium", self.flush().lower())
         recovering = StateStore(self.state_root).load(self.project).active_run
         self.assertEqual(recovering.status, "recovering")
         replacement = {
@@ -266,12 +315,12 @@ class RuntimeTests(unittest.TestCase):
             self.environ,
         )
         self.assertEqual(
-            StateStore(self.state_root).load(self.project).recent_runs[-1].outcome["message"],
-            "Done",
+            StateStore(self.state_root).load(self.project).recent_runs[-1].outcome["status"],
+            "completed",
         )
 
     def test_codex_native_lifecycle_accepts_assessment_and_lead_outcome(self):
-        handle(self.payload("$symphony:symphony start Return OK"), self.environ)
+        self.open_run("Return OK")
 
         assessor_transcript = self.root / "assessor.jsonl"
         assessor_transcript.write_text(
@@ -372,10 +421,10 @@ class RuntimeTests(unittest.TestCase):
         stop = {**self.payload(""), "hook_event_name": "Stop"}
         self.assertEqual(handle(stop, self.environ).stdout, "")
         completed = StateStore(self.state_root).load(self.project).recent_runs[-1]
-        self.assertEqual(completed.outcome["message"], "OK")
+        self.assertEqual(completed.outcome["status"], "completed")
+        self.assertNotIn("message", completed.outcome)
 
     def test_codex_low_effort_assessor_result_is_not_accepted(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
         assessor = {
             **self.payload(""),
             "hook_event_name": "SubagentStart",
@@ -404,12 +453,13 @@ class RuntimeTests(unittest.TestCase):
             self.environ,
         )
 
-        self.assertIn("high effort", self.context(result).lower())
+        self.assertEqual(result.stdout, "", "a stop result carries no injected context")
+        self.assertIn("high effort", self.flush().lower())
         self.assertNotIn("size", StateStore(self.state_root).load(self.project).active_run.assessment)
 
     def test_codex_stop_can_fill_missing_start_metadata_from_child_transcript(self):
         environ = {**self.environ, "SYMPHONY_PROVIDER": "codex"}
-        handle(self.payload("$symphony:symphony start Ship it"), environ)
+        self.open_run("Ship it")
         start = {
             "session_id": "codex-session",
             "cwd": str(self.project),
@@ -465,7 +515,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(state.active_run.assessment["size"], "small")
 
     def test_failed_lead_stays_recoverable_and_stop_remains_guarded(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         started = self.payload("")
         started.update(
             {
@@ -484,7 +534,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.output(handle(stop, self.environ))["decision"], "block")
 
     def test_invalid_optional_metrics_are_ignored_without_losing_guard_state(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         started = {
             **self.payload(""),
             "hook_event_name": "SubagentStart",
@@ -503,6 +553,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_disable_preserves_active_run_until_observed_agents_stop(self):
         handle(self.payload("$symphony:symphony enable Ship it"), self.environ)
+        self.open_run("Ship it")
         started = {
             **self.payload(""),
             "hook_event_name": "SubagentStart",
@@ -539,7 +590,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(StateStore(self.state_root).load(self.project).active_run.status, "recovering")
 
     def test_pre_tool_route_marker_persists_assessment_and_status(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         marker = json.dumps(
             {
                 "size": "medium",
@@ -575,7 +626,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("Lead: lead-1", status)
 
     def test_pre_tool_use_denies_unclassified_agent_spawn(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        handle(self.payload("$symphony:symphony enable"), self.environ)
         hook = {
             **self.payload(""),
             "hook_event_name": "PreToolUse",
@@ -617,7 +668,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(delegation.requested_effort, "high")
 
     def test_prepared_lead_role_survives_generic_host_label(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
+        handle(
+            {
+                **self.payload(""),
+                "hook_event_name": "SubagentStart",
+                "agent_id": "assessor-1",
+                "agent_type": "symphony_assessor_gpt_6_astra_high",
+            },
+            self.environ,
+        )
         marker = json.dumps(
             {
                 "size": "large",
@@ -655,7 +715,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(state.active_run.delegations[-1].objective, "Run it")
 
     def test_lead_spawn_without_route_is_denied(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         hook = {
             **self.payload(""),
             "hook_event_name": "PreToolUse",
@@ -673,7 +733,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("SYMPHONY_ROUTE", output["reason"])
 
     def test_consultant_spawn_requires_decision_local_classification(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         store = StateStore(self.state_root)
         state = store.load(self.project)
         store.save(
@@ -706,7 +766,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("SYMPHONY_DECISION", output["reason"])
 
     def test_unclassified_consultant_result_blocks_lead_completion(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         marker = json.dumps(
             {
                 "size": "small",
@@ -753,7 +813,7 @@ class RuntimeTests(unittest.TestCase):
             },
             self.environ,
         )
-        self.assertIn("SYMPHONY_DECISION", self.context(missing))
+        self.assertIn("SYMPHONY_DECISION", self.flush())
         handle(
             {
                 **lead,
@@ -790,8 +850,8 @@ class RuntimeTests(unittest.TestCase):
             self.environ,
         )
         self.assertEqual(
-            StateStore(self.state_root).load(self.project).recent_runs[-1].outcome["message"],
-            "Done",
+            StateStore(self.state_root).load(self.project).recent_runs[-1].outcome["status"],
+            "completed",
         )
 
     def test_late_unclassified_consultant_blocks_deferred_stop(self):
@@ -804,7 +864,7 @@ class RuntimeTests(unittest.TestCase):
                 "topology": "direct",
             }
         )
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         handle(
             {
                 **self.payload(""),
@@ -858,7 +918,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNotNone(StateStore(self.state_root).load(self.project).active_run)
 
     def test_invalid_consultant_does_not_suppress_failed_lead_recovery(self):
-        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_run("Ship it")
         lead = {
             **self.payload(""),
             "hook_event_name": "SubagentStart",
@@ -889,7 +949,7 @@ class RuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(StateStore(self.state_root).load(self.project).active_run.status, "recovering")
-        self.assertIn("replacement", self.context(result).lower())
+        self.assertIn("replacement", self.flush().lower())
 
     def test_claude_pending_spawns_match_native_roles_out_of_order(self):
         StateStore(self.state_root).save(
@@ -1148,9 +1208,9 @@ class RuntimeTests(unittest.TestCase):
 
     def test_legacy_provider_data_is_imported_once(self):
         legacy_root = self.root / "plugin-data"
-        from plugins.symphony.symphony.store import legacy_project_key
+        from plugins.symphony.symphony.store import legacy_project_keys
 
-        legacy = legacy_root / "projects" / f"{legacy_project_key(self.project)}.json"
+        legacy = legacy_root / "projects" / f"{legacy_project_keys(self.project)[0]}.json"
         legacy.parent.mkdir(parents=True)
         legacy.write_text(json.dumps({"schema_version": 0, "enabled": True, "configuration": {"x": 1}}))
         environ = {**self.environ, "PLUGIN_DATA": str(legacy_root)}
@@ -1193,11 +1253,15 @@ class RuntimeTests(unittest.TestCase):
     def test_single_word_codex_task_starts_a_one_shot_run(self):
         result = handle(self.payload("$symphony:symphony summarize"), self.environ)
         self.assertIn("assess", self.context(result).lower())
+        self.assertIn("summarize", self.context(result))
+
+        self.open_run("summarize")
         self.assertEqual(StateStore(self.state_root).load(self.project).active_run.task, "summarize")
 
     def test_identical_claude_task_can_run_again_after_completion(self):
         prompt = "SYMPHONY_CONTROL: start\nARGUMENTS: Repeat me"
         handle(self.payload(prompt, "claude"), self.environ)
+        self.open_run("Repeat me", "claude")
         store = StateStore(self.state_root)
         state = store.load(self.project)
         store.save(
@@ -1211,8 +1275,173 @@ class RuntimeTests(unittest.TestCase):
         )
 
         handle(self.payload(prompt, "claude"), self.environ)
+        self.open_run("Repeat me", "claude")
 
         self.assertEqual(store.load(self.project).active_run.task, "Repeat me")
+
+
+    def test_enabled_prompt_alone_cannot_hold_the_session(self):
+        handle(self.payload("$symphony:symphony enable"), self.environ)
+        handle(self.payload("Just answer this directly"), self.environ)
+
+        stop = {**self.payload(""), "hook_event_name": "Stop"}
+        result = handle(stop, self.environ)
+
+        self.assertEqual(result.stdout, "", "a prompt that spawned nothing must not block Stop")
+        self.assertIsNone(StateStore(self.state_root).load(self.project).active_run)
+
+    def test_repeated_stop_releases_a_session_whose_child_never_reported(self):
+        self.open_run("Ship it")
+        handle(
+            {
+                **self.payload(""),
+                "hook_event_name": "SubagentStart",
+                "agent_id": "assessor-1",
+                "agent_type": "symphony_assessor_gpt_6_astra_high",
+            },
+            self.environ,
+        )
+        stop = {**self.payload(""), "hook_event_name": "Stop"}
+
+        blocked = self.output(handle(stop, self.environ))
+        self.assertEqual(blocked["decision"], "block")
+        self.assertIn("--force", blocked["reason"])
+
+        released = handle({**stop, "stop_hook_active": True}, self.environ)
+
+        self.assertNotIn("decision", self.output(released), "the retry must not block again")
+        self.assertIn("abandoned", self.context(released).lower())
+        state = StateStore(self.state_root).load(self.project)
+        self.assertIsNone(state.active_run)
+        self.assertEqual(state.recent_runs[-1].status, "abandoned")
+        self.assertEqual(state.recent_runs[-1].unreconciled, ("assessor-1",))
+
+    def test_new_session_reconciles_delegations_the_host_cannot_list(self):
+        self.open_run("Ship it")
+        handle(
+            {
+                **self.payload(""),
+                "hook_event_name": "SubagentStart",
+                "agent_id": "worker-1",
+                "agent_type": "symphony_worker_gpt_5_6_sol_medium",
+            },
+            self.environ,
+        )
+
+        resumed = {
+            **self.payload(""),
+            "session_id": "codex-session-2",
+            "hook_event_name": "SessionStart",
+        }
+        handle(resumed, self.environ)
+
+        run = StateStore(self.state_root).load(self.project).active_run
+        self.assertEqual(run.status, "recovering")
+        self.assertEqual({item.state for item in run.delegations}, {"interrupted"})
+
+    def test_repeated_control_in_one_claude_session_is_not_swallowed(self):
+        handle(self.payload("/symphony:enable", "claude"), self.environ)
+        handle(self.payload("/symphony:disable", "claude"), self.environ)
+        result = handle(self.payload("/symphony:enable", "claude"), self.environ)
+
+        self.assertIn("enabled", self.context(result).lower())
+        self.assertTrue(StateStore(self.state_root).load(self.project).enabled)
+
+    def test_retried_consultant_clears_the_earlier_classification_block(self):
+        self.open_run("Ship it")
+        lead = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-1",
+            "agent_type": "symphony_lead_gpt_5_6_sol_medium",
+            "model": "gpt-5.6-sol",
+            "model_reasoning_effort": "medium",
+        }
+        handle(lead, self.environ)
+
+        def consultant(identity, message):
+            spawn = {
+                **self.payload(""),
+                "hook_event_name": "SubagentStart",
+                "agent_id": identity,
+                "agent_type": "symphony_consultant_gpt_6_astra_high",
+                "task": "Pick the cache strategy",
+            }
+            handle(spawn, self.environ)
+            handle(
+                {
+                    **spawn,
+                    "hook_event_name": "SubagentStop",
+                    "status": "completed",
+                    "last_assistant_message": message,
+                },
+                self.environ,
+            )
+
+        consultant("consultant-1", "no classification here")
+        blocked = StateStore(self.state_root).load(self.project)
+        self.assertIn("consultant-1", blocked.active_run.assessment["_invalid_consultants"])
+
+        decision = json.dumps({"size": "small", "complexity": "simple"})
+        consultant("consultant-2", f"SYMPHONY_DECISION: {decision}")
+
+        cleared = StateStore(self.state_root).load(self.project)
+        self.assertNotIn("_invalid_consultants", cleared.active_run.assessment)
+
+    def test_host_payload_prose_is_never_written_to_disk(self):
+        secret = "ghp_examplevaluethatmustnotpersist"
+        handle(self.payload(f"$symphony:symphony enable"), self.environ)
+        handle(self.payload(f"Deploy using {secret} right now"), self.environ)
+        self.open_run("Ship it")
+        handle(
+            {
+                **self.payload(""),
+                "hook_event_name": "SubagentStart",
+                "agent_id": "lead-1",
+                "agent_type": "symphony_lead_gpt_5_6_sol_medium",
+            },
+            self.environ,
+        )
+        handle(
+            {
+                **self.payload(""),
+                "hook_event_name": "SubagentStop",
+                "agent_id": "lead-1",
+                "agent_type": "symphony_lead_gpt_5_6_sol_medium",
+                "status": "completed",
+                "last_assistant_message": f"the token is {secret}",
+                "transcript_path": "/tmp/transcript.jsonl",
+            },
+            self.environ,
+        )
+        handle(
+            {
+                **self.payload(""),
+                "hook_event_name": "Stop",
+                "stop_hook_active": True,
+                "last_assistant_message": f"and again {secret}",
+            },
+            self.environ,
+        )
+
+        written = "\n".join(
+            path.read_text() for path in self.state_root.rglob("*.json")
+        )
+        self.assertNotIn(secret, written)
+        self.assertNotIn("transcript", written)
+
+    def test_hook_fault_is_recorded_and_surfaced_once(self):
+        from plugins.symphony.symphony import runtime
+
+        runtime._record_fault(RuntimeError("boom"), self.environ)
+        self.assertTrue((self.state_root.parent / "faults.log").exists())
+
+        status = self.context(handle(self.payload("$symphony:symphony status"), self.environ))
+
+        self.assertIn("RuntimeError", status)
+        self.assertFalse((self.state_root.parent / "faults.log").exists())
+        repeated = self.context(handle(self.payload("$symphony:symphony status"), self.environ))
+        self.assertNotIn("RuntimeError", repeated)
 
 
 if __name__ == "__main__":

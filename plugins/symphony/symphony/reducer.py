@@ -4,7 +4,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import replace
 
-from .model import Action, Delegation, Event, ProjectState, RunState
+from .model import Action, Delegation, Event, ProjectState, RunState, persistable
 
 
 _ACTIVE_STATES = {"active", "created", "pending", "running", "waiting", "working"}
@@ -32,6 +32,8 @@ def _heartbeat(state: ProjectState, event: Event):
         "plugin_root": event.payload.get("plugin_root"),
         "hook_schema_version": event.payload.get("hook_schema_version"),
         "observed_at": event.observed_at,
+        # Reported once: the next heartbeat replaces this record wholesale.
+        "last_fault": event.payload.get("last_fault"),
     }
     activation[provider] = {key: value for key, value in facts.items() if value is not None}
     return replace(state, activation=activation), ()
@@ -77,6 +79,7 @@ def _task_received(state: ProjectState, event: Event):
         status="assessing",
         started_at=event.observed_at,
         updated_at=event.observed_at,
+        session_id=str(event.payload.get("session_id") or ""),
     )
     return replace(state, active_run=run), (Action("request_assessment", {"run_id": run_id}),)
 
@@ -123,19 +126,26 @@ def _lead_started(state: ProjectState, event: Event):
         return state, ()
 
     requested_generation = int(event.payload.get("owner_generation", run.owner_generation))
-    replacing = identity != run.lead_identity and (
-        run.lead_identity is not None or run.status in {"interrupted", "recovering"}
-    )
-    safe = run.status in {"interrupted", "recovering"} or bool(event.payload.get("safe_boundary"))
-    if replacing and (not safe or requested_generation != run.owner_generation + 1):
-        return state, (Action("reject_lead_replacement", {"identity": identity}),)
-    if not replacing and requested_generation != run.owner_generation:
-        return state, (Action("ignore_stale_owner", {"identity": identity}),)
+    if run.lead_identity is None:
+        # There is no owner to protect, whatever the run's status, so the first
+        # lead of a run or of a recovery registers without a replacement dance.
+        # It never moves the generation backwards.
+        generation = max(requested_generation, run.owner_generation)
+    else:
+        replacing = identity != run.lead_identity
+        safe = run.status in {"interrupted", "recovering"} or bool(
+            event.payload.get("safe_boundary")
+        )
+        if replacing and (not safe or requested_generation != run.owner_generation + 1):
+            return state, (Action("reject_lead_replacement", {"identity": identity}),)
+        if not replacing and requested_generation != run.owner_generation:
+            return state, (Action("ignore_stale_owner", {"identity": identity}),)
+        generation = requested_generation
 
     run = replace(
         run,
         lead_identity=str(identity),
-        owner_generation=requested_generation,
+        owner_generation=generation,
         status="active",
         updated_at=event.observed_at,
     )
@@ -241,31 +251,49 @@ def _reassess(state: ProjectState, event: Event):
     return next_state, (Action("request_assessment", {"run_id": state.active_run.run_id}),)
 
 
+def _stop_block_reason(run: RunState) -> dict | None:
+    """Return the payload for a stop block, or None when completion is permitted."""
+    active = _active_identities(run)
+    if active:
+        return {"active": active}
+    invalid_consultants = run.assessment.get("_invalid_consultants", ())
+    if invalid_consultants:
+        return {
+            "reason": "consultant results still require size/complexity classification: "
+            + ", ".join(map(str, invalid_consultants))
+        }
+    if run.outcome is None:
+        return {"reason": "lead_outcome_missing"}
+    return None
+
+
 def _stop_requested(state: ProjectState, event: Event):
     run = state.active_run
     if not run:
         return state, (Action("permit_stop"),)
-    active = _active_identities(run)
-    if active:
-        return state, (Action("block_stop", {"active": active}),)
-    invalid_consultants = run.assessment.get("_invalid_consultants", ())
-    if invalid_consultants:
-        return state, (
-            Action(
-                "block_stop",
-                {
-                    "reason": "consultant results still require size/complexity classification: "
-                    + ", ".join(map(str, invalid_consultants))
-                },
-            ),
+    if not run.delegations:
+        # A run that never produced tracked work cannot hold the session.
+        return _archive(state, run, "abandoned", event.observed_at), (
+            Action("archive_run", {"run_id": run.run_id}),
+            Action("permit_stop"),
         )
-    if run.outcome is None:
-        return state, (Action("block_stop", {"reason": "lead_outcome_missing"}),)
-    next_state = _archive(state, run, "completed", event.observed_at)
-    return (
-        next_state,
-        (Action("archive_run", {"run_id": run.run_id}), Action("permit_stop")),
-    )
+    reason = _stop_block_reason(run)
+    if reason is None:
+        return _archive(state, run, "completed", event.observed_at), (
+            Action("archive_run", {"run_id": run.run_id}),
+            Action("permit_stop"),
+        )
+    if event.payload.get("stop_hook_active"):
+        # The host already blocked once and is asking again. Blocking a second
+        # time cannot make the tracked work reappear, so release the session and
+        # record what was never reconciled.
+        unreconciled = tuple(_active_identities(run))
+        abandoned = replace(run, unreconciled=unreconciled)
+        return _archive(state, abandoned, "abandoned", event.observed_at), (
+            Action("run_abandoned", {"run_id": run.run_id, "unreconciled": list(unreconciled)}),
+            Action("permit_stop"),
+        )
+    return state, (Action("block_stop", reason),)
 
 
 def _force_stop(state: ProjectState, event: Event):
@@ -314,5 +342,7 @@ def reduce(state: ProjectState, event: Event) -> tuple[ProjectState, tuple[Actio
     next_state, actions = handler(state, event)
     if next_state == state and not actions:
         return state, ()
-    history = tuple(deque((*next_state.event_history, event), maxlen=_EVENT_HISTORY_LIMIT))
+    history = tuple(
+        deque((*next_state.event_history, persistable(event)), maxlen=_EVENT_HISTORY_LIMIT)
+    )
     return replace(next_state, event_history=history), actions

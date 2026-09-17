@@ -55,8 +55,10 @@ class PackageSmokeTests(unittest.TestCase):
                 for event in (
                     "SessionStart",
                     "UserPromptSubmit",
+                    "PreToolUse",
                     "SubagentStart",
                     "SubagentStop",
+                    "PostToolUse",
                     "Stop",
                 )
             }
@@ -75,11 +77,20 @@ class PackageSmokeTests(unittest.TestCase):
                     path = root / "fake-state.json"
                     state = json.loads(path.read_text()) if path.exists() else {"events": []}
                     state["events"].append(payload["hook_event_name"])
-                    if payload["hook_event_name"] == "UserPromptSubmit":
-                        state["active_run"] = {"objective": payload["prompt"]}
-                    elif payload["hook_event_name"] == "SubagentStart":
+                    event = payload["hook_event_name"]
+                    if event == "SubagentStart":
+                        state.setdefault("active_run", {"objective": "assessor spawn"})
                         state["active_children"] = [payload["agent_id"]]
-                    elif payload["hook_event_name"] == "SubagentStop":
+                        state["delegations"] = {payload["agent_id"]: "working"}
+                    elif event == "SubagentStop":
+                        state["active_children"] = []
+                    elif event == "SessionStart" and state.get("active_run"):
+                        state["delegations"] = {
+                            key: "interrupted" for key in state.get("delegations", {})
+                        }
+                        state["active_children"] = []
+                    elif event == "Stop" and payload.get("stop_hook_active"):
+                        state["active_run"] = None
                         state["active_children"] = []
                     if __HEARTBEAT__:
                         provider = os.environ["SYMPHONY_SMOKE_PROVIDER"]
@@ -92,7 +103,20 @@ class PackageSmokeTests(unittest.TestCase):
                             "observed_at": "2026-09-17T00:00:00+00:00",
                         }
                     path.write_text(json.dumps(state))
-                    blocked = payload["hook_event_name"] == "Stop" and state.get("active_children")
+                    if event == "PreToolUse" and "SYMPHONY_ROLE" not in json.dumps(
+                        payload.get("tool_input", {})
+                    ):
+                        print(json.dumps({"hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": "Add exactly one SYMPHONY_ROLE line.",
+                        }}))
+                        raise SystemExit(0)
+                    blocked = (
+                        event == "Stop"
+                        and not payload.get("stop_hook_active")
+                        and (state.get("active_children") or state.get("active_run"))
+                    )
                     print(json.dumps({"continue": not bool(blocked)}))
                     """
                 ).replace("__HEARTBEAT__", repr(heartbeat))
@@ -114,29 +138,44 @@ class PackageSmokeTests(unittest.TestCase):
 
     def test_all_scenarios_run_for_both_provider_protocols(self):
         """Catches a scenario silently accepting a provider whose lifecycle was not exercised."""
+        managed = [
+            "UserPromptSubmit",
+            "Stop",
+            "SubagentStart",
+            "SubagentStop",
+            "SubagentStart",
+            "Stop",
+            "Stop",
+            "Stop",
+        ]
+        # Only Claude reports a spawn before launch, and only Claude can carry
+        # deferred guidance back on a post-tool event.
+        managed_claude = managed[:2] + ["PreToolUse"] + managed[2:4] + ["PostToolUse"] + managed[4:]
         expected = {
-            "managed-run": [
-                "UserPromptSubmit",
-                "SubagentStart",
-                "SubagentStop",
-                "SubagentStart",
-                "Stop",
-                "SubagentStop",
-                "Stop",
-            ],
-            "interrupt-resume": ["UserPromptSubmit", "SessionStart"],
+            "codex": {
+                "managed-run": managed,
+                "interrupt-resume": [
+                    "UserPromptSubmit",
+                    "SubagentStart",
+                    "Interrupt",
+                    "SessionStart",
+                ],
+                "unmarked-spawn": ["UserPromptSubmit"],
+            },
+            "claude": {
+                "managed-run": managed_claude,
+                "interrupt-resume": ["UserPromptSubmit", "SubagentStart", "SessionStart"],
+                "unmarked-spawn": ["UserPromptSubmit", "PreToolUse"],
+            },
         }
         with tempfile.TemporaryDirectory() as candidate_dir:
             candidate = self.make_candidate(Path(candidate_dir))
-            for provider in ("codex", "claude"):
-                for scenario, suffix in expected.items():
+            for provider, scenarios in expected.items():
+                for scenario, sequence in scenarios.items():
                     with self.subTest(provider=provider, scenario=scenario), tempfile.TemporaryDirectory() as home:
                         result = run_smoke(provider, candidate, scenario, Path(home))
-                        events = result["events"]
-                        if provider == "codex" and scenario == "interrupt-resume":
-                            suffix = ["UserPromptSubmit", "Interrupt", "SessionStart"]
-                        self.assertTrue(result["ok"])
-                        self.assertEqual(suffix, events)
+                        self.assertTrue(result["ok"], result.get("error"))
+                        self.assertEqual(sequence, result["events"])
 
     def test_upgrade_reloads_new_materialized_version(self):
         """Catches reusing a removed versioned cache path after an upgrade."""

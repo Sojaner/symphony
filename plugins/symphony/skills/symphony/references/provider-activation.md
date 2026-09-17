@@ -4,15 +4,22 @@ Guarded means a Symphony hook executed successfully in the current provider sess
 
 ## Activation states
 
-| State | Meaning | Response |
+Symphony can record only two states, because a hook is the only Symphony code the host runs and it cannot execute in any of the others:
+
+| Recorded state | Meaning | Response |
 |---|---|---|
-| `not_discovered` | Provider has not discovered Symphony hooks | Check the installed plugin and provider registration view |
-| `needs_review` | Codex requires review/trust for this hook hash | Open `/hooks`, review Symphony, then submit another prompt |
-| `pending_reload` | Installed version is not loaded in this session | Reload or restart using the provider path below |
-| `active_unverified` | Hooks are registered but no matching heartbeat exists | Submit another prompt, then run status |
 | `guarded` | A matching current-session heartbeat is stored | Managed completion protection is active |
-| `policy_blocked` | Managed provider policy prevents the hooks | Report the policy boundary and offer explicit unguarded one-shot execution |
-| `faulted` | A hook command or packaged file failed | Report the event and source once; treat it as an execution or packaging fault |
+| pending verification | No matching heartbeat exists | Apply the provider recovery path below, then run status |
+
+The remaining conditions are diagnoses for the user, not values Symphony stores. When the heartbeat stays absent, name the likely cause from the provider's own views:
+
+| Diagnosis | Signal | Response |
+|---|---|---|
+| Not discovered | The plugin is absent from the provider's registration view | Check the installed plugin |
+| Needs review | Codex requires review/trust for this hook hash | Open `/hooks`, review Symphony, then submit another prompt |
+| Pending reload | The installed version is not loaded in this session | Reload or restart using the provider path below |
+| Policy blocked | Managed-only or globally disabled hooks | Report the policy boundary and offer explicit unguarded one-shot execution |
+| Faulted | A hook command or packaged file failed | Reported once in the next status from the durable fault record |
 
 Missing heartbeat is **pending verification**, not “unarmed.” Show the recovery notice only in `status` or the first explicit managed-run attempt in that session. Never silently downgrade a requested guarded run.
 

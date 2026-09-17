@@ -17,7 +17,7 @@ from typing import Any
 
 
 PROVIDERS = ("codex", "claude")
-SCENARIOS = ("activation", "managed-run", "interrupt-resume", "upgrade")
+SCENARIOS = ("activation", "managed-run", "unmarked-spawn", "interrupt-resume", "upgrade")
 
 
 class SmokeFailure(RuntimeError):
@@ -118,12 +118,27 @@ def _validate_package(root: Path, provider: str) -> dict[str, Any]:
     return {"version": codex_version, "config": config, "commands": commands}
 
 
+ASSESSMENT_MARKER = (
+    'SYMPHONY_ASSESSMENT: {"size":"small","complexity":"simple","risk":"normal",'
+    '"rationale":"package smoke","topology":"direct"}'
+)
+
+
+def _role_model(provider: str, agent_role: str) -> tuple[str, str]:
+    """The model and effort this role must run at, per the shipped matrix."""
+    effort = "high" if agent_role == "assessor" else "medium"
+    if provider == "codex":
+        return ("gpt-6-astra" if agent_role == "assessor" else "gpt-5.6-sol"), effort
+    return ("opus" if agent_role in {"assessor", "lead"} else "sonnet"), effort
+
+
 def _payload(
     provider: str,
     event: str,
     project: Path,
     session: str,
     agent_role: str = "lead",
+    stop_hook_active: bool = False,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "session_id": session,
@@ -133,34 +148,42 @@ def _payload(
     }
     if provider == "codex":
         payload.update({"turn_id": f"turn-{session}", "model": "fake-codex"})
+    model, effort = _role_model(provider, agent_role)
     if event == "UserPromptSubmit":
         payload["prompt"] = (
             "$symphony:symphony exercise the package lifecycle"
             if provider == "codex"
             else "SYMPHONY_CONTROL: start\nARGUMENTS: exercise the package lifecycle"
         )
+    elif event in ("PreToolUse", "PostToolUse"):
+        # Claude reports a spawn before launch; Codex registers no such hook.
+        payload["tool_name"] = "Agent"
+        payload["tool_input"] = {
+            "subagent_type": f"symphony-{agent_role}-{model}-{effort}",
+            "prompt": f"SYMPHONY_ROLE: {agent_role}\nexercise the package lifecycle",
+        }
     elif event in ("SubagentStart", "SubagentStop"):
-        effort = "high" if agent_role == "assessor" else "medium"
-        model = (
-            "gpt-6-astra" if agent_role == "assessor" else "gpt-5.6-sol"
-        ) if provider == "codex" else ("opus" if agent_role in {"assessor", "lead"} else "sonnet")
-        payload.update(
-            {
-                "agent_id": f"fake-{agent_role}",
-                "agent_type": f"symphony_{agent_role}_{model.replace('-', '_').replace('.', '_')}_{effort}",
-                "model": model,
-                "model_reasoning_effort": effort,
-            }
-        )
+        payload["agent_id"] = f"fake-{agent_role}"
+        if provider == "codex":
+            # Codex exposes the child's own model and effort on the event.
+            payload.update(
+                {
+                    "agent_type": f"symphony_{agent_role}_{model.replace('-', '_').replace('.', '_')}_{effort}",
+                    "model": model,
+                    "model_reasoning_effort": effort,
+                }
+            )
+        else:
+            payload["agent_type"] = f"symphony-{agent_role}-{model}-{effort}"
         if event == "SubagentStop":
             payload["status"] = "completed"
             payload["last_assistant_message"] = (
-                'SYMPHONY_ASSESSMENT: {"size":"small","complexity":"simple","risk":"normal","rationale":"package smoke","topology":"direct"}'
-                if agent_role == "assessor"
-                else "done"
+                ASSESSMENT_MARKER if agent_role == "assessor" else "done"
             )
     elif event == "Stop":
-        payload.update({"stop_hook_active": False, "last_assistant_message": "done"})
+        payload.update(
+            {"stop_hook_active": stop_hook_active, "last_assistant_message": "done"}
+        )
     return payload
 
 
@@ -172,6 +195,7 @@ def _run_event(
     state_dir: Path,
     session: str,
     agent_role: str = "lead",
+    stop_hook_active: bool = False,
 ) -> dict[str, Any] | None:
     config = _hook_config(root, provider)
     argv = _command_argv(_event_command(config, event), root, provider)
@@ -189,7 +213,9 @@ def _run_event(
     )
     completed = subprocess.run(
         argv,
-        input=json.dumps(_payload(provider, event, project, session, agent_role)),
+        input=json.dumps(
+            _payload(provider, event, project, session, agent_role, stop_hook_active)
+        ),
         capture_output=True,
         text=True,
         env=env,
@@ -206,6 +232,31 @@ def _run_event(
         return json.loads(output)
     except json.JSONDecodeError as exc:
         raise SmokeFailure(f"{event} hook emitted non-JSON output") from exc
+
+
+def _send_raw(
+    root: Path, provider: str, event: str, state_dir: Path, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Drive one hook with a hand-built payload, for cases the builder cannot express."""
+    argv = _command_argv(_event_command(_hook_config(root, provider), event), root, provider)
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(state_dir.parent),
+            "SYMPHONY_STATE_DIR": str(state_dir),
+            "SYMPHONY_PLUGIN_ROOT": str(root),
+            "SYMPHONY_PLUGIN_VERSION": str(_manifest(root, provider)["version"]),
+            "SYMPHONY_SMOKE_PROVIDER": provider,
+            "PLUGIN_ROOT": str(root),
+            "CLAUDE_PLUGIN_ROOT": str(root),
+        }
+    )
+    completed = subprocess.run(
+        argv, input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=15, check=False
+    )
+    if completed.returncode:
+        raise SmokeFailure(f"{event} hook exited {completed.returncode}: {completed.stderr.strip()}")
+    return json.loads(completed.stdout) if completed.stdout.strip() else None
 
 
 def _state_documents(state_dir: Path) -> list[Any]:
@@ -297,8 +348,11 @@ def _exercise(
         event: str,
         session: str = "fake-session",
         agent_role: str = "lead",
+        stop_hook_active: bool = False,
     ) -> dict[str, Any] | None:
-        output = _run_event(root, provider, event, project, state_dir, session, agent_role)
+        output = _run_event(
+            root, provider, event, project, state_dir, session, agent_role, stop_hook_active
+        )
         events.append(event)
         if event == "UserPromptSubmit":
             documents = _state_documents(state_dir)
@@ -320,24 +374,62 @@ def _exercise(
         activation.append("guarded")
     elif scenario == "managed-run":
         send("UserPromptSubmit")
-        if not any(_has_active_run(document) for document in _state_documents(state_dir)):
-            raise SmokeFailure("managed prompt did not persist an active run")
+        if any(_has_active_run(document) for document in _state_documents(state_dir)):
+            raise SmokeFailure("a prompt must not open a run before the assessor spawns")
+        if _blocks_stop(send("Stop")):
+            raise SmokeFailure("a prompt that spawned nothing must not block Stop")
+        if provider == "claude":
+            # Only Claude reports a spawn before launch.
+            denied = send("PreToolUse", agent_role="assessor")
+            if denied and denied.get("hookSpecificOutput", {}).get("permissionDecision") == "deny":
+                raise SmokeFailure(f"a correctly marked assessor spawn was denied: {denied}")
         send("SubagentStart", agent_role="assessor")
+        if not any(_has_active_run(document) for document in _state_documents(state_dir)):
+            raise SmokeFailure("the assessor spawn did not open a run")
         send("SubagentStop", agent_role="assessor")
+        if provider == "claude":
+            send("PostToolUse", agent_role="assessor")
         send("SubagentStart")
         if not _blocks_stop(send("Stop")):
             raise SmokeFailure("Stop was not blocked while a tracked child was active")
-        send("SubagentStop")
-        if _blocks_stop(send("Stop")):
-            raise SmokeFailure("Stop remained blocked after tracked work became terminal")
+        if not _blocks_stop(send("Stop")):
+            raise SmokeFailure("a second Stop without the retry flag must still block")
+        if _blocks_stop(send("Stop", stop_hook_active=True)):
+            raise SmokeFailure("a repeated Stop must release the session, never loop")
+        if any(_has_active_run(document) for document in _state_documents(state_dir)):
+            raise SmokeFailure("the released run was not archived")
+        activation.append("guarded")
+    elif scenario == "unmarked-spawn":
+        if provider != "claude":
+            # Codex registers no pre-spawn hook, so there is nothing to deny.
+            send("UserPromptSubmit")
+            activation.append("guarded")
+            return result
+        enable = _payload(provider, "UserPromptSubmit", project, "fake-session")
+        enable["prompt"] = "SYMPHONY_CONTROL: enable"
+        _send_raw(root, provider, "UserPromptSubmit", state_dir, enable)
+        events.append("UserPromptSubmit")
+        unmarked = _payload(provider, "PreToolUse", project, "fake-session")
+        unmarked["tool_input"] = {"prompt": "do the work"}
+        output = _send_raw(root, provider, "PreToolUse", state_dir, unmarked)
+        events.append("PreToolUse")
+        decision = (output or {}).get("hookSpecificOutput", {})
+        if decision.get("permissionDecision") != "deny":
+            raise SmokeFailure(f"an unmarked agent spawn was not denied: {output!r}")
         activation.append("guarded")
     elif scenario == "interrupt-resume":
         send("UserPromptSubmit", "before-interrupt")
+        send("SubagentStart", "before-interrupt", agent_role="assessor")
+        if not any(_has_active_run(document) for document in _state_documents(state_dir)):
+            raise SmokeFailure("the assessor spawn did not open a run")
         if provider == "codex":
             send("Interrupt", "before-interrupt")
         send("SessionStart", "resumed-session")
-        if not any(_has_active_run(document) for document in _state_documents(state_dir)):
+        documents = _state_documents(state_dir)
+        if not any(_has_active_run(document) for document in documents):
             raise SmokeFailure("resume lost the interrupted active run")
+        if not any(_contains(document, "interrupted") for document in documents):
+            raise SmokeFailure("resume did not reconcile the delegation the host can no longer run")
         activation.append("guarded")
     elif scenario == "upgrade":
         send("UserPromptSubmit", "old-session")
