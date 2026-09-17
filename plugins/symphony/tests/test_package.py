@@ -38,7 +38,7 @@ class PackageContractTests(unittest.TestCase):
     def test_hook_manifests_contain_only_supported_events(self):
         self.assertEqual(
             set(load_json("hooks/codex.json")["hooks"]),
-            {"SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "SubagentStop", "Stop", "Interrupt"},
+            {"SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "Interrupt"},
         )
         self.assertEqual(
             set(load_json("hooks/hooks.json")["hooks"]),
@@ -62,6 +62,24 @@ class PackageContractTests(unittest.TestCase):
         self.assertIn("size", roles)
         self.assertIn("complexity", roles)
         self.assertIn("Each consultant decision is classified separately", roles)
+        self.assertIn('fork_turns="none"', roles)
+        self.assertIn("SYMPHONY_ASSESSMENT:", roles)
+        self.assertIn("one `SYMPHONY_DECISION` line per actionable decision", roles)
+
+    def test_claude_role_agents_pin_model_and_effort_in_their_names(self):
+        agents = list((PLUGIN / "agents").glob("symphony-*.md"))
+        self.assertGreaterEqual(len(agents), 4)
+        for path in agents:
+            text = path.read_text(encoding="utf-8")
+            model = re.search(r"^model: (\S+)$", text, re.MULTILINE)
+            effort = re.search(r"^effort: (\S+)$", text, re.MULTILINE)
+            self.assertIsNotNone(model, path.name)
+            self.assertIsNotNone(effort, path.name)
+            self.assertIn(f"-{model.group(1)}-{effort.group(1)}", path.stem)
+        assessor = (PLUGIN / "agents/symphony-assessor-opus-high.md").read_text(encoding="utf-8")
+        self.assertIn("SYMPHONY_ASSESSMENT:", assessor)
+        for path in (PLUGIN / "agents").glob("symphony-consultant-*.md"):
+            self.assertIn("SYMPHONY_DECISION:", path.read_text(encoding="utf-8"))
 
     def test_capability_routing_assigns_supporting_workflows(self):
         routing = (PLUGIN / "skills/symphony/references/capability-routing.md").read_text(encoding="utf-8")

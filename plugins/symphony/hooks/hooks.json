@@ -1,12 +1,12 @@
 {
   "description": "Symphony lifecycle observation and completion guard for Claude Code.",
   "hooks": {
-    "SessionStart": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
-    "PreToolUse": [{"matcher": "Agent", "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
-    "SubagentStart": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
-    "SubagentStop": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
-    "PostToolUse": [{"matcher": "Agent", "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
-    "Stop": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 30, "statusMessage": "Symphony is reconciling active work"}]}]
+    "SessionStart": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=claude python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=claude python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
+    "PreToolUse": [{"matcher": "Agent", "hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=claude python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
+    "SubagentStart": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=claude python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
+    "SubagentStop": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=claude python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
+    "PostToolUse": [{"matcher": "Agent", "hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=claude python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=claude python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 30, "statusMessage": "Symphony is reconciling active work"}]}]
   }
 }

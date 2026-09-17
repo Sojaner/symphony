@@ -115,7 +115,15 @@ class PackageSmokeTests(unittest.TestCase):
     def test_all_scenarios_run_for_both_provider_protocols(self):
         """Catches a scenario silently accepting a provider whose lifecycle was not exercised."""
         expected = {
-            "managed-run": ["UserPromptSubmit", "SubagentStart", "Stop", "SubagentStop", "Stop"],
+            "managed-run": [
+                "UserPromptSubmit",
+                "SubagentStart",
+                "SubagentStop",
+                "SubagentStart",
+                "Stop",
+                "SubagentStop",
+                "Stop",
+            ],
             "interrupt-resume": ["UserPromptSubmit", "SessionStart"],
         }
         with tempfile.TemporaryDirectory() as candidate_dir:

@@ -124,13 +124,35 @@ class RuntimeTests(unittest.TestCase):
 
     def test_host_observed_lead_completion_allows_normal_stop(self):
         handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        marker = json.dumps(
+            {
+                "size": "small",
+                "complexity": "simple",
+                "risk": "normal",
+                "rationale": "bounded task",
+                "topology": "direct",
+            }
+        )
+        handle(
+            {
+                **self.payload(""),
+                "hook_event_name": "PreToolUse",
+                "tool_name": "spawn_agent",
+                "tool_input": {
+                    "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "medium",
+                },
+            },
+            self.environ,
+        )
         started = self.payload("")
         started.update(
             {
                 "hook_event_name": "SubagentStart",
                 "agent_id": "lead-1",
-                "agent_type": "symphony_lead_gpt_5_medium",
-                "model": "gpt-5",
+                "agent_type": "symphony_lead_gpt_5_6_sol_medium",
+                "model": "gpt-5.6-sol",
                 "model_reasoning_effort": "medium",
             }
         )
@@ -146,6 +168,301 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertIsNone(state.active_run)
         self.assertEqual(state.recent_runs[-1].status, "completed")
+
+    def test_codex_lead_completion_waits_for_accepted_assessment(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        lead = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-1",
+            "agent_type": "symphony_lead_gpt_5_6_sol_high",
+            "model": "gpt-5.6-sol",
+            "model_reasoning_effort": "high",
+        }
+        handle(lead, self.environ)
+
+        missing = handle(
+            {
+                **lead,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": "Done",
+            },
+            self.environ,
+        )
+
+        self.assertIn("accepted assessment", self.context(missing).lower())
+        self.assertIsNone(StateStore(self.state_root).load(self.project).active_run.outcome)
+
+    def test_codex_lead_completion_waits_for_matrix_effort(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        assessor = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "assessor-1",
+            "agent_type": "symphony_assessor_gpt_6_high",
+            "model_reasoning_effort": "high",
+        }
+        handle(assessor, self.environ)
+        assessment = json.dumps(
+            {
+                "size": "small",
+                "complexity": "simple",
+                "risk": "normal",
+                "rationale": "bounded task",
+                "topology": "direct",
+            }
+        )
+        handle(
+            {
+                **assessor,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": f"SYMPHONY_ASSESSMENT: {assessment}",
+            },
+            self.environ,
+        )
+        lead = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-1",
+            "agent_type": "symphony_lead_gpt_5_high",
+            "model_reasoning_effort": "high",
+        }
+        handle(lead, self.environ)
+
+        result = handle(
+            {
+                **lead,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": "Done",
+            },
+            self.environ,
+        )
+
+        self.assertIn("gpt-5.6-sol/medium", self.context(result).lower())
+        recovering = StateStore(self.state_root).load(self.project).active_run
+        self.assertEqual(recovering.status, "recovering")
+        replacement = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-2",
+            "agent_type": "symphony_lead_gpt_5_6_sol_medium",
+            "model": "gpt-5.6-sol",
+            "model_reasoning_effort": "medium",
+        }
+        handle(replacement, self.environ)
+        replaced = StateStore(self.state_root).load(self.project).active_run
+        self.assertEqual(replaced.lead_identity, "lead-2")
+        self.assertEqual(replaced.owner_generation, 2)
+        handle(
+            {
+                **replacement,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": "Done",
+            },
+            self.environ,
+        )
+        self.assertEqual(
+            StateStore(self.state_root).load(self.project).recent_runs[-1].outcome["message"],
+            "Done",
+        )
+
+    def test_codex_native_lifecycle_accepts_assessment_and_lead_outcome(self):
+        handle(self.payload("$symphony:symphony start Return OK"), self.environ)
+
+        assessor_transcript = self.root / "assessor.jsonl"
+        assessor_transcript.write_text(
+            "\n".join(
+                (
+                    json.dumps(
+                        {
+                            "type": "session_meta",
+                            "payload": {"agent_path": "/root/symphony_assessor_gpt_6_astra_high"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "turn_context",
+                            "payload": {"model": "gpt-6-astra", "effort": "high"},
+                        }
+                    ),
+                )
+            ),
+            encoding="utf-8",
+        )
+        assessor = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "assessor-1",
+            "agent_type": "default",
+            "transcript_path": str(assessor_transcript),
+        }
+        handle(assessor, self.environ)
+        observed_assessor = StateStore(self.state_root).load(self.project).active_run.delegations[-1]
+        self.assertEqual(observed_assessor.role, "assessor")
+        self.assertEqual(observed_assessor.requested_effort, "high")
+        assessment = json.dumps(
+            {
+                "size": "small",
+                "complexity": "simple",
+                "risk": "normal",
+                "rationale": "bounded read-only response",
+                "topology": "direct",
+            }
+        )
+        handle(
+            {
+                **assessor,
+                "hook_event_name": "SubagentStop",
+                "transcript_path": "",
+                "agent_transcript_path": str(assessor_transcript),
+                "last_assistant_message": f"SYMPHONY_ASSESSMENT: {assessment}",
+            },
+            self.environ,
+        )
+
+        state = StateStore(self.state_root).load(self.project)
+        self.assertEqual(state.active_run.assessment["size"], "small")
+        self.assertEqual(state.active_run.assessment["complexity"], "simple")
+        self.assertEqual(state.active_run.assessment["route"]["lead_model"], "gpt-5.6-sol")
+        self.assertEqual(state.active_run.assessment["route"]["lead_effort"], "medium")
+
+        lead_transcript = self.root / "lead.jsonl"
+        lead_transcript.write_text(
+            "\n".join(
+                (
+                    json.dumps(
+                        {
+                            "type": "session_meta",
+                            "payload": {"agent_path": "/root/symphony_lead_gpt_5_6_sol_medium"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "turn_context",
+                            "payload": {"model": "gpt-5.6-sol", "effort": "medium"},
+                        }
+                    ),
+                )
+            ),
+            encoding="utf-8",
+        )
+        lead = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-1",
+            "agent_type": "default",
+            "transcript_path": str(lead_transcript),
+        }
+        handle(lead, self.environ)
+        handle(
+            {
+                **lead,
+                "hook_event_name": "SubagentStop",
+                "transcript_path": "",
+                "agent_transcript_path": str(lead_transcript),
+                "last_assistant_message": "OK",
+            },
+            self.environ,
+        )
+
+        stop = {**self.payload(""), "hook_event_name": "Stop"}
+        self.assertEqual(handle(stop, self.environ).stdout, "")
+        completed = StateStore(self.state_root).load(self.project).recent_runs[-1]
+        self.assertEqual(completed.outcome["message"], "OK")
+
+    def test_codex_low_effort_assessor_result_is_not_accepted(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        assessor = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "assessor-1",
+            "agent_type": "symphony_assessor_gpt_5_low",
+            "model_reasoning_effort": "low",
+        }
+        handle(assessor, self.environ)
+        assessment = json.dumps(
+            {
+                "size": "small",
+                "complexity": "simple",
+                "risk": "normal",
+                "rationale": "bounded task",
+                "topology": "direct",
+            }
+        )
+
+        result = handle(
+            {
+                **assessor,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": f"SYMPHONY_ASSESSMENT: {assessment}",
+            },
+            self.environ,
+        )
+
+        self.assertIn("high effort", self.context(result).lower())
+        self.assertNotIn("size", StateStore(self.state_root).load(self.project).active_run.assessment)
+
+    def test_codex_stop_can_fill_missing_start_metadata_from_child_transcript(self):
+        environ = {**self.environ, "SYMPHONY_PROVIDER": "codex"}
+        handle(self.payload("$symphony:symphony start Ship it"), environ)
+        start = {
+            "session_id": "codex-session",
+            "cwd": str(self.project),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "assessor-1",
+            "agent_type": "default",
+        }
+        handle(start, environ)
+        transcript = self.root / "late-assessor.jsonl"
+        transcript.write_text(
+            "\n".join(
+                (
+                    json.dumps(
+                        {
+                            "type": "session_meta",
+                            "payload": {"agent_path": "/root/symphony_assessor_gpt_6_astra_high"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "turn_context",
+                            "payload": {"model": "gpt-6-astra", "effort": "high"},
+                        }
+                    ),
+                )
+            ),
+            encoding="utf-8",
+        )
+        assessment = json.dumps(
+            {
+                "size": "small",
+                "complexity": "simple",
+                "risk": "normal",
+                "rationale": "bounded task",
+                "topology": "direct",
+            }
+        )
+
+        handle(
+            {
+                **start,
+                "hook_event_name": "SubagentStop",
+                "agent_transcript_path": str(transcript),
+                "status": "completed",
+                "last_assistant_message": f"SYMPHONY_ASSESSMENT: {assessment}",
+            },
+            environ,
+        )
+
+        state = StateStore(self.state_root).load(self.project)
+        assessor = state.active_run.delegations[-1]
+        self.assertEqual((assessor.requested_tier, assessor.requested_effort), ("gpt-6-astra", "high"))
+        self.assertEqual(state.active_run.assessment["size"], "small")
 
     def test_failed_lead_stays_recoverable_and_stop_remains_guarded(self):
         handle(self.payload("$symphony:symphony start Ship it"), self.environ)
@@ -236,7 +553,11 @@ class RuntimeTests(unittest.TestCase):
             **self.payload(""),
             "hook_event_name": "PreToolUse",
             "tool_name": "spawn_agent",
-            "tool_input": {"message": f"SYMPHONY_ROUTE: {marker}\nShip it"},
+            "tool_input": {
+                "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
+                "model": "gpt-5.6-terra",
+                "reasoning_effort": "high",
+            },
         }
         handle(hook, self.environ)
         lead = {
@@ -250,8 +571,580 @@ class RuntimeTests(unittest.TestCase):
         status = self.context(handle(self.payload("$symphony:symphony status"), self.environ))
         self.assertIn("Assessment: medium/mixed", status)
         self.assertIn("Topology: mixed", status)
-        self.assertIn("Lead route: balanced/high", status)
+        self.assertIn("Lead route: gpt-5.6-terra/high", status)
         self.assertIn("Lead: lead-1", status)
+
+    def test_pre_tool_use_denies_unclassified_agent_spawn(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        hook = {
+            **self.payload(""),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "spawn_agent",
+            "tool_input": {"message": "Inspect the repository"},
+        }
+
+        output = self.output(handle(hook, self.environ))
+
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("SYMPHONY_ROLE", output["reason"])
+
+    def test_prepared_assessor_role_survives_generic_host_label(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        prepared = {
+            **self.payload(""),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "spawn_agent",
+            "tool_input": {
+                "message": "SYMPHONY_ROLE: assessor\nAssess the task",
+                "model": "gpt-strong",
+                "reasoning_effort": "high",
+            },
+        }
+        prepared_output = self.output(handle(prepared, self.environ))
+        self.assertNotIn("decision", prepared_output)
+
+        started = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "assessor-1",
+            "agent_type": "general-purpose",
+        }
+        handle(started, self.environ)
+
+        delegation = StateStore(self.state_root).load(self.project).active_run.delegations[-1]
+        self.assertEqual(delegation.role, "assessor")
+        self.assertEqual(delegation.requested_tier, "gpt-strong")
+        self.assertEqual(delegation.requested_effort, "high")
+
+    def test_prepared_lead_role_survives_generic_host_label(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        marker = json.dumps(
+            {
+                "size": "large",
+                "complexity": "complex",
+                "risk": "normal",
+                "rationale": "broad project work",
+                "topology": "delegated",
+            }
+        )
+        prepared = {
+            **self.payload(""),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "spawn_agent",
+            "tool_input": {
+                "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nRun it",
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "medium",
+            },
+        }
+        prepared_output = self.output(handle(prepared, self.environ))
+        self.assertNotIn("decision", prepared_output)
+
+        started = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-1",
+            "agent_type": "claude",
+        }
+        handle(started, self.environ)
+
+        state = StateStore(self.state_root).load(self.project)
+        self.assertEqual(state.active_run.lead_identity, "lead-1")
+        self.assertEqual(state.active_run.delegations[-1].role, "lead")
+        self.assertEqual(state.active_run.delegations[-1].requested_tier, "gpt-5.6-luna")
+        self.assertEqual(state.active_run.delegations[-1].objective, "Run it")
+
+    def test_lead_spawn_without_route_is_denied(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        hook = {
+            **self.payload(""),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "spawn_agent",
+            "tool_input": {
+                "message": "SYMPHONY_ROLE: lead\nRun it",
+                "model": "gpt-balanced",
+                "reasoning_effort": "high",
+            },
+        }
+
+        output = self.output(handle(hook, self.environ))
+
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("SYMPHONY_ROUTE", output["reason"])
+
+    def test_consultant_spawn_requires_decision_local_classification(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        store = StateStore(self.state_root)
+        state = store.load(self.project)
+        store.save(
+            self.project,
+            ProjectState(
+                enabled=state.enabled,
+                activation=state.activation,
+                active_run=RunState(
+                    state.active_run.run_id,
+                    state.active_run.task,
+                    status="active",
+                    lead_identity="lead-1",
+                ),
+            ),
+        )
+        hook = {
+            **self.payload(""),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "spawn_agent",
+            "tool_input": {
+                "message": "SYMPHONY_ROLE: consultant\nDecide the storage boundary",
+                "model": "gpt-strong",
+                "reasoning_effort": "high",
+            },
+        }
+
+        output = self.output(handle(hook, self.environ))
+
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("SYMPHONY_DECISION", output["reason"])
+
+    def test_unclassified_consultant_result_blocks_lead_completion(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        marker = json.dumps(
+            {
+                "size": "small",
+                "complexity": "simple",
+                "risk": "normal",
+                "rationale": "bounded task",
+                "topology": "direct",
+            }
+        )
+        handle(
+            {
+                **self.payload(""),
+                "hook_event_name": "PreToolUse",
+                "tool_name": "spawn_agent",
+                "tool_input": {
+                    "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "medium",
+                },
+            },
+            self.environ,
+        )
+        lead = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-1",
+            "agent_type": "symphony_lead_gpt_5_medium",
+        }
+        consultant = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "consultant-1",
+            "agent_type": "symphony_consultant_gpt_6_high",
+        }
+        handle(lead, self.environ)
+        handle(consultant, self.environ)
+
+        missing = handle(
+            {
+                **consultant,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": "Use the simpler storage boundary.",
+            },
+            self.environ,
+        )
+        self.assertIn("SYMPHONY_DECISION", self.context(missing))
+        handle(
+            {
+                **lead,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": "Done",
+            },
+            self.environ,
+        )
+        self.assertIsNone(StateStore(self.state_root).load(self.project).active_run.outcome)
+
+        classified = "\n".join(
+            (
+                'SYMPHONY_DECISION: {"size":"small","complexity":"simple"}',
+                'SYMPHONY_DECISION: {"size":"small","complexity":"mixed"}',
+            )
+        )
+        handle(
+            {
+                **consultant,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": classified,
+            },
+            self.environ,
+        )
+        handle(
+            {
+                **lead,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": "Done",
+            },
+            self.environ,
+        )
+        self.assertEqual(
+            StateStore(self.state_root).load(self.project).recent_runs[-1].outcome["message"],
+            "Done",
+        )
+
+    def test_late_unclassified_consultant_blocks_deferred_stop(self):
+        marker = json.dumps(
+            {
+                "size": "small",
+                "complexity": "simple",
+                "risk": "normal",
+                "rationale": "bounded task",
+                "topology": "direct",
+            }
+        )
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        handle(
+            {
+                **self.payload(""),
+                "hook_event_name": "PreToolUse",
+                "tool_name": "spawn_agent",
+                "tool_input": {
+                    "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "medium",
+                },
+            },
+            self.environ,
+        )
+        lead = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-1",
+            "agent_type": "lead",
+        }
+        consultant = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "consultant-1",
+            "agent_type": "consultant",
+        }
+        handle(lead, self.environ)
+        handle(consultant, self.environ)
+        handle(
+            {
+                **lead,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": "Done",
+            },
+            self.environ,
+        )
+        handle(
+            {
+                **consultant,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": "Use the simple option.",
+            },
+            self.environ,
+        )
+
+        blocked = handle({**self.payload(""), "hook_event_name": "Stop"}, self.environ)
+
+        self.assertEqual(self.output(blocked)["decision"], "block")
+        self.assertIn("consultant", self.output(blocked)["reason"].lower())
+        self.assertIsNotNone(StateStore(self.state_root).load(self.project).active_run)
+
+    def test_invalid_consultant_does_not_suppress_failed_lead_recovery(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        lead = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-1",
+            "agent_type": "lead",
+        }
+        consultant = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "consultant-1",
+            "agent_type": "consultant",
+        }
+        handle(lead, self.environ)
+        handle(consultant, self.environ)
+        handle(
+            {
+                **consultant,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": "Unclassified advice",
+            },
+            self.environ,
+        )
+
+        result = handle(
+            {**lead, "hook_event_name": "SubagentStop", "status": "failed"},
+            self.environ,
+        )
+
+        self.assertEqual(StateStore(self.state_root).load(self.project).active_run.status, "recovering")
+        self.assertIn("replacement", self.context(result).lower())
+
+    def test_claude_pending_spawns_match_native_roles_out_of_order(self):
+        StateStore(self.state_root).save(
+            self.project,
+            ProjectState(active_run=RunState("run-1", "task", lead_identity="lead-1")),
+        )
+        for role, agent_type, extra in (
+            ("worker", "symphony:symphony-worker-haiku-low", ""),
+            (
+                "consultant",
+                "symphony:symphony-consultant-opus-high",
+                '\nSYMPHONY_DECISION: {"size":"small","complexity":"mixed"}',
+            ),
+        ):
+            handle(
+                {
+                    **self.payload("", "claude"),
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Agent",
+                    "tool_input": {
+                        "prompt": f"SYMPHONY_ROLE: {role}{extra}\nDo it",
+                        "subagent_type": agent_type,
+                    },
+                },
+                self.environ,
+            )
+        consultant_started = {
+            **self.payload("", "claude"),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "consultant-1",
+            "agent_type": "symphony:symphony-consultant-opus-high",
+        }
+        handle(consultant_started, self.environ)
+        handle(consultant_started, self.environ)
+        handle(
+            {
+                **self.payload("", "claude"),
+                "hook_event_name": "SubagentStart",
+                "agent_id": "worker-1",
+                "agent_type": "symphony:symphony-worker-haiku-low",
+            },
+            self.environ,
+        )
+
+        roles = {
+            item.identity: item.role
+            for item in StateStore(self.state_root).load(self.project).active_run.delegations
+        }
+        self.assertEqual(roles, {"consultant-1": "consultant", "worker-1": "worker"})
+
+    def test_claude_same_role_pending_spawns_match_native_model_and_effort(self):
+        StateStore(self.state_root).save(
+            self.project,
+            ProjectState(active_run=RunState("run-1", "task", lead_identity="lead-1")),
+        )
+        for agent_type in (
+            "symphony:symphony-worker-haiku-low",
+            "symphony:symphony-worker-sonnet-high",
+        ):
+            handle(
+                {
+                    **self.payload("", "claude"),
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Agent",
+                    "tool_input": {
+                        "prompt": "SYMPHONY_ROLE: worker\nDo it",
+                        "subagent_type": agent_type,
+                    },
+                },
+                self.environ,
+            )
+        for identity, agent_type in (
+            ("worker-sonnet", "symphony:symphony-worker-sonnet-high"),
+            ("worker-haiku", "symphony:symphony-worker-haiku-low"),
+        ):
+            handle(
+                {
+                    **self.payload("", "claude"),
+                    "hook_event_name": "SubagentStart",
+                    "agent_id": identity,
+                    "agent_type": agent_type,
+                },
+                self.environ,
+            )
+
+        delegations = {
+            item.identity: (item.requested_tier, item.requested_effort)
+            for item in StateStore(self.state_root).load(self.project).active_run.delegations
+        }
+        self.assertEqual(delegations["worker-sonnet"], ("sonnet", "high"))
+        self.assertEqual(delegations["worker-haiku"], ("haiku", "low"))
+
+    def test_claude_replacement_preparation_preserves_recovery_generation(self):
+        marker = json.dumps(
+            {
+                "size": "small",
+                "complexity": "simple",
+                "risk": "normal",
+                "rationale": "bounded task",
+                "topology": "direct",
+            }
+        )
+        run = RunState(
+            "run-1",
+            "task",
+            status="recovering",
+            lead_identity="lead-1",
+            assessment={
+                "size": "small",
+                "complexity": "simple",
+                "risk": "normal",
+                "rationale": "bounded task",
+                "topology": "direct",
+                "route": {"lead_model": "sonnet", "lead_effort": "medium"},
+                "_invalid_consultants": ["consultant-1"],
+            },
+        )
+        StateStore(self.state_root).save(self.project, ProjectState(active_run=run))
+        prepared = {
+            **self.payload("", "claude"),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_input": {
+                "prompt": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nRecover",
+                "subagent_type": "symphony:symphony-lead-sonnet-medium",
+            },
+        }
+        handle(prepared, self.environ)
+        handle(
+            {
+                **self.payload("", "claude"),
+                "hook_event_name": "SubagentStart",
+                "agent_id": "lead-2",
+                "agent_type": "symphony:symphony-lead-sonnet-medium",
+            },
+            self.environ,
+        )
+
+        replaced = StateStore(self.state_root).load(self.project).active_run
+        self.assertEqual(replaced.status, "active")
+        self.assertEqual(replaced.lead_identity, "lead-2")
+        self.assertEqual(replaced.owner_generation, 2)
+        self.assertEqual(replaced.assessment["_invalid_consultants"], ["consultant-1"])
+
+    def test_claude_agent_spawn_is_denied_without_a_symphony_agent_type(self):
+        handle(self.payload("/symphony:start Ship it", "claude"), self.environ)
+        hook = {
+            **self.payload("", "claude"),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_input": {
+                "prompt": "SYMPHONY_ROLE: assessor\nAssess the task",
+                "model": "opus",
+            },
+        }
+
+        output = self.output(handle(hook, self.environ))
+
+        decision = output["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn("Symphony agent type", decision["permissionDecisionReason"])
+
+    def test_claude_agent_model_override_cannot_change_packaged_role_model(self):
+        handle(self.payload("/symphony:start Ship it", "claude"), self.environ)
+        hook = {
+            **self.payload("", "claude"),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_input": {
+                "prompt": "SYMPHONY_ROLE: assessor\nAssess the task",
+                "subagent_type": "symphony:symphony-assessor-opus-high",
+                "model": "haiku",
+            },
+        }
+
+        decision = self.output(handle(hook, self.environ))["hookSpecificOutput"]
+
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn("model override", decision["permissionDecisionReason"].lower())
+
+    def test_claude_symphony_agent_type_supplies_model_and_effort(self):
+        handle(self.payload("/symphony:start Ship it", "claude"), self.environ)
+        prepared = {
+            **self.payload("", "claude"),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_input": {
+                "prompt": "SYMPHONY_ROLE: assessor\nAssess the task",
+                "subagent_type": "symphony:symphony-assessor-opus-high",
+            },
+        }
+        self.assertEqual(handle(prepared, self.environ).stdout, "")
+
+        started = {
+            **self.payload("", "claude"),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "assessor-1",
+            "agent_type": "symphony:symphony-assessor-opus-high",
+        }
+        handle(started, self.environ)
+
+        delegation = StateStore(self.state_root).load(self.project).active_run.delegations[-1]
+        self.assertEqual(delegation.role, "assessor")
+        self.assertEqual(delegation.requested_tier, "opus")
+        self.assertEqual(delegation.requested_effort, "high")
+
+    def test_claude_assessment_feedback_is_delivered_to_parent_post_tool_use(self):
+        handle(self.payload("/symphony:start Ship it", "claude"), self.environ)
+        prepared = {
+            **self.payload("", "claude"),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_input": {
+                "prompt": "SYMPHONY_ROLE: assessor\nAssess the task",
+                "subagent_type": "symphony:symphony-assessor-opus-high",
+            },
+        }
+        handle(prepared, self.environ)
+        started = {
+            **self.payload("", "claude"),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "assessor-1",
+            "agent_type": "symphony:symphony-assessor-opus-high",
+        }
+        handle(started, self.environ)
+        assessment = json.dumps(
+            {
+                "size": "small",
+                "complexity": "simple",
+                "risk": "normal",
+                "rationale": "bounded task",
+                "topology": "direct",
+            }
+        )
+
+        stopped = handle(
+            {
+                **started,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": f"SYMPHONY_ASSESSMENT: {assessment}",
+            },
+            self.environ,
+        )
+        parent = handle(
+            {
+                **self.payload("", "claude"),
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Agent",
+            },
+            self.environ,
+        )
+
+        self.assertEqual(stopped.stdout, "")
+        self.assertIn("accepted", self.context(parent).lower())
 
     def test_legacy_provider_data_is_imported_once(self):
         legacy_root = self.root / "plugin-data"

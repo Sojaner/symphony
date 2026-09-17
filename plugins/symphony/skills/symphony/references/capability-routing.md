@@ -26,6 +26,13 @@ Resolve abstract tiers `economy`, `balanced`, `capable`, and `strongest` against
 
 A snapshot records models, supported efforts, relative tiers, source, provider version, and refresh time. At session start and reassessment, refresh snapshots older than 24 hours without blocking use of a valid cache. Use Context7 for current official model, effort, API, and library facts when available; record dated conclusions instead of repeating research. If no suitable assessor is available, disclose and use the conservative provider route—the root does not improvise an assessment.
 
+Until a refresh succeeds, the shipped fallback is:
+
+| Provider | economy | balanced | capable | strongest |
+|---|---|---|---|---|
+| Codex | `gpt-5.6-luna` | `gpt-5.6-terra` | `gpt-5.6-sol` | `gpt-6-astra` |
+| Claude Code | `haiku` | `sonnet` | `opus` | `opus` |
+
 Recommend a useful missing capability at most once per project per Symphony version. Never install it automatically.
 
 ## Workflow authority

@@ -1,3 +1,4 @@
+from dataclasses import replace
 import unittest
 
 from plugins.symphony.symphony.model import Action, Delegation, Event, ProjectState, RunState
@@ -250,6 +251,37 @@ class LifecycleReducerTests(unittest.TestCase):
         self.assertEqual(state.active_run.delegations, original.active_run.delegations)
         self.assertTrue(state.needs_reassessment)
         self.assertEqual(actions, (Action("request_assessment", {"run_id": "run-1"}),))
+
+    def test_reassessment_acceptance_preserves_recovery_and_lifecycle_metadata(self):
+        original = running_state(status="recovering")
+        original = replace(
+            original,
+            active_run=replace(
+                original.active_run,
+                assessment={
+                    "size": "small",
+                    "complexity": "simple",
+                    "_invalid_consultants": ["consultant-1"],
+                    "_pending_delegations": [{"role": "worker"}],
+                },
+            ),
+        )
+
+        accepted, _ = reduce(
+            original,
+            event("assessment_accepted", size="medium", complexity="mixed", risk="normal"),
+        )
+
+        self.assertEqual(accepted.active_run.status, "recovering")
+        self.assertEqual(accepted.active_run.assessment["size"], "medium")
+        self.assertEqual(
+            accepted.active_run.assessment["_invalid_consultants"],
+            ["consultant-1"],
+        )
+        self.assertEqual(
+            accepted.active_run.assessment["_pending_delegations"],
+            [{"role": "worker"}],
+        )
 
     def test_disable_waits_for_observed_agents_before_archiving(self):
         original = running_state(delegations=[delegation("worker-1")])

@@ -91,10 +91,23 @@ def _assessment_requested(state: ProjectState, event: Event):
 def _assessment_accepted(state: ProjectState, event: Event):
     if not state.active_run:
         return state, ()
+    lifecycle = {
+        key: value
+        for key, value in state.active_run.assessment.items()
+        if str(key).startswith("_")
+    }
+    assessment = dict(event.payload)
+    assessment.update(lifecycle)
+    if state.active_run.status in {"completing", "interrupted", "recovering", "stopping"}:
+        status = state.active_run.status
+    elif state.active_run.lead_identity:
+        status = "active"
+    else:
+        status = "assessed"
     run = replace(
         state.active_run,
-        status="assessed",
-        assessment=dict(event.payload),
+        status=status,
+        assessment=assessment,
         updated_at=event.observed_at,
     )
     return (
@@ -235,6 +248,17 @@ def _stop_requested(state: ProjectState, event: Event):
     active = _active_identities(run)
     if active:
         return state, (Action("block_stop", {"active": active}),)
+    invalid_consultants = run.assessment.get("_invalid_consultants", ())
+    if invalid_consultants:
+        return state, (
+            Action(
+                "block_stop",
+                {
+                    "reason": "consultant results still require size/complexity classification: "
+                    + ", ".join(map(str, invalid_consultants))
+                },
+            ),
+        )
     if run.outcome is None:
         return state, (Action("block_stop", {"reason": "lead_outcome_missing"}),)
     next_state = _archive(state, run, "completed", event.observed_at)

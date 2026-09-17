@@ -46,6 +46,21 @@ MATRIX = {
     ("large", "complex"): Route("economy", "medium", "delegated", "strongest"),
 }
 
+_FALLBACK_MODELS = {
+    "codex": {
+        "economy": "gpt-5.6-luna",
+        "balanced": "gpt-5.6-terra",
+        "capable": "gpt-5.6-sol",
+        "strongest": "gpt-6-astra",
+    },
+    "claude": {
+        "economy": "haiku",
+        "balanced": "sonnet",
+        "capable": "opus",
+        "strongest": "opus",
+    },
+}
+
 
 def route_for(assessment: Assessment) -> Route:
     """Return the literal matrix route, applying only risk safeguards."""
@@ -57,6 +72,21 @@ def route_for(assessment: Assessment) -> Route:
         effort = "medium" if route.lead_effort == "low" else route.lead_effort
         return replace(route, lead_effort=effort, independent_review=True)
     return route
+
+
+def fallback_snapshot(provider: str) -> CapabilitySnapshot:
+    """Return the shipped model map used until a provider capability refresh succeeds."""
+    tiers = _FALLBACK_MODELS[provider]
+    models = tuple(dict.fromkeys(tiers.values()))
+    return CapabilitySnapshot(
+        provider=provider,
+        available_models=models,
+        supported_efforts={model: ("low", "medium", "high") for model in models},
+        tiers=tiers,
+        source="shipped-fallback",
+        provider_version=None,
+        refreshed_at=datetime.now(UTC).isoformat(),
+    )
 
 
 def resolve_tier(route: Route, snapshot: CapabilitySnapshot) -> ResolvedRoute:

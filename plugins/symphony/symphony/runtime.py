@@ -11,15 +11,17 @@ from . import HOOK_SCHEMA_VERSION, PLUGIN_VERSION
 from .adapters import HookResult, detect_provider, event_from_payload, render
 from .model import Action, Delegation, Event, ProjectState
 from .reducer import reduce
-from .routing import Assessment, route_for, resolve_tier
+from .routing import Assessment, fallback_snapshot, route_for, resolve_tier
 from .store import StateStore
 
 
 CONTROLS = {"agents", "bypass", "disable", "enable", "help", "reassess", "start", "status", "stop"}
+ROLES = {"assessor", "consultant", "lead", "worker"}
+HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 
 
 def handle(payload: dict, environ: Mapping[str, str] = os.environ) -> HookResult:
-    provider = detect_provider(payload)
+    provider = str(environ.get("SYMPHONY_PROVIDER") or detect_provider(payload))
     project = Path(payload.get("cwd") or os.getcwd()).resolve()
     legacy_roots = tuple(
         Path(environ[name])
@@ -81,11 +83,17 @@ def _transition(
         if state.active_run:
             actions += (Action("inject_context", {"text": _recovery_guidance(state)}),)
     elif source.kind == "pre_tool_use":
-        state, route_actions = _register_assessment(state, source, provider)
-        actions += route_actions
-    elif source.kind in {"subagent_started", "subagent_stopped", "post_tool_use"}:
+        state, delegation_actions = _prepare_delegation(state, source, provider)
+        actions += delegation_actions
+    elif source.kind in {"subagent_started", "subagent_stopped"}:
         state, observed_actions = _observe_delegation(state, source)
-        actions += observed_actions
+        if provider == "claude" and source.kind == "subagent_stopped":
+            state = _defer_parent_actions(state, observed_actions)
+        else:
+            actions += observed_actions
+    elif source.kind == "post_tool_use" and provider == "claude":
+        state, parent_actions = _consume_parent_actions(state)
+        actions += parent_actions
     elif source.kind in {"stop_requested", "interrupt"}:
         state, lifecycle_actions = reduce(state, source)
         actions += lifecycle_actions
@@ -192,20 +200,30 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
     identity = source.payload.get("agent_id") or source.payload.get("subagent_id")
     if not identity or not state.active_run:
         return state, ()
-    terminal = source.kind == "subagent_stopped"
-    status = str(source.payload.get("status") or ("completed" if terminal else "working"))
     current = next(
         (item for item in state.active_run.delegations if item.identity == str(identity)),
         None,
     )
-    role = _observed_role(source.payload) or (current.role if current else "worker")
+    pending: Mapping[str, object] = {}
+    if source.kind == "subagent_started" and current is None:
+        state, pending = _consume_pending_delegation(state, source.payload)
+    terminal = source.kind == "subagent_stopped"
+    status = str(source.payload.get("status") or ("completed" if terminal else "working"))
+    role = str(pending.get("role") or _observed_role(source.payload) or (current.role if current else "worker"))
     if role == "lead" and source.kind == "subagent_started":
+        owner_generation = state.active_run.owner_generation
+        if (
+            state.active_run.status in {"interrupted", "recovering"}
+            and state.active_run.lead_identity
+            and state.active_run.lead_identity != str(identity)
+        ):
+            owner_generation += 1
         state, actions = reduce(
             state,
             _derived(
                 source,
                 "lead_started",
-                {"identity": str(identity), "owner_generation": state.active_run.owner_generation},
+                {"identity": str(identity), "owner_generation": owner_generation},
                 "lead",
             ),
         )
@@ -214,13 +232,29 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
     update = {
         "identity": str(identity),
         "role": role,
-        "objective": str(source.payload.get("task") or source.payload.get("objective") or ""),
+        "objective": str(
+            pending.get("objective")
+            or source.payload.get("task")
+            or source.payload.get("objective")
+            or ""
+        ),
         "state": status,
     }
-    if source.payload.get("model"):
-        update["requested_tier"] = str(source.payload["model"])
-    if source.payload.get("model_reasoning_effort"):
-        update["requested_effort"] = str(source.payload["model_reasoning_effort"])
+    child_metadata = source.payload.get("_symphony_child_metadata", ())
+    model = pending.get("model") or (
+        source.payload.get("model")
+        if "model" in child_metadata or not current or not current.requested_tier
+        else current.requested_tier
+    )
+    effort = pending.get("effort") or (
+        source.payload.get("model_reasoning_effort")
+        if "model_reasoning_effort" in child_metadata or not current or not current.requested_effort
+        else current.requested_effort
+    )
+    if model:
+        update["requested_tier"] = str(model)
+    if effort:
+        update["requested_effort"] = str(effort)
     tokens = source.payload.get("tokens")
     if isinstance(tokens, int) and not isinstance(tokens, bool):
         update["tokens"] = tokens
@@ -229,8 +263,125 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
         update["duration_seconds"] = duration
     state, delegation_actions = reduce(state, _derived(source, "delegation_updated", update, "delegation"))
     actions += delegation_actions
+    if role == "assessor" and terminal and state.active_run:
+        observed_assessor = next(
+            (
+                item
+                for item in state.active_run.delegations
+                if item.identity == str(identity)
+            ),
+            None,
+        )
+        if not observed_assessor or observed_assessor.requested_effort not in HIGH_EFFORTS:
+            actions += (
+                Action(
+                    "inject_context",
+                    {
+                        "text": "The assessor result was not produced at high effort or above. Retry the assessment with an explicitly strong/high assessor before selecting a lead."
+                    },
+                ),
+            )
+        else:
+            assessment = _assessment_marker(source.payload.get("last_assistant_message", ""))
+            if assessment is None:
+                actions += (
+                    Action(
+                        "inject_context",
+                        {
+                            "text": "The assessor finished without a valid SYMPHONY_ASSESSMENT line. Retry the assessment before selecting a lead."
+                        },
+                    ),
+                )
+            else:
+                state, assessment_actions = _accept_assessment(
+                    state,
+                    source,
+                    str(source.payload.get("provider") or "codex"),
+                    {},
+                    assessment,
+                )
+                actions += assessment_actions
+    if role == "consultant" and terminal and state.active_run:
+        decisions = _decision_markers(source.payload.get("last_assistant_message", ""))
+        state = _set_invalid_consultant(state, str(identity), not decisions)
+        if not decisions:
+            actions += (
+                Action(
+                    "inject_context",
+                    {
+                        "text": "The consultant result is not actionable until every decision has a valid SYMPHONY_DECISION size/complexity line. Retry that consultant before completing the lead."
+                    },
+                ),
+            )
     if role == "lead" and terminal and state.active_run:
-        completion_kind = "lead_completed" if status.lower() in {"completed", "done", "success", "succeeded"} else "lead_failed"
+        successful = status.lower() in {"completed", "done", "success", "succeeded"}
+        assessment = state.active_run.assessment
+        if successful and not (assessment.get("size") and assessment.get("complexity")):
+            actions += (
+                Action(
+                    "inject_context",
+                    {
+                        "text": "Lead completion is waiting for an accepted assessment. Reconcile the assessor result before retrying the lead."
+                    },
+                ),
+            )
+            return state, actions
+        route = assessment.get("route", {})
+        required_model = route.get("lead_model") if isinstance(route, Mapping) else ""
+        required_effort = route.get("lead_effort") if isinstance(route, Mapping) else ""
+        observed_lead = next(
+            (
+                item
+                for item in state.active_run.delegations
+                if item.identity == str(identity)
+            ),
+            None,
+        )
+        if (
+            successful
+            and (required_model or required_effort)
+            and observed_lead
+            and (
+                (required_model and observed_lead.requested_tier != required_model)
+                or (required_effort and observed_lead.requested_effort != required_effort)
+            )
+        ):
+            state, recovery_actions = reduce(
+                state,
+                _derived(
+                    source,
+                    "lead_failed",
+                    {"identity": str(identity)},
+                    "lead-route-recovery",
+                ),
+            )
+            actions += recovery_actions
+            actions += (
+                Action(
+                    "inject_context",
+                    {
+                        "text": f"Lead completion is waiting for the matrix-selected {required_model}/{required_effort}. Replace or retry the lead with the recorded route."
+                    },
+                ),
+            )
+            return state, actions
+        invalid_consultants = state.active_run.assessment.get("_invalid_consultants", ())
+        if successful and invalid_consultants:
+            actions += (
+                Action(
+                    "inject_context",
+                    {
+                        "text": "Lead completion is waiting for classified consultant results: "
+                        + ", ".join(map(str, invalid_consultants))
+                    },
+                ),
+            )
+            return state, actions
+        completion_kind = "lead_completed" if successful else "lead_failed"
+        outcome = {"status": status}
+        message = str(source.payload.get("last_assistant_message") or "").strip()
+        if message:
+            outcome["message"] = message
         state, completion_actions = reduce(
             state,
             _derived(
@@ -239,7 +390,7 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
                 {
                     "identity": str(identity),
                     "owner_generation": state.active_run.owner_generation,
-                    "outcome": {"status": status},
+                    "outcome": outcome,
                 },
                 "lead-completion",
             ),
@@ -249,14 +400,16 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
 
 
 def _observed_role(payload: Mapping[str, object]) -> str:
-    label = str(payload.get("agent_type") or payload.get("role") or payload.get("task_name") or "")
+    label = " ".join(
+        str(payload.get(key) or "") for key in ("agent_type", "role", "task_name")
+    )
     for role in ("assessor", "consultant", "lead", "worker"):
         if role in label.lower():
             return role
-    return label
+    return ""
 
 
-def _register_assessment(
+def _prepare_delegation(
     state: ProjectState, source: Event, provider: str
 ) -> tuple[ProjectState, tuple[Action, ...]]:
     if not state.active_run:
@@ -264,30 +417,101 @@ def _register_assessment(
     tool_name = str(source.payload.get("tool_name") or source.payload.get("tool") or "").lower()
     if "agent" not in tool_name:
         return state, ()
-    marker = "SYMPHONY_ROUTE:"
     values = source.payload.get("tool_input") or source.payload.get("input") or {}
-    texts = [str(values)]
-    if isinstance(values, dict):
-        texts = [str(value) for value in values.values() if isinstance(value, str)]
-    line = next(
-        (item.strip()[len(marker) :].strip() for text in texts for item in text.splitlines() if item.strip().startswith(marker)),
-        "",
-    )
-    if not line:
-        return state, ()
-    try:
-        raw = json.loads(line)
-        assessment = Assessment(
-            str(raw["size"]),
-            str(raw["complexity"]),
-            str(raw.get("risk", "normal")),
-            str(raw.get("rationale", "")),
-            str(raw.get("topology", "")),
-        )
-        route = route_for(assessment)
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return state, (Action("inject_context", {"text": "Symphony rejected an invalid SYMPHONY_ROUTE marker."}),)
+    role = _marker_value(values, "SYMPHONY_ROLE:")
+    if role not in ROLES:
+        return state, (_block_tool("Add exactly one SYMPHONY_ROLE: assessor|lead|worker|consultant line, then retry the spawn."),)
+    model, effort = _requested_model_effort(values, provider, role)
+    if not model or not effort:
+        if provider == "claude":
+            reason = (
+                f"Use a Symphony agent type named symphony-{role}-<model>-<effort>; "
+                "generic Claude agents cannot pin effort."
+            )
+        else:
+            reason = f"Spawn the Symphony {role} with an explicit model and effort, then retry."
+        return state, (_block_tool(reason),)
+    if provider == "claude":
+        override = str(values.get("model") or "").strip() if isinstance(values, dict) else ""
+        if override and override != model:
+            return state, (
+                _block_tool(
+                    f"Remove the Claude model override or use `{model}` so the packaged Symphony role remains observable."
+                ),
+            )
+    if role == "assessor" and effort not in HIGH_EFFORTS:
+        return state, (_block_tool("The Symphony assessor requires a strong model at high effort or above."),)
 
+    actions: tuple[Action, ...] = ()
+    if role == "lead":
+        assessment = _route_marker(values)
+        if assessment is None:
+            return state, (_block_tool("Add a valid SYMPHONY_ROUTE JSON line to the lead packet, then retry."),)
+        recorded = state.active_run.assessment
+        if recorded.get("size") and recorded.get("complexity"):
+            if (
+                assessment.size != recorded.get("size")
+                or assessment.complexity != recorded.get("complexity")
+            ):
+                return state, (
+                    _block_tool("Use the accepted Symphony size/complexity route for this lead."),
+                )
+            route = route_for(
+                Assessment(
+                    str(recorded["size"]),
+                    str(recorded["complexity"]),
+                    str(recorded.get("risk", "normal")),
+                    str(recorded.get("rationale", "")),
+                    str(recorded.get("topology", "")),
+                )
+            )
+        else:
+            route = route_for(assessment)
+        snapshot = next(
+            (item for item in reversed(state.capabilities) if item.provider == provider),
+            fallback_snapshot(provider),
+        )
+        recorded_route = recorded.get("route", {})
+        required_model = (
+            str(recorded_route.get("lead_model") or "")
+            if isinstance(recorded_route, Mapping)
+            else ""
+        )
+        required_effort = (
+            str(recorded_route.get("lead_effort") or "")
+            if isinstance(recorded_route, Mapping)
+            else ""
+        )
+        if not required_model or not required_effort:
+            resolved = resolve_tier(route, snapshot)
+            required_model = required_model or resolved.lead_model
+            required_effort = required_effort or resolved.lead_effort
+        if model != required_model or effort != required_effort:
+            return state, (
+                _block_tool(
+                    f"Spawn the selected lead as {required_model} at {required_effort} effort, then retry."
+                ),
+            )
+        if not (recorded.get("size") and recorded.get("complexity")):
+            state, actions = _accept_assessment(state, source, provider, values, assessment)
+    elif role in {"worker", "consultant"} and not state.active_run.lead_identity:
+        return state, (_block_tool(f"Register the selected lead before spawning a Symphony {role}."),)
+    if role == "consultant" and _decision_marker(values) is None:
+        return state, (_block_tool("Add SYMPHONY_DECISION JSON with decision-local size and complexity, then retry."),)
+
+    objective = _tool_objective(values)
+    state = _queue_pending_delegation(state, role, objective, model, effort)
+    return state, actions
+
+
+def _accept_assessment(
+    state: ProjectState,
+    source: Event,
+    provider: str,
+    values: object,
+    assessment: Assessment,
+) -> tuple[ProjectState, tuple[Action, ...]]:
+    route = route_for(assessment)
     route_data = {
         "lead_tier": route.lead_tier,
         "lead_effort": route.lead_effort,
@@ -295,23 +519,18 @@ def _register_assessment(
         "consultation": route.consultation,
         "independent_review": route.independent_review,
     }
-    snapshot = next((item for item in reversed(state.capabilities) if item.provider == provider), None)
-    if snapshot:
-        resolved = resolve_tier(route, snapshot)
-        route_data.update(
-            {
-                "lead_model": resolved.lead_model,
-                "lead_effort": resolved.lead_effort,
-                "degraded": resolved.degraded,
-            }
-        )
-    elif isinstance(values, dict):
-        if values.get("model"):
-            route_data["lead_model"] = str(values["model"])
-        if values.get("reasoning_effort") or values.get("model_reasoning_effort"):
-            route_data["lead_effort"] = str(
-                values.get("reasoning_effort") or values.get("model_reasoning_effort")
-            )
+    snapshot = next(
+        (item for item in reversed(state.capabilities) if item.provider == provider),
+        fallback_snapshot(provider),
+    )
+    resolved = resolve_tier(route, snapshot)
+    route_data.update(
+        {
+            "lead_model": resolved.lead_model,
+            "lead_effort": resolved.lead_effort,
+            "degraded": resolved.degraded,
+        }
+    )
     accepted = {
         "size": assessment.size,
         "complexity": assessment.complexity,
@@ -321,6 +540,241 @@ def _register_assessment(
         "route": route_data,
     }
     return reduce(state, _derived(source, "assessment_accepted", accepted, "assessment"))
+
+
+def _route_marker(values: object) -> Assessment | None:
+    return _assessment_from_marker(values, "SYMPHONY_ROUTE:")
+
+
+def _assessment_marker(values: object) -> Assessment | None:
+    return _assessment_from_marker(values, "SYMPHONY_ASSESSMENT:")
+
+
+def _assessment_from_marker(values: object, marker: str) -> Assessment | None:
+    line = _marker_value(values, marker)
+    if not line:
+        return None
+    try:
+        raw = json.loads(line)
+        assessment = Assessment(
+            str(raw["size"]),
+            str(raw["complexity"]),
+            str(raw.get("risk", "normal")),
+            str(raw.get("rationale", "")),
+            str(raw.get("topology", "")),
+        )
+        route_for(assessment)
+        return assessment
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _decision_marker(values: object) -> Mapping[str, object] | None:
+    decisions = _decision_markers(values)
+    return decisions[0] if decisions else None
+
+
+def _decision_markers(values: object) -> tuple[Mapping[str, object], ...]:
+    texts = [str(values)]
+    if isinstance(values, dict):
+        texts = [str(value) for value in values.values() if isinstance(value, str)]
+    marker = "SYMPHONY_DECISION:"
+    lines = [
+        item.strip()[len(marker) :].strip()
+        for text in texts
+        for item in text.splitlines()
+        if item.strip().startswith(marker)
+    ]
+    decisions = []
+    for line in lines:
+        try:
+            raw = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            return ()
+        if not isinstance(raw, dict):
+            return ()
+        if raw.get("size") not in {"small", "medium", "large"}:
+            return ()
+        if raw.get("complexity") not in {"simple", "mixed", "complex"}:
+            return ()
+        decisions.append(raw)
+    return tuple(decisions)
+
+
+def _marker_value(values: object, marker: str) -> str:
+    texts = [str(values)]
+    if isinstance(values, dict):
+        texts = [str(value) for value in values.values() if isinstance(value, str)]
+    return next(
+        (
+            item.strip()[len(marker) :].strip()
+            for text in texts
+            for item in text.splitlines()
+            if item.strip().startswith(marker)
+        ),
+        "",
+    )
+
+
+def _requested_model_effort(values: object, provider: str, role: str) -> tuple[str, str]:
+    if not isinstance(values, dict):
+        return "", ""
+    if provider == "claude":
+        return _agent_label_model_effort(str(values.get("subagent_type") or ""), role)
+    model = str(values.get("model") or "").strip()
+    effort = str(
+        values.get("reasoning_effort")
+        or values.get("model_reasoning_effort")
+        or values.get("effort")
+        or ""
+    ).strip()
+    return model, effort
+
+
+def _agent_label_model_effort(label: str, role: str) -> tuple[str, str]:
+    agent_type = label.split(":")[-1]
+    prefix = f"symphony-{role}-"
+    if not agent_type.startswith(prefix):
+        return "", ""
+    setting = agent_type[len(prefix) :]
+    model, separator, effort = setting.rpartition("-")
+    return (
+        (model, effort)
+        if separator and effort in {"low", "medium", "high", "xhigh", "max"}
+        else ("", "")
+    )
+
+
+def _tool_objective(values: object) -> str:
+    if not isinstance(values, dict):
+        return ""
+    text = str(values.get("message") or values.get("prompt") or values.get("task") or "")
+    return "\n".join(
+        line for line in text.splitlines() if not line.strip().startswith("SYMPHONY_")
+    ).strip()
+
+
+def _block_tool(reason: str) -> Action:
+    return Action("block_tool", {"reason": reason})
+
+
+def _queue_pending_delegation(
+    state: ProjectState,
+    role: str,
+    objective: str,
+    model: str,
+    effort: str,
+) -> ProjectState:
+    if not state.active_run:
+        return state
+    assessment = dict(state.active_run.assessment)
+    pending = list(assessment.get("_pending_delegations", ()))
+    pending.append(
+        {
+            "role": role,
+            "objective": objective,
+            "model": model,
+            "effort": effort,
+        }
+    )
+    # ponytail: bound unmatched host events; add ID correlation only if a provider exposes it.
+    assessment["_pending_delegations"] = pending[-32:]
+    return replace(state, active_run=replace(state.active_run, assessment=assessment))
+
+
+def _consume_pending_delegation(
+    state: ProjectState,
+    payload: Mapping[str, object],
+) -> tuple[ProjectState, Mapping[str, object]]:
+    if not state.active_run:
+        return state, {}
+    assessment = dict(state.active_run.assessment)
+    pending = list(assessment.get("_pending_delegations", ()))
+    if not pending:
+        return state, {}
+    observed_role = _observed_role(payload)
+    observed_model, observed_effort = _agent_label_model_effort(
+        str(payload.get("agent_type") or ""), observed_role
+    )
+    matching = [
+        index
+        for index, item in enumerate(pending)
+        if isinstance(item, Mapping)
+        and item.get("role") == observed_role
+        and (
+            not observed_model
+            or (
+                item.get("model") == observed_model
+                and item.get("effort") == observed_effort
+            )
+        )
+    ]
+    if matching:
+        item = pending.pop(matching[0])
+    elif len(pending) == 1 and not observed_role:
+        item = pending.pop(0)
+    else:
+        return state, {}
+    if pending:
+        assessment["_pending_delegations"] = pending
+    else:
+        assessment.pop("_pending_delegations", None)
+    state = replace(state, active_run=replace(state.active_run, assessment=assessment))
+    return state, item if isinstance(item, Mapping) else {}
+
+
+def _set_invalid_consultant(
+    state: ProjectState, identity: str, invalid: bool
+) -> ProjectState:
+    if not state.active_run:
+        return state
+    assessment = dict(state.active_run.assessment)
+    identities = set(map(str, assessment.get("_invalid_consultants", ())))
+    if invalid:
+        identities.add(identity)
+    else:
+        identities.discard(identity)
+    if identities:
+        assessment["_invalid_consultants"] = sorted(identities)
+    else:
+        assessment.pop("_invalid_consultants", None)
+    return replace(state, active_run=replace(state.active_run, assessment=assessment))
+
+
+def _defer_parent_actions(
+    state: ProjectState, actions: tuple[Action, ...]
+) -> ProjectState:
+    if not state.active_run:
+        return state
+    visible = [
+        {"kind": action.kind, "payload": dict(action.payload)}
+        for action in actions
+        if action.kind in {"inject_context", "replace_lead", "route_run"}
+    ]
+    if not visible:
+        return state
+    assessment = dict(state.active_run.assessment)
+    pending = list(assessment.get("_pending_parent_actions", ()))
+    assessment["_pending_parent_actions"] = (pending + visible)[-16:]
+    return replace(state, active_run=replace(state.active_run, assessment=assessment))
+
+
+def _consume_parent_actions(
+    state: ProjectState,
+) -> tuple[ProjectState, tuple[Action, ...]]:
+    if not state.active_run:
+        return state, ()
+    assessment = dict(state.active_run.assessment)
+    pending = assessment.pop("_pending_parent_actions", ())
+    actions = tuple(
+        Action(str(item.get("kind") or ""), dict(item.get("payload") or {}))
+        for item in pending
+        if isinstance(item, Mapping) and item.get("kind")
+    )
+    return (
+        replace(state, active_run=replace(state.active_run, assessment=assessment)),
+        actions,
+    )
 
 
 def _prompt_stop_actions(actions: tuple[Action, ...]) -> tuple[Action, ...]:
@@ -342,7 +796,7 @@ def _render_actions(
 ) -> tuple[Action, ...]:
     rendered: list[Action] = []
     for action in actions:
-        if action.kind in {"inject_context", "block_stop"}:
+        if action.kind in {"inject_context", "block_stop", "block_tool"}:
             rendered.append(action)
         elif action.kind == "project_enabled":
             rendered.append(Action("inject_context", {"text": "Symphony is enabled for this project; hooks are guarded."}))
@@ -350,7 +804,7 @@ def _render_actions(
             rendered.append(Action("inject_context", {"text": "Symphony is disabled for future tasks in this project."}))
         elif action.kind == "request_assessment":
             task = state.active_run.task if state.active_run else "the task"
-            rendered.append(Action("inject_context", {"text": _assessment_guidance(task)}))
+            rendered.append(Action("inject_context", {"text": _assessment_guidance(task, provider)}))
         elif action.kind == "execute_bypass":
             rendered.append(
                 Action(
@@ -372,14 +826,25 @@ def _render_actions(
     return tuple(rendered)
 
 
-def _assessment_guidance(task: str) -> str:
+def _assessment_guidance(task: str, provider: str = "") -> str:
+    codex = (
+        "On Codex, use `fork_turns=\"none\"` for assessor and lead, name them "
+        "`symphony_<role>_<model>_<effort>`, and require the assessor's final response to contain one exact "
+        "`SYMPHONY_ASSESSMENT: {\"size\":\"...\",\"complexity\":\"...\",\"risk\":\"...\","
+        "\"rationale\":\"...\",\"topology\":\"...\"}` line. "
+        if provider == "codex"
+        else ""
+    )
     return (
-        "Symphony owns execution topology. Keep the root thin. Assess this bounded task with a strongest/high "
-        "assessor, then select the lead mechanically from the nine-cell matrix; the assessor must not become the "
-        "lead. Before spawning that lead, include one exact line in its task: "
+        "Symphony owns execution topology. Keep the root thin. Spawn a strong/high assessor with explicit model "
+        "and effort and put `SYMPHONY_ROLE: assessor` on its own line. Then select the lead mechanically from the "
+        "nine-cell matrix; the assessor must not become the lead. Spawn the lead with explicit model and effort, "
+        "put `SYMPHONY_ROLE: lead` on its own line, and include one exact line in its task: "
         "SYMPHONY_ROUTE: {\"size\":\"small|medium|large\",\"complexity\":\"simple|mixed|complex\","
         "\"risk\":\"normal|high\",\"rationale\":\"...\",\"topology\":\"...\"}. "
-        f"Task: {task}"
+        "Every later worker or consultant spawn needs its matching SYMPHONY_ROLE line and explicit model/effort; "
+        "consultants also need SYMPHONY_DECISION JSON with decision-local size and complexity. "
+        f"{codex}Task: {task}"
     )
 
 

@@ -118,7 +118,13 @@ def _validate_package(root: Path, provider: str) -> dict[str, Any]:
     return {"version": codex_version, "config": config, "commands": commands}
 
 
-def _payload(provider: str, event: str, project: Path, session: str) -> dict[str, Any]:
+def _payload(
+    provider: str,
+    event: str,
+    project: Path,
+    session: str,
+    agent_role: str = "lead",
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "session_id": session,
         "cwd": str(project),
@@ -134,9 +140,25 @@ def _payload(provider: str, event: str, project: Path, session: str) -> dict[str
             else "SYMPHONY_CONTROL: start\nARGUMENTS: exercise the package lifecycle"
         )
     elif event in ("SubagentStart", "SubagentStop"):
-        payload.update({"agent_id": "fake-lead", "agent_type": "lead"})
+        effort = "high" if agent_role == "assessor" else "medium"
+        model = (
+            "gpt-6-astra" if agent_role == "assessor" else "gpt-5.6-sol"
+        ) if provider == "codex" else ("opus" if agent_role in {"assessor", "lead"} else "sonnet")
+        payload.update(
+            {
+                "agent_id": f"fake-{agent_role}",
+                "agent_type": f"symphony_{agent_role}_{model.replace('-', '_').replace('.', '_')}_{effort}",
+                "model": model,
+                "model_reasoning_effort": effort,
+            }
+        )
         if event == "SubagentStop":
             payload["status"] = "completed"
+            payload["last_assistant_message"] = (
+                'SYMPHONY_ASSESSMENT: {"size":"small","complexity":"simple","risk":"normal","rationale":"package smoke","topology":"direct"}'
+                if agent_role == "assessor"
+                else "done"
+            )
     elif event == "Stop":
         payload.update({"stop_hook_active": False, "last_assistant_message": "done"})
     return payload
@@ -149,6 +171,7 @@ def _run_event(
     project: Path,
     state_dir: Path,
     session: str,
+    agent_role: str = "lead",
 ) -> dict[str, Any] | None:
     config = _hook_config(root, provider)
     argv = _command_argv(_event_command(config, event), root, provider)
@@ -166,7 +189,7 @@ def _run_event(
     )
     completed = subprocess.run(
         argv,
-        input=json.dumps(_payload(provider, event, project, session)),
+        input=json.dumps(_payload(provider, event, project, session, agent_role)),
         capture_output=True,
         text=True,
         env=env,
@@ -270,8 +293,12 @@ def _exercise(
         "events": events,
     }
 
-    def send(event: str, session: str = "fake-session") -> dict[str, Any] | None:
-        output = _run_event(root, provider, event, project, state_dir, session)
+    def send(
+        event: str,
+        session: str = "fake-session",
+        agent_role: str = "lead",
+    ) -> dict[str, Any] | None:
+        output = _run_event(root, provider, event, project, state_dir, session, agent_role)
         events.append(event)
         if event == "UserPromptSubmit":
             documents = _state_documents(state_dir)
@@ -295,6 +322,8 @@ def _exercise(
         send("UserPromptSubmit")
         if not any(_has_active_run(document) for document in _state_documents(state_dir)):
             raise SmokeFailure("managed prompt did not persist an active run")
+        send("SubagentStart", agent_role="assessor")
+        send("SubagentStop", agent_role="assessor")
         send("SubagentStart")
         if not _blocks_stop(send("Stop")):
             raise SmokeFailure("Stop was not blocked while a tracked child was active")
