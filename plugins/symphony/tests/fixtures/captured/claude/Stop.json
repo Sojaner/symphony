@@ -1,0 +1,13 @@
+{
+  "background_tasks": [],
+  "cwd": "/captured/workspace/project",
+  "hook_event_name": "Stop",
+  "last_assistant_message": "ok",
+  "permission_mode": "default",
+  "prompt_id": "captured-prompt",
+  "scratchpad_dir": "/captured/workspace/captured-uuid/scratchpad",
+  "session_crons": [],
+  "session_id": "captured-session",
+  "stop_hook_active": false,
+  "transcript_path": "/captured/home/projects/-captured-workspace/captured-uuid.jsonl"
+}

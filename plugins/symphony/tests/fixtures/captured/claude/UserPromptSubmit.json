@@ -1,0 +1,10 @@
+{
+  "cwd": "/captured/workspace/project",
+  "hook_event_name": "UserPromptSubmit",
+  "permission_mode": "default",
+  "prompt": "reply with the single word ok",
+  "prompt_id": "captured-prompt",
+  "scratchpad_dir": "/captured/workspace/captured-uuid/scratchpad",
+  "session_id": "captured-session",
+  "transcript_path": "/captured/home/projects/-captured-workspace/captured-uuid.jsonl"
+}

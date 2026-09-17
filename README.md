@@ -143,7 +143,9 @@ python3 plugins/symphony/scripts/package_smoke.py --provider claude --candidate 
 git diff --check
 ```
 
-The package smoke supports `activation`, `managed-run`, `unmarked-spawn`, `interrupt-resume`, and `upgrade`. It installs the candidate in an isolated fake-provider home, executes only materialized hook paths, and emits one JSON result.
+The package smoke supports `activation`, `managed-run`, `unmarked-spawn`, `interrupt-resume`, and `upgrade`.
+
+`scripts/capture_fixtures.py --provider claude` records real hook payloads from an installed session into `tests/fixtures/captured/`, sanitising paths and identifiers first. The conformance test holds the runtime to those shapes and lists the events nobody has captured yet, so an unobserved payload is never quietly relied upon. It installs the candidate in an isolated fake-provider home, executes only materialized hook paths, and emits one JSON result.
 
 ## References
 

@@ -1,0 +1,8 @@
+{
+  "cwd": "/captured/workspace/project",
+  "hook_event_name": "SessionStart",
+  "scratchpad_dir": "/captured/workspace/captured-uuid/scratchpad",
+  "session_id": "captured-session",
+  "source": "startup",
+  "transcript_path": "/captured/home/projects/-captured-workspace/captured-uuid.jsonl"
+}

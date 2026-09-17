@@ -116,5 +116,7 @@ Not started. Depends on wave 1.
 - [x] Weekly scheduled workflow: probe entitlements, derive profiles, existence-check every model in the new matrix, regenerate agent files, run the suite and smokes, then bump and release. Fail loudly on any verification that cannot run; open or update a tracking issue and send a Telegram message via the Bot API using `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. (Q11, Q13, Q21, Q25)
   - The plan previously recorded this as opening a pull request, which contradicted the answer given to Q11. Corrected to release.
   - Tier assignment stays curated: the refresh substitutes a model only when the provider stops offering it, and walks down the rank so a substitution never quietly raises cost.
-- [ ] Replace invented fixtures with payloads captured from real installed sessions on both hosts. (Q26)
+- [x] Capture payloads from real installed sessions. (Q26)
+  - Claude `SessionStart`, `UserPromptSubmit` and `Stop` are captured and committed. The capture confirms `stop_hook_active` is real, that no payload carries a session model, and that `SessionStart` lists no live agents, which is what the session-based reconciliation design rests on.
+  - Not captured: the spawn events on either host, and every Codex event. Codex authenticates from a credential inside `CODEX_HOME`, so an isolated capture has no login and a non-isolated one would install a hook into the maintainer's own sessions. The conformance test lists these gaps instead of assuming shapes.
 - [ ] Bump to `1.1.0` and release.
