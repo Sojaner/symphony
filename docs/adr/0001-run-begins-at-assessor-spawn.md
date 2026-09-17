@@ -1,6 +1,6 @@
 # A run begins at assessor spawn, not at the prompt
 
-Symphony 1.0.0 opened a run for every non-control prompt in an enabled project, before any agent existed. Because a run with no lead has no outcome, the Stop hook blocked completion forever, and nothing read the host's already-active flag, so the session could only be freed by a force-stop control the block message never named. From 1.0.1 a run begins when the assessor is actually spawned, and a run with zero delegations never blocks Stop.
+Symphony 1.0.0 opened a run for every non-control prompt in an enabled project, before any agent existed. Because a run with no lead has no outcome, the Stop hook blocked completion forever, and nothing read the host's already-active flag, so the session could only be freed by a force-stop control the block message never named. From 1.1.0 a run begins when the assessor is actually spawned, and a run with zero delegations never blocks Stop.
 
 ## Consequences
 
