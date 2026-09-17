@@ -1,0 +1,121 @@
+name: Capability refresh
+
+# Model lineups change over months, not days, so weekly is ample and keeps the
+# token cost of verification trivial. A scheduled workflow only runs from the
+# default branch, so this stays inert until it is merged.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install provider CLIs
+        run: |
+          npm install -g @openai/codex
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Require the credentials this gate depends on
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # A verification that cannot run is the failure this job exists to
+          # surface. Skipping quietly is how a map rots for six weeks unnoticed.
+          missing=""
+          [ -n "$OPENAI_API_KEY" ] || missing="$missing OPENAI_API_KEY"
+          [ -n "$ANTHROPIC_API_KEY" ] || missing="$missing ANTHROPIC_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::cannot verify the capability map, missing:$missing"
+            exit 1
+          fi
+
+      - name: Read the provider roster
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          mkdir -p "$CODEX_HOME"
+          printenv OPENAI_API_KEY | codex login --with-api-key
+          # Any session populates the roster cache this refresh reads.
+          codex exec --skip-git-repo-check --model gpt-5.6-luna 'reply with ok' >/dev/null
+          echo "CODEX_HOME=$CODEX_HOME" >> "$GITHUB_ENV"
+
+      - name: Update the profiles from the roster
+        id: probe
+        run: python3 plugins/symphony/scripts/refresh_profiles.py --probe
+
+      - name: Regenerate the packaged agents
+        run: python3 plugins/symphony/scripts/generate_agents.py
+
+      - name: Verify every shipped model against its provider
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          export CLAUDE_CONFIG_DIR="$RUNNER_TEMP/claude-home"
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          python3 plugins/symphony/scripts/refresh_profiles.py --verify
+
+      - name: Run the deterministic suite against the new map
+        run: |
+          python3 -m unittest discover -s plugins/symphony/tests
+          python3 plugins/symphony/scripts/generate_agents.py --check
+          for provider in codex claude; do
+            for scenario in activation managed-run unmarked-spawn interrupt-resume upgrade; do
+              python3 plugins/symphony/scripts/package_smoke.py \
+                --provider "$provider" --candidate . --scenario "$scenario"
+            done
+          done
+
+      # A manual dispatch on a feature branch must not cut a release from
+      # unmerged code, so publication is restricted to the default branch.
+      - name: Release the refreshed map
+        if: steps.probe.outputs.changed == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          next=$(python3 .github/scripts/bump_version.py)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: refresh capability profiles to $next"
+          # A commit pushed with the workflow token does not start another
+          # workflow run, so this job is the only verification the released
+          # commit gets. That is why the full suite and smokes run above.
+          git push
+          gh release create "v$next" --target "$(git rev-parse HEAD)" --title "v$next" \
+            --notes "Automated capability map refresh. Every model was verified against its provider before release."
+
+      - name: Report a failure the maintainer has to see
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          text="Symphony capability refresh failed. The shipped model map may be going stale. $url"
+          # One durable thread, updated rather than duplicated.
+          existing=$(gh issue list --label capability-refresh --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$text"
+          else
+            gh label create capability-refresh --description "Automated capability map maintenance" --color B60205 2>/dev/null || true
+            gh issue create --title "Capability refresh is failing" --label capability-refresh --body "$text"
+          fi
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -sS -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+              --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
+              --data-urlencode "text=$text" >/dev/null
+          else
+            echo "::warning::no Telegram credentials configured, issue only"
+          fi

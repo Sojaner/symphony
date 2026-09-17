@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Keep the shipped capability profiles current without a maintainer in the loop.
+
+Neither host lets a hook discover models, so the tier-to-model map is a build
+artifact. This keeps that artifact honest: it reads each provider's own roster,
+rewrites the profiles, and refuses to ship a map naming a model the provider
+will not accept.
+
+    refresh_profiles.py --probe    # rewrite profiles.json from the local roster
+    refresh_profiles.py --verify   # reject any model the provider rejects
+
+Codex is the only provider whose identifiers churn. Claude's tiers are aliases
+that outlive model generations, so nothing here rewrites them.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+PROFILES = ROOT / "profiles.json"
+
+# Ordered weakest to strongest. A roster entry not named here is not routed to:
+# a new model is a deliberate decision, not something a cron job makes.
+CODEX_RANK = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
+
+
+def codex_roster(home: Path) -> list[dict]:
+    """The models this account may actually select, newest cache wins."""
+    try:
+        cache = json.loads((home / "models_cache.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"::error::no readable Codex model roster at {home}: {error}")
+    return [
+        item
+        for item in cache.get("models", ())
+        if isinstance(item, dict) and item.get("visibility") == "list" and item.get("slug")
+    ]
+
+
+def efforts_of(entry: dict) -> list[str]:
+    levels = entry.get("supported_reasoning_levels") or ()
+    found = [
+        str(level.get("effort"))
+        for level in levels
+        if isinstance(level, dict) and level.get("effort")
+    ]
+    return found or ["low", "medium", "high"]
+
+
+def codex_profiles(roster: list[dict], current: list[dict]) -> list[dict]:
+    """Keep the curated tier assignments, substituting only what vanished.
+
+    Which model belongs at which tier is a cost-versus-capability judgement, so
+    this never reassigns a tier whose model the account can still see. It reacts
+    to one provider fact only: a model the profiles name is no longer offered.
+    Substitution walks down the rank first, because quietly promoting a tier
+    would raise what the user pays without anyone deciding to.
+    """
+    available = {entry["slug"]: entry for entry in roster}
+    ranked = [slug for slug in CODEX_RANK if slug in available]
+    if not ranked:
+        raise SystemExit(
+            f"::error::Codex roster names none of the models Symphony knows: {sorted(available)}"
+        )
+
+    def substitute(preferred: str) -> str:
+        if preferred in available:
+            return preferred
+        if preferred not in CODEX_RANK:
+            return ranked[-1]
+        position = CODEX_RANK.index(preferred)
+        weaker = [slug for slug in ranked if CODEX_RANK.index(slug) < position]
+        return weaker[-1] if weaker else ranked[0]
+
+    profiles = []
+    for profile in current:
+        tiers = {tier: substitute(model) for tier, model in profile["tiers"].items()}
+        resolved = {
+            "id": profile["id"],
+            "tiers": tiers,
+            "efforts": {
+                model: efforts_of(available[model])
+                for model in dict.fromkeys(tiers.values())
+                if model in available
+            },
+        }
+        if profile.get("requires_all") is not None:
+            resolved["requires_all"] = sorted(set(tiers.values())) if profile["requires_all"] else []
+        if profile.get("requires_any") is not None:
+            resolved["requires_any"] = list(profile["requires_any"])
+        profiles.append(resolved)
+    return profiles
+
+
+def probe(home: Path) -> bool:
+    document = json.loads(PROFILES.read_text(encoding="utf-8"))
+    current = document["providers"]["codex"]["profiles"]
+    updated = codex_profiles(codex_roster(home), current)
+    if document["providers"]["codex"]["profiles"] == updated:
+        print("profiles already match the provider roster")
+        return False
+    document["providers"]["codex"]["profiles"] = updated
+    document["generated_at"] = os.environ.get("REFRESH_DATE") or _today()
+    PROFILES.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    print("profiles updated from the provider roster")
+    return True
+
+
+def _today() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).date().isoformat()
+
+
+def verify() -> int:
+    """Reject any model in the shipped map that its provider will not accept."""
+    document = json.loads(PROFILES.read_text(encoding="utf-8"))
+    failures: list[str] = []
+    for provider, block in document["providers"].items():
+        models = sorted(
+            {model for profile in block["profiles"] for model in profile["tiers"].values()}
+        )
+        for model in models:
+            accepted, detail = _accepts(provider, model)
+            status = "ok" if accepted else "REJECTED"
+            print(f"{provider} {model}: {status} {detail}".rstrip())
+            if not accepted:
+                failures.append(f"{provider} {model}: {detail}")
+    if failures:
+        for failure in failures:
+            print(f"::error::shipped profile names a model the provider rejects: {failure}")
+        return 1
+    print(f"every model in the shipped profiles is accepted by its provider")
+    return 0
+
+
+def _accepts(provider: str, model: str) -> tuple[bool, str]:
+    """One minimal call whose only question is whether the name resolves."""
+    if provider == "codex":
+        argv = ["codex", "exec", "--model", model, "--skip-git-repo-check", "reply with ok"]
+    else:
+        argv = ["claude", "--print", "--model", model, "--output-format", "text", "reply with ok"]
+    try:
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError) as error:
+        return False, f"could not run {argv[0]}: {error}"
+    if completed.returncode == 0:
+        return True, ""
+    detail = (completed.stderr or completed.stdout).strip().splitlines()
+    return False, detail[-1][:200] if detail else f"exit {completed.returncode}"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--probe", action="store_true", help="rewrite profiles from the roster")
+    parser.add_argument("--verify", action="store_true", help="check every shipped model resolves")
+    parser.add_argument(
+        "--codex-home",
+        type=Path,
+        default=Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
+    )
+    args = parser.parse_args()
+    if args.probe:
+        changed = probe(args.codex_home)
+        output = os.environ.get("GITHUB_OUTPUT")
+        if output:
+            Path(output).open("a").write(f"changed={'true' if changed else 'false'}\n")
+    if args.verify:
+        return verify()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

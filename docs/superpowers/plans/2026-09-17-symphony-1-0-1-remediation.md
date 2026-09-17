@@ -2,7 +2,7 @@
 
 **Goal:** Close the validated livelock and persistence defects found in the 1.0.0 review, then replace the unbuildable runtime capability discovery with CI-maintained entitlement profiles.
 
-**Status:** Plan agreed 2026-09-17. Wave 1 complete (commits A and B). Wave 2 not started.
+**Status:** Plan agreed 2026-09-17. Wave 1 complete. Wave 2: profiles, clamp gate and refresh workflow done; captured fixtures and the 1.1.0 bump remain.
 
 **Branch:** `claude/code-review-testing-8c2fa0`
 
@@ -25,7 +25,7 @@ These were decided in a grilling session and must not be silently revisited. Eac
 - Model currency is owned by a weekly CI workflow, not the maintainer and not runtime discovery. (Q5, Q13)
 - The nine-cell size/complexity grid stays in Python; only the tier-to-model profiles are machine-edited JSON. (Q20)
 - Claude agent files are generated from the profiles. (Q10, Q14)
-- CI verifies every model in a new matrix with an existence check, not a full task, and fails loudly when it cannot verify. (Q11, Q25)
+- CI verifies every model in a new matrix with an existence check, not a full task, then releases autonomously; it fails loudly when it cannot verify. (Q11 answered (a), release rather than a pull request; Q25)
 - Failure notification is a direct Telegram Bot API call plus a tracking issue. Telex is MCP-only and stays out of CI. (Q13, Q21)
 - Runtime probes entitlement once per provider session with a two-second timeout; it never reads credential files. (Q16, Q18)
 - A tier clamp is gated behind a `proceed` control accepted for the session; an effort clamp discloses and proceeds. (Q15, Q17, Q23, Q24)
@@ -108,11 +108,13 @@ No version bump, so no release fires.
 
 Not started. Depends on wave 1.
 
-- [ ] Add `plugins/symphony/profiles.json`: per-provider, per-entitlement tier-to-model-and-effort profiles. The nine-cell grid stays in `routing.py`. (Q20)
-- [ ] Generator emits `agents/*.md` from the profiles; CI asserts every Claude map token has a matching agent file. (Q10, Q14)
-- [ ] Runtime profile selection: Codex reads `~/.codex/models_cache.json`; Claude shells out to `claude auth status`. Once per provider session, two-second timeout, stored beside the activation record. Never read `auth.json` or any credential file. (Q16, Q18)
-- [ ] Clamp policy: route to the best entitled option. Tier clamp gates behind `proceed`; effort clamp discloses and proceeds. No probe result means lowest entitlement, disclosed. (Q15, Q24)
-- [ ] Add the `proceed` control: `commands/proceed.md`, the `CONTROLS` set, both help texts, and a session-scoped acceptance flag. The block message states exactly what to type. (Q17, Q23)
-- [ ] Weekly scheduled workflow: probe entitlements, derive profiles, existence-check every model in the new matrix, regenerate agent files, open a PR. Fail loudly on any verification that cannot run; open or update a tracking issue and send a Telegram message via the Bot API using `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. (Q11, Q13, Q21, Q25)
+- [x] Add `plugins/symphony/profiles.json`: per-provider, per-entitlement tier-to-model-and-effort profiles. The nine-cell grid stays in `routing.py`. (Q20)
+- [x] Generator emits `agents/*.md` from the profiles; CI asserts every Claude map token has a matching agent file. (Q10, Q14)
+- [x] Runtime profile selection: Codex reads `~/.codex/models_cache.json`; Claude shells out to `claude auth status`. Once per provider session, two-second timeout, stored beside the activation record. Never read `auth.json` or any credential file. (Q16, Q18)
+- [x] Clamp policy: route to the best entitled option. Tier clamp gates behind `proceed`; effort clamp discloses and proceeds. No probe result means lowest entitlement, disclosed. (Q15, Q24)
+- [x] Add the `proceed` control: `commands/proceed.md`, the `CONTROLS` set, both help texts, and a session-scoped acceptance flag. The block message states exactly what to type. (Q17, Q23)
+- [x] Weekly scheduled workflow: probe entitlements, derive profiles, existence-check every model in the new matrix, regenerate agent files, run the suite and smokes, then bump and release. Fail loudly on any verification that cannot run; open or update a tracking issue and send a Telegram message via the Bot API using `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. (Q11, Q13, Q21, Q25)
+  - The plan previously recorded this as opening a pull request, which contradicted the answer given to Q11. Corrected to release.
+  - Tier assignment stays curated: the refresh substitutes a model only when the provider stops offering it, and walks down the rank so a substitution never quietly raises cost.
 - [ ] Replace invented fixtures with payloads captured from real installed sessions on both hosts. (Q26)
 - [ ] Bump to `1.1.0` and release.
