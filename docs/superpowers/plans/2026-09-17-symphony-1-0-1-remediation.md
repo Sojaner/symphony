@@ -120,3 +120,80 @@ Not started. Depends on wave 1.
   - Claude `SessionStart`, `UserPromptSubmit` and `Stop` are captured and committed. The capture confirms `stop_hook_active` is real, that no payload carries a session model, and that `SessionStart` lists no live agents, which is what the session-based reconciliation design rests on.
   - Not captured: the spawn events on either host, and every Codex event. Codex authenticates from a credential inside `CODEX_HOME`, so an isolated capture has no login and a non-isolated one would install a hook into the maintainer's own sessions. The conformance test lists these gaps instead of assuming shapes.
 - [ ] Bump to `1.1.0` and release.
+
+---
+
+## Wave 3 — version locking, settled by grilling round Q1–Q10
+
+The 1.0.1 bump is superseded: Q10 chose a single release. Both manifests go to
+`1.1.0` at the end of this wave and 1.0.1 never becomes a tag, because nothing
+was ever released at that version and the user base is small enough that the
+gap costs nobody anything.
+
+### Facts that forced these decisions
+
+Established against the shipped CLI schemas, not documentation.
+
+- Floating over the latest release tag does not exist in either host. A
+  marketplace entry can pin a branch or tag via `ref`, a commit via `sha`, or a
+  semver range only on an `npm` source.
+- The entry's `version` is ignored at install for every source type; the plugin
+  manifest wins. It is still load-bearing, because `claude plugin tag` refuses
+  to tag when the two disagree.
+- Auto-update for a third-party marketplace defaults to off on Claude. The
+  maintainer's own Codex install is frozen at 1.0.0 while this tree reads 1.0.1,
+  which is the proof that releases reach nobody on their own.
+
+### Decisions
+
+- [ ] **Q1 (a)+(b) Delivery.** ADR 0002 records plainly that the refresh keeps
+  the *published* map honest and cannot push to installs. Separately, document
+  how a user enables marketplace auto-update if they want releases to land.
+- [ ] **Q2 (c) Pinning.** The marketplace entry keeps its path source and its
+  synced version. No consumer pinning is offered, and the version is kept in
+  sync only so releases can be tagged. Already committed; the open question
+  recorded against wave 1 is now closed as answered.
+- [ ] **Q3 (c) + Q7 (b) Build-time capability loss.** A downgrade still ships.
+  The runtime surfaces it rather than gating, because a vanished model is not
+  fixable by the user and gating on it is an obstacle rather than a choice.
+- [ ] **Q4 (b) Run locking.** A run pins its *tier*, not its model. Every spawn
+  re-resolves the model from the stored tier against the current map. This
+  deletes the permanent-deadlock class where a stored concrete model becomes
+  unselectable and blocks every later lead spawn.
+- [ ] **Q5 (b) Mid-run change.** When re-resolution first changes the answer
+  within a run without weakening it, disclose once. The tier promise is intact,
+  so blocking overstates the problem.
+- [ ] **Q9 Gate only on continuity.** `proceed` is required in exactly one
+  situation: an assessment that is **still standing** now resolves to something
+  weaker than it did when it was accepted. A fresh assessment, or one that has
+  eased on size or complexity, writes a new baseline and never gates, because
+  choosing a weaker model for easier work is not a degradation.
+- [~] **Q6 withdrawn as a consequence of Q9.** The baseline belongs with the
+  assessment, which is already persisted per project, so no new activation
+  state is stored. That also withdraws the persistence-allowlist entry and the
+  amendment to ADR 0003 that Q6 would have required.
+- [ ] **Q8 (a) Existing routes.** Stored routes are left alone. The stored model
+  stops being an enforcement pin and becomes the degradation baseline instead,
+  so nothing is migrated and no open run breaks.
+- [ ] **Q10 (c) Release.** Build everything, merge once, release `1.1.0` only.
+
+### Consequence worth naming
+
+Merging is what makes `capability-refresh.yml` dispatchable: GitHub answers
+`404 workflow not found on the default branch` until it lands there. The
+Telegram credentials themselves are already proven good by a direct send
+through the telex `symphony` bot, so only the workflow wiring stays unproven.
+
+### Work
+
+- [ ] Enforce the tier rather than the stored model at lead spawn. (Q4)
+- [ ] Add the degradation comparison against the standing assessment's route,
+      gating behind `proceed` only when it weakened. (Q9)
+- [ ] Disclose a non-weakening mid-run change once. (Q5)
+- [ ] ADR 0002: record the delivery limit. (Q1a)
+- [ ] Document enabling marketplace auto-update. (Q1b)
+- [ ] Tests for: tier re-resolution, the gate firing on a standing assessment,
+      the gate *not* firing on a fresh or eased assessment, and the one-time
+      disclosure.
+- [ ] Bump both manifests and the marketplace entry to `1.1.0`, verify, merge,
+      release. (Q10, Q2)
