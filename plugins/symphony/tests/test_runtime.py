@@ -1355,6 +1355,57 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(run.status, "recovering")
         self.assertEqual({item.state for item in run.delegations}, {"interrupted"})
 
+    def test_version_reports_the_build_actually_running(self):
+        """Installed and running differ until the host restarts, which is the
+        whole reason to ask."""
+        from plugins.symphony.symphony import PLUGIN_VERSION
+
+        text = self.context(handle(self.payload("/symphony:version", "claude"), self.environ))
+
+        self.assertIn(PLUGIN_VERSION, text)
+        self.assertIn("running", text.lower())
+
+    def test_version_names_the_directory_the_code_was_loaded_from(self):
+        environ = {**self.environ, "SYMPHONY_PLUGIN_ROOT": "/cache/symphony/9.9.9"}
+        text = self.context(handle(self.payload("/symphony:version", "claude"), environ))
+
+        self.assertIn("/cache/symphony/9.9.9", text)
+
+    def test_version_flags_a_newer_build_waiting_for_a_restart(self):
+        """The trap we hit twice: `plugin update` reports a version the open
+        session is not running."""
+        cache = self.root / "cache" / "symphony"
+        (cache / "1.1.1").mkdir(parents=True)
+        (cache / "1.2.0").mkdir()
+        environ = {**self.environ, "SYMPHONY_PLUGIN_ROOT": str(cache / "1.1.1")}
+
+        text = self.context(handle(self.payload("$symphony:symphony version"), environ))
+
+        self.assertIn("1.2.0", text)
+        self.assertIn("restart", text.lower())
+
+    def test_version_orders_builds_numerically_not_alphabetically(self):
+        """0.10.1 is newer than 0.9.0, and a string sort says the opposite."""
+        cache = self.root / "cache" / "symphony"
+        (cache / "0.9.0").mkdir(parents=True)
+        (cache / "0.10.1").mkdir()
+        environ = {**self.environ, "SYMPHONY_PLUGIN_ROOT": str(cache / "0.9.0")}
+
+        text = self.context(handle(self.payload("$symphony:symphony version"), environ))
+
+        self.assertIn("0.10.1", text)
+
+    def test_version_does_not_offer_a_restart_onto_an_older_build(self):
+        """The same comparison in the other direction, where a string sort lies."""
+        cache = self.root / "cache" / "symphony"
+        (cache / "0.9.0").mkdir(parents=True)
+        (cache / "0.10.1").mkdir()
+        environ = {**self.environ, "SYMPHONY_PLUGIN_ROOT": str(cache / "0.10.1")}
+
+        text = self.context(handle(self.payload("$symphony:symphony version"), environ))
+
+        self.assertNotIn("restart", text.lower())
+
     def test_repeated_control_in_one_claude_session_is_not_swallowed(self):
         handle(self.payload("/symphony:enable", "claude"), self.environ)
         handle(self.payload("/symphony:disable", "claude"), self.environ)

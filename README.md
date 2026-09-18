@@ -41,6 +41,7 @@ $symphony:symphony reassess
 $symphony:symphony proceed
 $symphony:symphony stop [--force]
 $symphony:symphony disable
+$symphony:symphony version
 $symphony:symphony help
 ```
 
@@ -56,6 +57,7 @@ Claude Code exposes native slash commands:
 /symphony:proceed
 /symphony:stop [--force]
 /symphony:disable
+/symphony:version
 /symphony:help
 ```
 

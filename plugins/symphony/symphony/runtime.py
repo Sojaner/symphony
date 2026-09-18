@@ -35,6 +35,7 @@ CONTROLS = {
     "start",
     "status",
     "stop",
+    "version",
 }
 ROLES = {"assessor", "consultant", "lead", "worker"}
 HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
@@ -104,7 +105,7 @@ def _transition(
     if source.kind == "user_prompt":
         state, deferred = _consume_parent_actions(state)
         actions += deferred
-        state, prompt_actions = _handle_prompt(state, source, provider)
+        state, prompt_actions = _handle_prompt(state, source, provider, environ)
         actions += prompt_actions
     elif source.kind == "session_heartbeat":
         state, resume_actions = _reconcile_session(state, source, payload)
@@ -302,7 +303,9 @@ def _reconcile_session(
     return state, actions
 
 
-def _handle_prompt(state: ProjectState, source: Event, provider: str) -> tuple[ProjectState, tuple[Action, ...]]:
+def _handle_prompt(
+    state: ProjectState, source: Event, provider: str, environ: Mapping[str, str]
+) -> tuple[ProjectState, tuple[Action, ...]]:
     prompt = str(source.payload.get("prompt") or "").strip()
     control = _parse_control(prompt)
     if control is None:
@@ -313,6 +316,8 @@ def _handle_prompt(state: ProjectState, source: Event, provider: str) -> tuple[P
     name, argument = control
     if name == "help":
         return state, (Action("inject_context", {"text": _help(provider)}),)
+    if name == "version":
+        return state, (Action("inject_context", {"text": _version_text(environ)}),)
     if name == "status":
         return state, (Action("inject_context", {"text": _status(state, False, provider)}),)
     if name == "agents":
@@ -776,6 +781,61 @@ def _prepare_delegation(
 
     state = _queue_pending_delegation(state, role, objective, model, effort)
     return state, actions
+
+
+def _version_text(environ: Mapping[str, str]) -> str:
+    """Which build is executing, and whether a newer one is waiting.
+
+    Installed and running are different questions. The hook command registered
+    at session start already has the plugin root expanded into it, so a session
+    keeps loading the build it started with even after an update writes a newer
+    one alongside.
+    """
+    root = environ.get("SYMPHONY_PLUGIN_ROOT") or str(Path(__file__).resolve().parents[1])
+    text = (
+        f"Symphony {PLUGIN_VERSION} is running this hook, hook schema "
+        f"{HOOK_SCHEMA_VERSION}, loaded from {root}."
+    )
+    waiting = _newer_build_on_disk(root)
+    if waiting:
+        text += (
+            f" Version {waiting} is installed alongside it and will load on restart."
+            " Until then this session keeps the build it started with."
+        )
+    return text
+
+
+def _version_parts(name: str) -> tuple[int, ...] | None:
+    """A three-part version read as numbers, so 0.10.1 outranks 0.9.0."""
+    pieces = name.split(".")
+    if len(pieces) != 3:
+        return None
+    try:
+        return tuple(int(piece) for piece in pieces)
+    except ValueError:
+        return None
+
+
+def _newer_build_on_disk(root: str) -> str:
+    """A build installed beside the running one, which a restart would load.
+
+    Both hosts cache a plugin under a version-named directory, so the sibling
+    names are the installed versions. Any other layout reports nothing, which
+    is why a git checkout stays quiet.
+    """
+    running = _version_parts(Path(root).name)
+    if running is None:
+        return ""
+    try:
+        siblings = [entry.name for entry in Path(root).parent.iterdir() if entry.is_dir()]
+    except OSError:
+        return ""
+    newer = [
+        (parsed, name)
+        for name in siblings
+        if (parsed := _version_parts(name)) is not None and parsed > running
+    ]
+    return max(newer)[1] if newer else ""
 
 
 def _applied_profile(state: ProjectState, provider: str) -> str:
@@ -1413,8 +1473,8 @@ def _native_help(provider: str) -> str:
 
 def _help(provider: str) -> str:
     if provider == "claude":
-        return "Symphony controls: /symphony:enable, /symphony:start, /symphony:bypass, /symphony:disable, /symphony:status, /symphony:agents, /symphony:reassess, /symphony:proceed, /symphony:stop, /symphony:help."
-    return "Symphony controls: $symphony:symphony enable|start|bypass|disable|status|agents|reassess|proceed|stop|help."
+        return "Symphony controls: /symphony:enable, /symphony:start, /symphony:bypass, /symphony:disable, /symphony:status, /symphony:agents, /symphony:reassess, /symphony:proceed, /symphony:stop, /symphony:version, /symphony:help."
+    return "Symphony controls: $symphony:symphony enable|start|bypass|disable|status|agents|reassess|proceed|stop|version|help."
 
 
 def _fault_log(environ: Mapping[str, str]) -> Path:

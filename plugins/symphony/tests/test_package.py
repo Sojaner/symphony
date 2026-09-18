@@ -63,6 +63,27 @@ class PackageContractTests(unittest.TestCase):
 
         self.assertEqual({path.stem for path in (PLUGIN / "commands").glob("*.md")}, CONTROLS)
 
+    def test_every_control_is_documented_where_a_user_would_look(self):
+        """A control nobody can discover may as well not exist.
+
+        Adding one means touching four lists, and nothing checked that they
+        agreed, so the help quietly fell behind the code.
+        """
+        from plugins.symphony.symphony.runtime import CONTROLS, _help
+
+        readme = (PLUGIN.parent.parent / "README.md").read_text(encoding="utf-8")
+        claude_help = (PLUGIN / "commands/help.md").read_text(encoding="utf-8")
+        # assertTrue, not assertIn: a failed assertIn prints the whole README.
+        for name in sorted(CONTROLS):
+            for missing, where in (
+                (f"/symphony:{name}" not in claude_help, "the Claude help command"),
+                (f"/symphony:{name}" not in readme, "the README's Claude list"),
+                (f"$symphony:symphony {name}" not in readme, "the README's Codex list"),
+                (name not in _help("claude"), "the Claude help line"),
+                (name not in _help("codex"), "the Codex help line"),
+            ):
+                self.assertFalse(missing, f"control {name!r} is missing from {where}")
+
     def test_role_contracts_classify_each_actionable_packet(self):
         roles = (PLUGIN / "skills/symphony/references/role-contracts.md").read_text(encoding="utf-8")
         self.assertIn("size", roles)

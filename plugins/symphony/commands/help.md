@@ -13,6 +13,7 @@ description: Show Claude Code commands for Symphony
 - `/symphony:reassess` — reassess subsequent work at the current evidence boundary.
 - `/symphony:proceed` — accept a route your plan clamps to a weaker model, for this session.
 - `/symphony:stop [--force]` — request a safe stop; `--force` acknowledges interruption of active work.
+- `/symphony:version` — show which Symphony build is running this session, and whether a newer one is installed.
 - `/symphony:help` — show this help.
 
 SYMPHONY_CONTROL: help
