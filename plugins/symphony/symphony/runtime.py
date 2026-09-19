@@ -309,7 +309,11 @@ def _handle_prompt(
     prompt = str(source.payload.get("prompt") or "").strip()
     control = _parse_control(prompt)
     if control is None:
-        if not state.enabled:
+        # Enablement decides whether a NEW run opens, never whether a live one
+        # is mentioned. Staying silent during a one-shot run left the root free
+        # to do the work itself, in parallel with the lead it was never told
+        # about, at whatever model the session happened to be set to.
+        if not state.enabled and not state.active_run:
             return state, ()
         return state, (Action("inject_context", {"text": _task_guidance(state, prompt, provider)}),)
 
@@ -1386,11 +1390,25 @@ def _assessment_guidance(task: str, provider: str = "") -> str:
     )
 
 
+def _governance(state: ProjectState) -> str:
+    """Whether the next prompt will be governed, which is what a lead label answers.
+
+    A run started with `start` governs one task. A user who believes the
+    project is enabled cannot tell the difference from the run itself, and
+    every prompt after the first quietly runs at the session's own model.
+    """
+    return "enabled" if state.enabled else "transactional"
+
+
 def _recovery_guidance(state: ProjectState) -> str:
     run = state.active_run
     if not run:
         return "Symphony has no active run."
-    return f"Symphony run {run.run_id} remains active. Reconcile observed agents, preserve ownership, and wait for the lead."
+    lead = f" Lead {run.lead_identity} [{_governance(state)}]." if run.lead_identity else ""
+    return (
+        f"Symphony run {run.run_id} remains active. Reconcile observed agents, preserve "
+        f"ownership, and wait for the lead.{lead}"
+    )
 
 
 def compact_delegations(state: ProjectState, limit: int = 5) -> tuple[Delegation, ...]:
@@ -1443,7 +1461,13 @@ def _status(state: ProjectState, include_history: bool, provider: str = "") -> s
         if model:
             lines.append(f"Lead route: {model}{f'/{effort}' if effort else ''}")
         if state.active_run.lead_identity:
-            lines.append(f"Lead: {state.active_run.lead_identity}")
+            lines.append(f"Lead: {state.active_run.lead_identity} [{_governance(state)}]")
+        if not state.enabled:
+            control = _control_name("enable", provider) if provider else "enable"
+            lines.append(
+                f"This run is transactional: it governs this task only, and the next prompt is "
+                f"ungoverned. Run `{control}` to govern every prompt in this project."
+            )
     # An abandoned run is already archived, so surface it even without history.
     abandoned = next(
         (

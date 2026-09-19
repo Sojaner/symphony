@@ -79,6 +79,88 @@ class PacketCompletenessTests(unittest.TestCase):
         self.assertIn("fix a, b, c, d and e", guidance)
 
 
+class GovernanceLabelTests(unittest.TestCase):
+    """A one-shot run and a governed one look identical until they diverge.
+
+    A user who ran `start` believes the project is enabled, works for hours,
+    and never sees that every prompt after the first was ungoverned.
+    """
+
+    def setUp(self):
+        self.temp = TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.project = root / "project"
+        self.project.mkdir()
+        self.environ = {"SYMPHONY_STATE_DIR": str(root / "state"), "SYMPHONY_PROFILE": "full"}
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def payload(self, prompt):
+        return {"session_id": "s1", "cwd": str(self.project), "hook_event_name": "UserPromptSubmit",
+                "prompt": prompt, "turn_id": "t", "model": "m"}
+
+    def text(self, result):
+        out = json.loads(result.stdout) if result.stdout else {}
+        return out.get("hookSpecificOutput", {}).get("additionalContext", "")
+
+    def open_lead(self):
+        handle({**self.payload(""), "hook_event_name": "SessionStart"}, self.environ)
+        for role, model, effort in (("assessor", "gpt-6-astra", "high"), ("lead", "gpt-5.6-sol", "medium")):
+            body = f"SYMPHONY_ROLE: {role}\n" + (f"SYMPHONY_ROUTE: {MARKER}\n" if role == "lead" else "")
+            handle({**self.payload(""), "hook_event_name": "PreToolUse", "tool_name": "spawn_agent",
+                    "tool_input": {"message": body + "Ship it", "model": model,
+                                   "reasoning_effort": effort}}, self.environ)
+        handle({**self.payload(""), "hook_event_name": "SubagentStart", "agent_id": "lead-1",
+                "agent_type": "symphony_lead_x_medium", "model": "gpt-5.6-sol",
+                "model_reasoning_effort": "medium"}, self.environ)
+
+    def test_a_one_shot_run_labels_its_lead_transactional(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_lead()
+
+        status = self.text(handle(self.payload("$symphony:symphony status"), self.environ))
+
+        self.assertIn("[transactional]", status)
+        self.assertNotIn("[enabled]", status)
+
+    def test_an_enabled_project_labels_its_lead_enabled(self):
+        handle(self.payload("$symphony:symphony enable"), self.environ)
+        self.open_lead()
+
+        status = self.text(handle(self.payload("$symphony:symphony status"), self.environ))
+
+        self.assertIn("[enabled]", status)
+        self.assertNotIn("[transactional]", status)
+
+    def test_a_transactional_run_says_the_next_prompt_is_ungoverned(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_lead()
+
+        status = self.text(handle(self.payload("$symphony:symphony status"), self.environ))
+
+        self.assertIn("ungoverned", status.lower())
+        self.assertIn("enable", status.lower())
+
+    def test_a_live_run_speaks_even_when_the_project_is_not_enabled(self):
+        """Silence here let the root do the work beside a lead it never saw."""
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_lead()
+
+        guidance = self.text(handle(self.payload("keep going on the other thing"), self.environ))
+
+        self.assertTrue(guidance, "a live run produced no guidance at all")
+        self.assertIn("remains active", guidance)
+
+    def test_the_label_reaches_the_guidance_a_live_run_injects(self):
+        handle(self.payload("$symphony:symphony start Ship it"), self.environ)
+        self.open_lead()
+
+        guidance = self.text(handle(self.payload("keep going on the other thing"), self.environ))
+
+        self.assertIn("[transactional]", guidance)
+
+
 class ConcurrentSessionTests(unittest.TestCase):
     def setUp(self):
         self.temp = TemporaryDirectory()
