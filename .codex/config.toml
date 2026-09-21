@@ -1,0 +1,6 @@
+[mcp_servers.telex]
+command = "telex"
+args = ["serve"]
+
+[mcp_servers.telex.env]
+TELEX_BOT = "symphony"
