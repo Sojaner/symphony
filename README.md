@@ -11,7 +11,7 @@ Symphony is a Codex and Claude Code plugin that keeps the root agent thin, selec
 ### Codex
 
 ```bash
-codex plugin marketplace add Sojaner/symphony
+codex plugin marketplace add opennoor/symphony
 codex plugin add symphony@symphony
 ```
 
@@ -20,7 +20,7 @@ Open `/hooks`, review and trust Symphony's hooks, then send another prompt. An i
 ### Claude Code
 
 ```text
-/plugin marketplace add Sojaner/symphony
+/plugin marketplace add opennoor/symphony
 /plugin install symphony@symphony
 /reload-plugins
 ```
@@ -170,3 +170,7 @@ codex plugin marketplace upgrade symphony
 ```
 
 Claude Code can also do this for you at startup. Open `/plugin`, select this marketplace and enable auto-update. Be deliberate about that choice: it lets the map that decides which model your work runs on change between sessions. Symphony will tell you when it notices, and will stop and ask before letting an assessment you already accepted run on something weaker, but the update itself will be silent.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

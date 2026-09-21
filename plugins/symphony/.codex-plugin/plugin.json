@@ -1,9 +1,10 @@
 {
   "name": "symphony",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Capability-aware, recoverable orchestration with a thin root and task-sized leads.",
   "author": {
-    "name": "Sojaner"
+    "name": "OpenNoor",
+    "url": "https://github.com/opennoor"
   },
   "skills": "./skills/",
   "hooks": "./hooks/codex.json",
@@ -11,7 +12,7 @@
     "displayName": "Symphony",
     "shortDescription": "Reliable task-sized agent orchestration",
     "longDescription": "Symphony keeps the root thin, selects execution from a size and complexity matrix, preserves lifecycle state across sessions, and reports compact delegation status.",
-    "developerName": "Sojaner",
+    "developerName": "OpenNoor",
     "category": "Productivity",
     "capabilities": [
       "Instructions",
@@ -24,5 +25,8 @@
       "Enable Symphony for this project.",
       "Run this task through Symphony."
     ]
-  }
+  },
+  "homepage": "https://github.com/opennoor/symphony",
+  "repository": "https://github.com/opennoor/symphony",
+  "license": "MIT"
 }
