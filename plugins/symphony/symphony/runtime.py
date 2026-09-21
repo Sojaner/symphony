@@ -38,7 +38,7 @@ CONTROLS = {
     "version",
 }
 ROLES = {"assessor", "consultant", "lead", "worker"}
-HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
+HIGH_EFFORTS = {"high", "xhigh", "max"}
 
 
 def handle(payload: dict, environ: Mapping[str, str] = os.environ) -> HookResult:

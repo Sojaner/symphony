@@ -9,7 +9,7 @@ from .model import CapabilitySnapshot
 
 
 TIERS = ("economy", "balanced", "capable", "strongest")
-EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
+EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 
 
 @dataclass(frozen=True)

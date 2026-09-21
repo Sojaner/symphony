@@ -1,7 +1,7 @@
 ---
-name: symphony-worker-haiku-low
+name: symphony-worker-sonnet-low
 description: Completes a cheap bounded mechanical Symphony task.
-model: haiku
+model: sonnet
 effort: low
 ---
 

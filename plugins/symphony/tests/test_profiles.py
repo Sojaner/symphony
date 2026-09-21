@@ -22,6 +22,20 @@ def roster(*slugs, hidden=()):
 
 
 class ProfileDataTests(unittest.TestCase):
+    OFFICIAL_EFFORTS = {
+        "codex": {
+            "gpt-5.5": {"low", "medium", "high", "xhigh"},
+            "gpt-5.6-luna": {"none", "low", "medium", "high", "xhigh", "max"},
+            "gpt-5.6-terra": {"none", "low", "medium", "high", "xhigh", "max"},
+            "gpt-5.6-sol": {"none", "low", "medium", "high", "xhigh", "max"},
+            "gpt-6-astra": {"low", "medium", "high", "xhigh", "max"},
+        },
+        "claude": {
+            "sonnet": {"low", "medium", "high", "xhigh", "max"},
+            "opus": {"low", "medium", "high", "xhigh", "max"},
+        },
+    }
+
     def test_every_profile_covers_all_four_tiers(self):
         for provider in ("codex", "claude"):
             for profile in profiles_for(provider):
@@ -38,6 +52,13 @@ class ProfileDataTests(unittest.TestCase):
                     with self.subTest(provider=provider, profile=profile["id"], tier=tier):
                         self.assertIn(model, profile["efforts"])
                         self.assertTrue(profile["efforts"][model])
+
+    def test_shipped_efforts_are_provider_supported(self):
+        for provider in ("codex", "claude"):
+            for profile in profiles_for(provider):
+                for model, efforts in profile["efforts"].items():
+                    with self.subTest(provider=provider, profile=profile["id"], model=model):
+                        self.assertTrue(set(efforts) <= self.OFFICIAL_EFFORTS[provider][model])
 
     def test_the_last_profile_is_an_unconditional_floor(self):
         for provider in ("codex", "claude"):

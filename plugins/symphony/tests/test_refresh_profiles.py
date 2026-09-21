@@ -85,6 +85,13 @@ class SubstitutionTests(unittest.TestCase):
             profiles[0]["efforts"]["gpt-6-astra"], ["low", "medium", "high", "xhigh", "max"]
         )
 
+    def test_preview_or_unsupported_efforts_are_not_shipped(self):
+        profiles = self.refresh.codex_profiles(
+            roster("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra", efforts=("minimal", "ultra", "high")),
+            CURATED,
+        )
+        self.assertEqual(profiles[0]["efforts"]["gpt-5.6-terra"], ["high"])
+
     def test_an_unrecognisable_roster_stops_rather_than_guessing(self):
         with self.assertRaises(SystemExit):
             self.refresh.codex_profiles(roster("some-unknown-model"), CURATED)

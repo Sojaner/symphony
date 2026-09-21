@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "generated_at": "2026-09-17",
-  "source": "provider model roster and official documentation",
+  "generated_at": "2026-09-21",
+  "source": "OpenAI model documentation and Claude Code's provider-fetched model catalog",
   "note": "Machine-maintained. The nine-cell size/complexity grid is product policy and lives in routing.py; only the tier-to-model resolution is edited here. Profiles are ordered best-first: the first whose requirements the account satisfies applies, and the last is the conservative floor used when nothing can be probed. Codex entitlement is a model roster, so requires_all must be a subset of it; Claude entitlement is a plan name, so requires_any must contain it.",
   "providers": {
     "codex": {
@@ -16,6 +16,7 @@
           },
           "efforts": {
             "gpt-5.6-luna": [
+              "none",
               "low",
               "medium",
               "high",
@@ -23,28 +24,27 @@
               "max"
             ],
             "gpt-5.6-terra": [
+              "none",
               "low",
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "gpt-5.6-sol": [
+              "none",
               "low",
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "gpt-6-astra": [
               "low",
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ]
           },
           "requires_all": [
@@ -79,25 +79,25 @@
         {
           "id": "opus",
           "tiers": {
-            "economy": "haiku",
+            "economy": "sonnet",
             "balanced": "sonnet",
             "capable": "opus",
             "strongest": "opus"
           },
           "efforts": {
-            "haiku": [
-              "low",
-              "medium"
-            ],
             "sonnet": [
               "low",
               "medium",
-              "high"
+              "high",
+              "xhigh",
+              "max"
             ],
             "opus": [
               "low",
               "medium",
-              "high"
+              "high",
+              "xhigh",
+              "max"
             ]
           },
           "requires_any": [
@@ -109,20 +109,18 @@
         {
           "id": "sonnet",
           "tiers": {
-            "economy": "haiku",
+            "economy": "sonnet",
             "balanced": "sonnet",
             "capable": "sonnet",
             "strongest": "sonnet"
           },
           "efforts": {
-            "haiku": [
-              "low",
-              "medium"
-            ],
             "sonnet": [
               "low",
               "medium",
-              "high"
+              "high",
+              "xhigh",
+              "max"
             ]
           },
           "requires_any": []

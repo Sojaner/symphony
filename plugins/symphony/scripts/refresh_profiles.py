@@ -28,6 +28,7 @@ PROFILES = ROOT / "profiles.json"
 # Ordered weakest to strongest. A roster entry not named here is not routed to:
 # a new model is a deliberate decision, not something a cron job makes.
 CODEX_RANK = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
+CODEX_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 
 
 def codex_roster(home: Path) -> list[dict]:
@@ -50,7 +51,9 @@ def efforts_of(entry: dict) -> list[str]:
         for level in levels
         if isinstance(level, dict) and level.get("effort")
     ]
-    return found or ["low", "medium", "high"]
+    # The CLI roster has exposed preview-only values which the provider rejects
+    # for normal Codex calls. Ship only the published API vocabulary.
+    return [effort for effort in found if effort in CODEX_EFFORTS] or ["low", "medium", "high"]
 
 
 def codex_profiles(roster: list[dict], current: list[dict]) -> list[dict]:

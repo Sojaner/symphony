@@ -29,7 +29,7 @@ The shipped map is:
 | Provider | economy | balanced | capable | strongest |
 |---|---|---|---|---|
 | Codex | `gpt-5.6-luna` | `gpt-5.6-terra` | `gpt-5.6-sol` | `gpt-6-astra` |
-| Claude Code | `haiku` | `sonnet` | `opus` | `opus` |
+| Claude Code | `sonnet` | `sonnet` | `opus` | `opus` |
 
 ## Entitlement clamps
 
