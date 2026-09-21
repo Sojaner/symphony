@@ -239,7 +239,7 @@ _OWNER_QUIET_AFTER = timedelta(hours=2)
 
 # Bookkeeping the host has no use for. Everything else must render.
 INTERNAL_ACTIONS = frozenset(
-    {"archive_run", "permit_completion", "spawn_assessor", "permit_stop"}
+    {"archive_run", "permit_completion", "spawn_assessor", "permit_stop", "run_abandoned"}
 )
 
 
@@ -1261,7 +1261,8 @@ def _stop_block_text(payload: Mapping[str, object], provider: str) -> str:
     force = "/symphony:stop --force" if provider == "claude" else "$symphony:symphony stop --force"
     return (
         f"Symphony stop is blocked: {reason}. Let the tracked agents finish, "
-        f"or run `{force}` to end the run and record what was not reconciled."
+        f"wait for the host stop timeout, or run `{force}` to end the run and "
+        "record what was not reconciled."
     )
 
 
@@ -1290,17 +1291,9 @@ def _render_actions(
                 Action("inject_context", {"text": "Symphony has no active work to stop."})
             )
         elif action.kind == "run_abandoned":
-            identities = ", ".join(map(str, action.payload.get("unreconciled", ())))
-            detail = f" Never reconciled: {identities}." if identities else ""
-            rendered.append(
-                Action(
-                    "inject_context",
-                    {
-                        "text": "Symphony released this session after a repeated stop and "
-                        f"recorded the run as abandoned.{detail}"
-                    },
-                )
-            )
+            # Stop schemas accept only a decision object; abandonment is
+            # durable state, not user-facing Stop context.
+            continue
         elif action.kind == "route_acceptance_recorded":
             rendered.append(
                 Action(

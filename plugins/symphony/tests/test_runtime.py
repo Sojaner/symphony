@@ -1315,11 +1315,11 @@ class RuntimeTests(unittest.TestCase):
         blocked = self.output(handle(stop, self.environ))
         self.assertEqual(blocked["decision"], "block")
         self.assertIn("--force", blocked["reason"])
+        self.assertIn("timeout", blocked["reason"])
 
         released = handle({**stop, "stop_hook_active": True}, self.environ)
 
-        self.assertNotIn("decision", self.output(released), "the retry must not block again")
-        self.assertIn("abandoned", self.context(released).lower())
+        self.assertEqual(released.stdout, "", "abandonment must render an empty Stop response")
         state = StateStore(self.state_root).load(self.project)
         self.assertIsNone(state.active_run)
         self.assertEqual(state.recent_runs[-1].status, "abandoned")
