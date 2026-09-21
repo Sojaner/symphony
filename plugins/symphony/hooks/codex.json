@@ -1,11 +1,11 @@
 {
   "description": "Symphony lifecycle observation and completion guard for Codex.",
   "hooks": {
-    "SessionStart": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10, "additionalContextLimit": 4096}]}],
-    "SubagentStart": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10, "additionalContextLimit": 2048}]}],
-    "SubagentStop": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 10}]}],
-    "Stop": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 30, "statusMessage": "Symphony is reconciling active work"}]}],
-    "Interrupt": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "timeout": 3}]}]
+    "SessionStart": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& py -3 %PLUGIN_ROOT%\\scripts\\symphony_hook.py", "timeout": 10}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& py -3 %PLUGIN_ROOT%\\scripts\\symphony_hook.py", "timeout": 10, "additionalContextLimit": 4096}]}],
+    "SubagentStart": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& py -3 %PLUGIN_ROOT%\\scripts\\symphony_hook.py", "timeout": 10, "additionalContextLimit": 2048}]}],
+    "SubagentStop": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& py -3 %PLUGIN_ROOT%\\scripts\\symphony_hook.py", "timeout": 10}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& py -3 %PLUGIN_ROOT%\\scripts\\symphony_hook.py", "timeout": 30, "statusMessage": "Symphony is reconciling active work"}]}],
+    "Interrupt": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& py -3 %PLUGIN_ROOT%\\scripts\\symphony_hook.py", "timeout": 3}]}]
   }
 }

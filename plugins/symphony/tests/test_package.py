@@ -40,6 +40,14 @@ class PackageContractTests(unittest.TestCase):
                 self.assertIsNotNone(match, provider)
                 self.assertTrue((PLUGIN / match.group(0)).is_file(), provider)
 
+    def test_codex_hooks_have_native_windows_commands(self):
+        for handler in handlers("hooks/codex.json"):
+            command = handler["commandWindows"]
+            self.assertIn("set SYMPHONY_PROVIDER=codex&&", command)
+            self.assertIn("py -3 %PLUGIN_ROOT%\\scripts\\symphony_hook.py", command)
+            self.assertNotIn('"', command)
+            self.assertNotIn("${PLUGIN_ROOT}", command)
+
     def test_hook_manifests_contain_only_supported_events(self):
         self.assertEqual(
             set(load_json("hooks/codex.json")["hooks"]),
