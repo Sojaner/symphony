@@ -46,8 +46,6 @@ jobs:
           export CODEX_HOME="$RUNNER_TEMP/codex-home"
           mkdir -p "$CODEX_HOME"
           printenv OPENAI_API_KEY | codex login --with-api-key
-          # Any session populates the roster cache this refresh reads.
-          codex exec --skip-git-repo-check --model gpt-5.6-luna 'reply with ok' >/dev/null
           echo "CODEX_HOME=$CODEX_HOME" >> "$GITHUB_ENV"
 
       - name: Update the profiles from the roster

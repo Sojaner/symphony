@@ -19,8 +19,10 @@ import argparse
 import json
 import os
 from pathlib import Path
+import select
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ROOT / "profiles.json"
@@ -32,9 +34,15 @@ CODEX_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 
 
 def codex_roster(home: Path) -> list[dict]:
-    """The models this account may actually select, newest cache wins."""
+    """The models this account may select, including on a fresh CI home."""
+    cache_path = home / "models_cache.json"
+    if not cache_path.exists():
+        try:
+            return _app_server_roster(home)
+        except (OSError, ValueError, RuntimeError) as error:
+            raise SystemExit(f"::error::no readable Codex model roster at {home}: {error}")
     try:
-        cache = json.loads((home / "models_cache.json").read_text(encoding="utf-8"))
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise SystemExit(f"::error::no readable Codex model roster at {home}: {error}")
     return [
@@ -42,6 +50,68 @@ def codex_roster(home: Path) -> list[dict]:
         for item in cache.get("models", ())
         if isinstance(item, dict) and item.get("visibility") == "list" and item.get("slug")
     ]
+
+
+def _app_server_roster(home: Path) -> list[dict]:
+    """Ask Codex for its live picker roster; `codex exec` need not write a cache."""
+    process = subprocess.Popen(
+        ["codex", "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env={**os.environ, "CODEX_HOME": str(home)},
+    )
+    try:
+        def send(message: dict) -> None:
+            process.stdin.write((json.dumps(message) + "\n").encode())
+            process.stdin.flush()
+
+        send({"method": "initialize", "id": 1, "params": {
+            "clientInfo": {"name": "symphony_refresh", "title": "Symphony Refresh", "version": "1.0.0"}
+        }})
+        send({"method": "initialized", "params": {}})
+        send({"method": "model/list", "id": 2, "params": {"limit": 100, "includeHidden": False}})
+        deadline = time.monotonic() + 30
+        pending = b""
+        models = []
+        while time.monotonic() < deadline:
+            if not select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))[0]:
+                break
+            chunk = os.read(process.stdout.fileno(), 65536)
+            if not chunk:
+                break
+            pending += chunk
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                response = json.loads(line)
+                if response.get("id") != 2:
+                    continue
+                if "error" in response:
+                    raise RuntimeError(response["error"].get("message", "model/list failed"))
+                result = response["result"]
+                models.extend(result["data"])
+                cursor = result.get("nextCursor")
+                if cursor:
+                    send({"method": "model/list", "id": 2, "params": {
+                        "limit": 100, "includeHidden": False, "cursor": cursor
+                    }})
+                    continue
+                return [
+                    {
+                        "slug": item["model"], "visibility": "list",
+                        "supported_reasoning_levels": [
+                            {"effort": level["reasoningEffort"]}
+                            for level in item.get("supportedReasoningEfforts", ())
+                        ],
+                    }
+                    for item in models if not item.get("hidden") and item.get("model")
+                ]
+        raise RuntimeError("model/list did not return a complete roster within 30 seconds")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
 
 
 def efforts_of(entry: dict) -> list[str]:

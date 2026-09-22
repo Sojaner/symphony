@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -107,8 +108,17 @@ class SubstitutionTests(unittest.TestCase):
 
     def test_a_missing_roster_stops_rather_than_shipping_a_guess(self):
         with TemporaryDirectory() as directory:
-            with self.assertRaises(SystemExit):
-                self.refresh.codex_roster(Path(directory) / "absent")
+            with patch.object(self.refresh, "_app_server_roster", return_value=roster("gpt-6-astra")):
+                self.assertEqual(
+                    self.refresh.codex_roster(Path(directory) / "absent"),
+                    roster("gpt-6-astra"),
+                )
+
+    def test_a_missing_roster_and_failed_live_query_stops_instead_of_guessing(self):
+        with TemporaryDirectory() as directory:
+            with patch.object(self.refresh, "_app_server_roster", side_effect=RuntimeError("offline")):
+                with self.assertRaises(SystemExit):
+                    self.refresh.codex_roster(Path(directory) / "absent")
 
 
 class ShippedProfileTests(unittest.TestCase):
