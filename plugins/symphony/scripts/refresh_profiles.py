@@ -27,9 +27,10 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ROOT / "profiles.json"
 
-# Ordered weakest to strongest. A roster entry not named here is not routed to:
-# a new model is a deliberate decision, not something a cron job makes.
-CODEX_RANK = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
+# Ordered by the provider's stated price/capability positioning. Terra remains
+# in the rank only to migrate old profiles; Symphony no longer selects it.
+CODEX_RANK = ("gpt-5.5", "gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra")
+CODEX_RETIRED = {"gpt-5.6-terra"}
 CODEX_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 
 
@@ -136,14 +137,14 @@ def codex_profiles(roster: list[dict], current: list[dict]) -> list[dict]:
     would raise what the user pays without anyone deciding to.
     """
     available = {entry["slug"]: entry for entry in roster}
-    ranked = [slug for slug in CODEX_RANK if slug in available]
+    ranked = [slug for slug in CODEX_RANK if slug in available and slug not in CODEX_RETIRED]
     if not ranked:
         raise SystemExit(
             f"::error::Codex roster names none of the models Symphony knows: {sorted(available)}"
         )
 
     def substitute(preferred: str) -> str:
-        if preferred in available:
+        if preferred in available and preferred not in CODEX_RETIRED:
             return preferred
         if preferred not in CODEX_RANK:
             return ranked[-1]

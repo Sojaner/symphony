@@ -128,7 +128,7 @@ def _role_model(provider: str, agent_role: str) -> tuple[str, str]:
     """The model and effort this role must run at, per the shipped matrix."""
     effort = "high" if agent_role == "assessor" else "medium"
     if provider == "codex":
-        return ("gpt-6-astra" if agent_role == "assessor" else "gpt-5.6-sol"), effort
+        return ("gpt-6-astra" if agent_role == "assessor" else "gpt-6-sol"), effort
     return ("opus" if agent_role in {"assessor", "lead"} else "sonnet"), effort
 
 

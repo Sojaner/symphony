@@ -29,13 +29,13 @@ CURATED = [
     {
         "id": "full",
         "tiers": {
-            "economy": "gpt-5.6-luna",
-            "balanced": "gpt-5.6-terra",
-            "capable": "gpt-5.6-sol",
+            "economy": "gpt-6-luna",
+            "balanced": "gpt-6-luna",
+            "capable": "gpt-6-sol",
             "strongest": "gpt-6-astra",
         },
         "efforts": {},
-        "requires_all": ["gpt-6-astra"],
+        "requires_all": ["gpt-6-astra", "gpt-6-luna", "gpt-6-sol"],
     },
     {
         "id": "base",
@@ -58,27 +58,34 @@ class SubstitutionTests(unittest.TestCase):
         return self.refresh.codex_profiles(roster(*available), CURATED)[profile]["tiers"]
 
     def test_a_complete_roster_leaves_every_assignment_alone(self):
-        available = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
+        available = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
         self.assertEqual(self.tiers(available), CURATED[0]["tiers"])
 
+    def test_terra_is_migrated_even_when_the_provider_still_lists_it(self):
+        legacy = [{**profile, "tiers": dict(profile["tiers"])} for profile in CURATED]
+        legacy[0]["tiers"]["balanced"] = "gpt-5.6-terra"
+        available = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
+        profiles = self.refresh.codex_profiles(roster(*available), legacy)
+        self.assertEqual(profiles[0]["tiers"]["balanced"], "gpt-6-luna")
+
     def test_a_retired_model_is_replaced_by_the_next_one_down(self):
-        available = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
+        available = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol")
         # gpt-6-astra is gone, so strongest drops to the best still offered.
-        self.assertEqual(self.tiers(available)["strongest"], "gpt-5.6-sol")
-        self.assertEqual(self.tiers(available)["economy"], "gpt-5.6-luna")
+        self.assertEqual(self.tiers(available)["strongest"], "gpt-6-sol")
+        self.assertEqual(self.tiers(available)["economy"], "gpt-6-luna")
 
     def test_substitution_never_silently_promotes_a_tier(self):
-        # gpt-5.6-luna is gone. economy must not jump up to terra while a
+        # gpt-6-luna is gone. economy must not jump up to Sol while a
         # cheaper option still exists.
-        available = ("gpt-5.5", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
+        available = ("gpt-5.5", "gpt-5.6-terra", "gpt-6-sol", "gpt-6-astra")
         self.assertEqual(self.tiers(available)["economy"], "gpt-5.5")
 
     def test_the_cheapest_tier_falls_upward_only_when_nothing_is_cheaper(self):
-        available = ("gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
-        self.assertEqual(self.tiers(available)["economy"], "gpt-5.6-terra")
+        available = ("gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
+        self.assertEqual(self.tiers(available)["economy"], "gpt-6-luna")
 
     def test_efforts_come_from_the_roster_not_from_a_guess(self):
-        available = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
+        available = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
         profiles = self.refresh.codex_profiles(
             roster(*available, efforts=("low", "medium", "high", "xhigh", "max")), CURATED
         )
@@ -88,17 +95,17 @@ class SubstitutionTests(unittest.TestCase):
 
     def test_preview_or_unsupported_efforts_are_not_shipped(self):
         profiles = self.refresh.codex_profiles(
-            roster("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra", efforts=("minimal", "ultra", "high")),
+            roster("gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", efforts=("minimal", "ultra", "high")),
             CURATED,
         )
-        self.assertEqual(profiles[0]["efforts"]["gpt-5.6-terra"], ["high"])
+        self.assertEqual(profiles[0]["efforts"]["gpt-6-luna"], ["high"])
 
     def test_an_unrecognisable_roster_stops_rather_than_guessing(self):
         with self.assertRaises(SystemExit):
             self.refresh.codex_profiles(roster("some-unknown-model"), CURATED)
 
     def test_a_hidden_model_is_not_available(self):
-        entries = roster("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
+        entries = roster("gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol")
         entries.append({"slug": "gpt-6-astra", "visibility": "hide"})
         with TemporaryDirectory() as directory:
             home = Path(directory)
@@ -127,16 +134,17 @@ class ShippedProfileTests(unittest.TestCase):
         refresh = load()
         document = json.loads(refresh.PROFILES.read_text())
         current = document["providers"]["codex"]["profiles"]
-        full = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
+        full = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
         derived = refresh.codex_profiles(roster(*full), current)
         self.assertEqual(
             [profile["tiers"] for profile in derived],
             [profile["tiers"] for profile in current],
         )
         self.assertEqual(
-            [profile.get("requires_all") for profile in derived],
-            [profile.get("requires_all") for profile in current],
+            [sorted(profile.get("requires_all", [])) for profile in derived],
+            [sorted(profile.get("requires_all", [])) for profile in current],
         )
+        self.assertNotIn("gpt-5.6-terra", {model for profile in current for model in profile["tiers"].values()})
 
 
 if __name__ == "__main__":

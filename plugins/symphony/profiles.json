@@ -9,27 +9,20 @@
         {
           "id": "full",
           "tiers": {
-            "economy": "gpt-5.6-luna",
-            "balanced": "gpt-5.6-terra",
-            "capable": "gpt-5.6-sol",
+            "economy": "gpt-6-luna",
+            "balanced": "gpt-6-luna",
+            "capable": "gpt-6-sol",
             "strongest": "gpt-6-astra"
           },
           "efforts": {
-            "gpt-5.6-luna": [
+            "gpt-6-luna": [
               "low",
               "medium",
               "high",
               "xhigh",
               "max"
             ],
-            "gpt-5.6-terra": [
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ],
-            "gpt-5.6-sol": [
+            "gpt-6-sol": [
               "low",
               "medium",
               "high",
@@ -45,10 +38,9 @@
             ]
           },
           "requires_all": [
-            "gpt-5.6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-6-astra"
+            "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol"
           ]
         },
         {

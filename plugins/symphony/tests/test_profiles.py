@@ -25,9 +25,8 @@ class ProfileDataTests(unittest.TestCase):
     OFFICIAL_EFFORTS = {
         "codex": {
             "gpt-5.5": {"low", "medium", "high", "xhigh"},
-            "gpt-5.6-luna": {"none", "low", "medium", "high", "xhigh", "max"},
-            "gpt-5.6-terra": {"none", "low", "medium", "high", "xhigh", "max"},
-            "gpt-5.6-sol": {"none", "low", "medium", "high", "xhigh", "max"},
+            "gpt-6-luna": {"low", "medium", "high", "xhigh", "max"},
+            "gpt-6-sol": {"low", "medium", "high", "xhigh", "max"},
             "gpt-6-astra": {"low", "medium", "high", "xhigh", "max"},
         },
         "claude": {
@@ -104,17 +103,17 @@ class EntitlementProbeTests(unittest.TestCase):
 
     def test_a_complete_roster_selects_the_full_profile(self):
         environ = self.codex_home(
-            roster("gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+            roster("gpt-6-astra", "gpt-6-sol", "gpt-6-luna")
         )
         self.assertEqual(self.heartbeat(environ).get("profile"), "full")
 
     def test_a_missing_model_falls_back_to_the_base_profile(self):
-        environ = self.codex_home(roster("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"))
+        environ = self.codex_home(roster("gpt-6-sol", "gpt-6-luna"))
         self.assertEqual(self.heartbeat(environ).get("profile"), "base")
 
     def test_a_hidden_model_does_not_count_as_entitlement(self):
         environ = self.codex_home(
-            roster("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", hidden=("gpt-6-astra",))
+            roster("gpt-6-sol", "gpt-6-luna", hidden=("gpt-6-astra",))
         )
         self.assertEqual(self.heartbeat(environ).get("profile"), "base")
 
@@ -132,7 +131,7 @@ class EntitlementProbeTests(unittest.TestCase):
 
     def test_the_probe_runs_once_and_is_reused_within_a_session(self):
         environ = self.codex_home(
-            roster("gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+            roster("gpt-6-astra", "gpt-6-sol", "gpt-6-luna")
         )
         self.heartbeat(environ)
         # Remove the roster: a second heartbeat in the same session must not

@@ -73,7 +73,7 @@ class RoutingTests(unittest.TestCase):
         codex = resolve_tier(route, snapshot_for("codex", "full"))
         claude = resolve_tier(route, snapshot_for("claude", "opus"))
 
-        self.assertEqual((codex["lead_model"], codex["lead_effort"]), ("gpt-5.6-sol", "medium"))
+        self.assertEqual((codex["lead_model"], codex["lead_effort"]), ("gpt-6-sol", "medium"))
         self.assertEqual((claude["lead_model"], claude["lead_effort"]), ("opus", "medium"))
 
     def test_invalid_axes_are_rejected(self):

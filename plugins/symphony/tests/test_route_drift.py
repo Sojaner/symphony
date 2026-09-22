@@ -93,7 +93,7 @@ class RouteDriftTests(unittest.TestCase):
         )
 
     def test_standing_assessment_that_weakened_waits_for_the_user(self):
-        self.accept_under("full", "session-1", "gpt-5.6-sol", "medium")
+        self.accept_under("full", "session-1", "gpt-6-sol", "medium")
 
         # A later session on a weaker entitlement: the priced route is gone.
         self.start("base", "session-2")
@@ -101,11 +101,11 @@ class RouteDriftTests(unittest.TestCase):
 
         self.assertEqual(output["decision"], "block")
         self.assertIn("no longer available", output["reason"])
-        self.assertIn("gpt-5.6-sol", output["reason"])
+        self.assertIn("gpt-6-sol", output["reason"])
         self.assertIn("proceed", output["reason"])
 
     def test_proceed_accepts_the_weaker_route_and_the_spawn_goes_through(self):
-        self.accept_under("full", "session-1", "gpt-5.6-sol", "medium")
+        self.accept_under("full", "session-1", "gpt-6-sol", "medium")
         self.start("base", "session-2")
         blocked = self.spawn("base", "session-2", "lead", "gpt-5.5", "medium", MARKER)
         self.assertEqual(self.output(blocked)["decision"], "block")
@@ -132,7 +132,7 @@ class RouteDriftTests(unittest.TestCase):
 
         self.start("full", "session-2")
         output = self.output(
-            self.spawn("full", "session-2", "lead", "gpt-5.6-sol", "medium", MARKER)
+            self.spawn("full", "session-2", "lead", "gpt-6-sol", "medium", MARKER)
         )
 
         self.assertNotEqual(output.get("decision"), "block", output.get("reason"))
@@ -144,7 +144,7 @@ class RouteDriftTests(unittest.TestCase):
         left the map every lead spawn was refused and the run was stuck. The
         run must now be advanceable by spawning what the tier resolves to today.
         """
-        self.accept_under("full", "session-1", "gpt-5.6-sol", "medium")
+        self.accept_under("full", "session-1", "gpt-6-sol", "medium")
         self.start("base", "session-2")
         self.proceed("base", "session-2")
 

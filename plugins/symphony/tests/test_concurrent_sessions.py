@@ -106,13 +106,13 @@ class GovernanceLabelTests(unittest.TestCase):
 
     def open_lead(self):
         handle({**self.payload(""), "hook_event_name": "SessionStart"}, self.environ)
-        for role, model, effort in (("assessor", "gpt-6-astra", "high"), ("lead", "gpt-5.6-sol", "medium")):
+        for role, model, effort in (("assessor", "gpt-6-astra", "high"), ("lead", "gpt-6-sol", "medium")):
             body = f"SYMPHONY_ROLE: {role}\n" + (f"SYMPHONY_ROUTE: {MARKER}\n" if role == "lead" else "")
             handle({**self.payload(""), "hook_event_name": "PreToolUse", "tool_name": "spawn_agent",
                     "tool_input": {"message": body + "Ship it", "model": model,
                                    "reasoning_effort": effort}}, self.environ)
         handle({**self.payload(""), "hook_event_name": "SubagentStart", "agent_id": "lead-1",
-                "agent_type": "symphony_lead_x_medium", "model": "gpt-5.6-sol",
+                "agent_type": "symphony_lead_x_medium", "model": "gpt-6-sol",
                 "model_reasoning_effort": "medium"}, self.environ)
 
     def test_a_one_shot_run_labels_its_lead_transactional(self):
@@ -213,8 +213,8 @@ class ConcurrentSessionTests(unittest.TestCase):
         handle(self.payload(session, "SessionStart"), self.environ)
         self.spawn(session, "assessor", "gpt-6-astra", "high")
         self.start_agent(session, "assessor-1", "assessor", "gpt-6-astra", "high")
-        self.spawn(session, "lead", "gpt-5.6-sol", "medium", MARKER)
-        self.start_agent(session, "lead-1", "lead", "gpt-5.6-sol", "medium")
+        self.spawn(session, "lead", "gpt-6-sol", "medium", MARKER)
+        self.start_agent(session, "lead-1", "lead", "gpt-6-sol", "medium")
 
     def state(self):
         path = next(self.state_root.glob("*.json"))
@@ -223,13 +223,13 @@ class ConcurrentSessionTests(unittest.TestCase):
     # ---- the renderer must speak ------------------------------------------
     def test_a_second_lead_is_told_it_is_not_the_lead(self):
         self.run_with_live_lead()
-        spoken = self.text(self.start_agent("root-a", "lead-2", "lead", "gpt-5.6-sol", "medium"))
+        spoken = self.text(self.start_agent("root-a", "lead-2", "lead", "gpt-6-sol", "medium"))
         self.assertTrue(spoken, "Symphony rejected a second lead and said nothing")
         self.assertIn("lead", spoken.lower())
 
     def test_a_stale_completion_is_not_silently_swallowed(self):
         self.run_with_live_lead()
-        self.start_agent("root-a", "lead-2", "lead", "gpt-5.6-sol", "medium")
+        self.start_agent("root-a", "lead-2", "lead", "gpt-6-sol", "medium")
         self.stop_agent("root-a", "lead-2")
         spoken = self.text(handle(self.payload("root-a"), self.environ))
         self.assertTrue(spoken, "a completion from a non-lead was ignored silently")

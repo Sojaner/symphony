@@ -242,7 +242,7 @@ class RuntimeTests(unittest.TestCase):
                 "tool_name": "spawn_agent",
                 "tool_input": {
                     "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-sol",
                     "reasoning_effort": "medium",
                 },
             },
@@ -253,8 +253,8 @@ class RuntimeTests(unittest.TestCase):
             {
                 "hook_event_name": "SubagentStart",
                 "agent_id": "lead-1",
-                "agent_type": "symphony_lead_gpt_5_6_sol_medium",
-                "model": "gpt-5.6-sol",
+                "agent_type": "symphony_lead_gpt_6_sol_medium",
+                "model": "gpt-6-sol",
                 "model_reasoning_effort": "medium",
             }
         )
@@ -277,8 +277,8 @@ class RuntimeTests(unittest.TestCase):
             **self.payload(""),
             "hook_event_name": "SubagentStart",
             "agent_id": "lead-1",
-            "agent_type": "symphony_lead_gpt_5_6_sol_high",
-            "model": "gpt-5.6-sol",
+            "agent_type": "symphony_lead_gpt_6_sol_high",
+            "model": "gpt-6-sol",
             "model_reasoning_effort": "high",
         }
         handle(lead, self.environ)
@@ -345,15 +345,15 @@ class RuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(result.stdout, "", "a stop result carries no injected context")
-        self.assertIn("gpt-5.6-sol/medium", self.flush().lower())
+        self.assertIn("gpt-6-sol/medium", self.flush().lower())
         recovering = StateStore(self.state_root).load(self.project).active_run
         self.assertEqual(recovering.status, "recovering")
         replacement = {
             **self.payload(""),
             "hook_event_name": "SubagentStart",
             "agent_id": "lead-2",
-            "agent_type": "symphony_lead_gpt_5_6_sol_medium",
-            "model": "gpt-5.6-sol",
+            "agent_type": "symphony_lead_gpt_6_sol_medium",
+            "model": "gpt-6-sol",
             "model_reasoning_effort": "medium",
         }
         handle(replacement, self.environ)
@@ -431,7 +431,7 @@ class RuntimeTests(unittest.TestCase):
         state = StateStore(self.state_root).load(self.project)
         self.assertEqual(state.active_run.assessment["size"], "small")
         self.assertEqual(state.active_run.assessment["complexity"], "simple")
-        self.assertEqual(state.active_run.assessment["route"]["lead_model"], "gpt-5.6-sol")
+        self.assertEqual(state.active_run.assessment["route"]["lead_model"], "gpt-6-sol")
         self.assertEqual(state.active_run.assessment["route"]["lead_effort"], "medium")
 
         lead_transcript = self.root / "lead.jsonl"
@@ -441,13 +441,13 @@ class RuntimeTests(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "session_meta",
-                            "payload": {"agent_path": "/root/symphony_lead_gpt_5_6_sol_medium"},
+                            "payload": {"agent_path": "/root/symphony_lead_gpt_6_sol_medium"},
                         }
                     ),
                     json.dumps(
                         {
                             "type": "turn_context",
-                            "payload": {"model": "gpt-5.6-sol", "effort": "medium"},
+                            "payload": {"model": "gpt-6-sol", "effort": "medium"},
                         }
                     ),
                 )
@@ -661,7 +661,7 @@ class RuntimeTests(unittest.TestCase):
             "tool_name": "spawn_agent",
             "tool_input": {
                 "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
-                "model": "gpt-5.6-terra",
+                "model": "gpt-6-luna",
                 "reasoning_effort": "high",
             },
         }
@@ -677,7 +677,7 @@ class RuntimeTests(unittest.TestCase):
         status = self.context(handle(self.payload("$symphony:symphony status"), self.environ))
         self.assertIn("Assessment: medium/mixed", status)
         self.assertIn("Topology: mixed", status)
-        self.assertIn("Lead route: gpt-5.6-terra/high", status)
+        self.assertIn("Lead route: gpt-6-luna/high", status)
         self.assertIn("Lead: lead-1", status)
 
     def test_pre_tool_use_denies_unclassified_agent_spawn(self):
@@ -748,7 +748,7 @@ class RuntimeTests(unittest.TestCase):
             "tool_name": "spawn_agent",
             "tool_input": {
                 "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nRun it",
-                "model": "gpt-5.6-luna",
+                "model": "gpt-6-luna",
                 "reasoning_effort": "medium",
             },
         }
@@ -766,7 +766,7 @@ class RuntimeTests(unittest.TestCase):
         state = StateStore(self.state_root).load(self.project)
         self.assertEqual(state.active_run.lead_identity, "lead-1")
         self.assertEqual(state.active_run.delegations[-1].role, "lead")
-        self.assertEqual(state.active_run.delegations[-1].requested_tier, "gpt-5.6-luna")
+        self.assertEqual(state.active_run.delegations[-1].requested_tier, "gpt-6-luna")
         self.assertEqual(state.active_run.delegations[-1].objective, "Run it")
 
     def test_lead_spawn_without_route_is_denied(self):
@@ -838,7 +838,7 @@ class RuntimeTests(unittest.TestCase):
                 "tool_name": "spawn_agent",
                 "tool_input": {
                     "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-sol",
                     "reasoning_effort": "medium",
                 },
             },
@@ -927,7 +927,7 @@ class RuntimeTests(unittest.TestCase):
                 "tool_name": "spawn_agent",
                 "tool_input": {
                     "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-sol",
                     "reasoning_effort": "medium",
                 },
             },
@@ -1384,7 +1384,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload(""),
                 "hook_event_name": "SubagentStart",
                 "agent_id": "worker-1",
-                "agent_type": "symphony_worker_gpt_5_6_sol_medium",
+                "agent_type": "symphony_worker_gpt_6_sol_medium",
             },
             self.environ,
         )
@@ -1466,8 +1466,8 @@ class RuntimeTests(unittest.TestCase):
             **self.payload(""),
             "hook_event_name": "SubagentStart",
             "agent_id": "lead-1",
-            "agent_type": "symphony_lead_gpt_5_6_sol_medium",
-            "model": "gpt-5.6-sol",
+            "agent_type": "symphony_lead_gpt_6_sol_medium",
+            "model": "gpt-6-sol",
             "model_reasoning_effort": "medium",
         }
         handle(lead, self.environ)
@@ -1511,7 +1511,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload(""),
                 "hook_event_name": "SubagentStart",
                 "agent_id": "lead-1",
-                "agent_type": "symphony_lead_gpt_5_6_sol_medium",
+                "agent_type": "symphony_lead_gpt_6_sol_medium",
             },
             self.environ,
         )
@@ -1520,7 +1520,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload(""),
                 "hook_event_name": "SubagentStop",
                 "agent_id": "lead-1",
-                "agent_type": "symphony_lead_gpt_5_6_sol_medium",
+                "agent_type": "symphony_lead_gpt_6_sol_medium",
                 "status": "completed",
                 "last_assistant_message": f"the token is {secret}",
                 "transcript_path": "/tmp/transcript.jsonl",
