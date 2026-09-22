@@ -3,7 +3,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from plugins.symphony.symphony.model import Delegation, ProjectState, RunState
+from plugins.symphony.symphony.model import Delegation, Event, ProjectState, RunState
+from plugins.symphony.symphony import runtime as runtime_module
 from plugins.symphony.symphony.runtime import compact_delegations, format_delegation, handle
 from plugins.symphony.symphony.store import StateStore
 
@@ -126,6 +127,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(state.activation["codex"]["plugin_root"].endswith("plugins/symphony"))
         self.assertIn("guarded", self.context(result).lower())
         self.assertNotIn("unarmed", self.context(result).lower())
+
+    def test_status_does_not_call_a_historical_heartbeat_current(self):
+        handle(self.payload("$symphony:symphony status"), self.environ)
+        state = StateStore(self.state_root).load(self.project)
+        text = runtime_module._status(state, False, "codex", "new-session")
+        self.assertIn("pending verification", text)
+        self.assertIn("historical heartbeat", text.lower())
+
+    def test_reconciliation_ignores_malformed_health_roster(self):
+        run = RunState(
+            "run-1", "task", session_id="old-session",
+            delegations=(Delegation("agent-1", "worker", "task", "working", "tier", "medium"),),
+        )
+        state = ProjectState(active_run=run)
+        source = Event("event", "session_heartbeat", "2026-09-22T12:00:00+00:00")
+        next_state, actions = runtime_module._reconcile_session(
+            state, source,
+            {"session_id": "new-session", "active_agent_ids": [None]},
+        )
+        self.assertEqual(next_state, state)
+        self.assertEqual(actions, ())
 
     def test_claude_marker_uses_the_same_control_contract(self):
         result = handle(self.payload("SYMPHONY_CONTROL: enable", "claude"), self.environ)

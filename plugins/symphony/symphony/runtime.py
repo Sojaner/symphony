@@ -270,8 +270,17 @@ def _reconcile_session(
         return state, ()
     active_ids = payload.get("active_agent_ids", payload.get("active_ids"))
     session_id = str(payload.get("session_id") or "")
+    # A host snapshot for another run is not evidence about this run. Hosts
+    # that do not send a run id remain supported; when they do, require an
+    # exact match before changing durable lifecycle state.
+    observed_run_id = payload.get("run_id")
+    if observed_run_id is not None and str(observed_run_id) != run.run_id:
+        return state, ()
     if isinstance(active_ids, list):
-        observed = [str(item) for item in active_ids]
+        # A malformed roster is incomplete evidence, not an empty roster.
+        if any(not isinstance(item, str) or not item for item in active_ids):
+            return state, ()
+        observed = list(active_ids)
     elif run.session_id and session_id and session_id != run.session_id:
         # Neither host reports a liveness list, and a second terminal in the
         # same project is indistinguishable from a resumed one. Treating that
@@ -323,9 +332,13 @@ def _handle_prompt(
     if name == "version":
         return state, (Action("inject_context", {"text": _version_text(environ)}),)
     if name == "status":
-        return state, (Action("inject_context", {"text": _status(state, False, provider)}),)
+        return state, (Action("inject_context", {"text": _status(
+            state, False, provider, str(source.payload.get("session_id") or "")
+        )}),)
     if name == "agents":
-        return state, (Action("inject_context", {"text": _status(state, argument == "--all", provider)}),)
+        return state, (Action("inject_context", {"text": _status(
+            state, argument == "--all", provider, str(source.payload.get("session_id") or "")
+        )}),)
     if name == "enable":
         next_state, actions = reduce(state, _derived(state, source, "enable"))
         if argument:
@@ -1429,12 +1442,26 @@ def format_delegation(item: Delegation) -> str:
     return result
 
 
-def _status(state: ProjectState, include_history: bool, provider: str = "") -> str:
+def _status(
+    state: ProjectState,
+    include_history: bool,
+    provider: str = "",
+    session_id: str = "",
+) -> str:
     activation = state.activation.get(provider, {}) if provider else next(iter(state.activation.values()), {})
+    activation_session = str(activation.get("session_id") or "") if isinstance(activation, Mapping) else ""
+    guarded = bool(activation.get("state") == "guarded") if isinstance(activation, Mapping) else False
+    if session_id and activation_session and activation_session != session_id:
+        guarded = False
     lines = [
         f"Symphony: {'enabled' if state.enabled else 'disabled'}",
-        f"Hooks: {activation.get('state', 'pending verification')}",
+        f"Hooks: {'guarded' if guarded else 'pending verification'}",
     ]
+    if session_id and activation_session and activation_session != session_id:
+        lines.append(
+            f"Historical heartbeat from session {activation_session}; current session "
+            "has not been verified."
+        )
     if activation.get("last_fault"):
         lines.append(f"Last hook fault: {activation['last_fault']}")
     runs = ([state.active_run] if state.active_run else []) + (list(state.recent_runs) if include_history else [])
@@ -1478,6 +1505,12 @@ def _status(state: ProjectState, include_history: bool, provider: str = "") -> s
     records = [item for run in runs if run for item in run.delegations]
     if include_history:
         visible = records
+        if state.recent_runs:
+            lines.append("Historical runs:")
+            lines.extend(
+                f"- historical run {run.run_id} ({run.status})"
+                for run in state.recent_runs
+            )
     else:
         visible = list(compact_delegations(state))
     lines.extend(format_delegation(item) for item in visible)
