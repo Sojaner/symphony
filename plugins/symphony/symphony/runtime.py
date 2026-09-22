@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Mapping
@@ -690,12 +691,25 @@ def _open_run(
 
 
 def _observed_role(payload: Mapping[str, object]) -> str:
-    label = " ".join(
-        str(payload.get(key) or "") for key in ("agent_type", "role", "task_name")
-    )
-    for role in ("assessor", "consultant", "lead", "worker"):
-        if role in label.lower():
-            return role
+    for value in payload.values():
+        if not isinstance(value, str):
+            continue
+        marker = _marker_value(value, "SYMPHONY_ROLE:")
+        if marker in ROLES:
+            return marker
+    explicit = str(payload.get("role") or "").strip().lower()
+    if explicit in ROLES:
+        return explicit
+    for key, value in payload.items():
+        if not isinstance(value, str):
+            continue
+        if key not in {"agent_type", "task_name"}:
+            continue
+        if value.strip().lower() in ROLES:
+            return value.strip().lower()
+        match = re.search(r"(?:^|[_:/-])symphony[_-](assessor|consultant|lead|worker)(?:[_:/-]|$)", value.lower())
+        if match:
+            return match.group(1)
     return ""
 
 
@@ -1266,14 +1280,16 @@ def _consume_parent_actions(
     )
 
 
-def _stop_block_text(payload: Mapping[str, object], provider: str) -> str:
+def _stop_block_text(
+    payload: Mapping[str, object], provider: str, scope: str = "this project"
+) -> str:
     active = ", ".join(map(str, payload.get("active", ())))
     reason = payload.get("reason") or f"active work remains: {active}"
     if reason == "lead_outcome_missing":
         reason = "no lead has returned an outcome yet"
     force = "/symphony:stop --force" if provider == "claude" else "$symphony:symphony stop --force"
     return (
-        f"Symphony stop is blocked: {reason}. Let the tracked agents finish, "
+        f"Symphony stop is blocked for {scope}: {reason}. Let the tracked agents finish, "
         f"wait for the host stop timeout, or run `{force}` to end the run and "
         "record what was not reconciled."
     )
@@ -1284,6 +1300,7 @@ def _render_actions(
     state: ProjectState,
     provider: str,
     source_kind: str = "",
+    scope: str = "this project",
 ) -> tuple[Action, ...]:
     # A stop control arrives as a prompt, where blocking would reject the user's
     # own message; only a real Stop event may answer with a block decision.
@@ -1293,7 +1310,7 @@ def _render_actions(
         if action.kind in {"inject_context", "block_tool"}:
             rendered.append(action)
         elif action.kind == "block_stop":
-            text = _stop_block_text(action.payload, provider)
+            text = _stop_block_text(action.payload, provider, scope)
             rendered.append(
                 Action("inject_context", {"text": text})
                 if prompt_originated
@@ -1301,7 +1318,10 @@ def _render_actions(
             )
         elif action.kind == "permit_stop" and prompt_originated:
             rendered.append(
-                Action("inject_context", {"text": "Symphony has no active work to stop."})
+                Action(
+                    "inject_context",
+                    {"text": f"Symphony has no active work in {scope} to stop."},
+                )
             )
         elif action.kind == "run_abandoned":
             # Stop schemas accept only a decision object; abandonment is
@@ -1447,6 +1467,7 @@ def _status(
     include_history: bool,
     provider: str = "",
     session_id: str = "",
+    scope: str = "this project",
 ) -> str:
     activation = state.activation.get(provider, {}) if provider else next(iter(state.activation.values()), {})
     activation_session = str(activation.get("session_id") or "") if isinstance(activation, Mapping) else ""
@@ -1454,9 +1475,11 @@ def _status(
     if session_id and activation_session and activation_session != session_id:
         guarded = False
     lines = [
-        f"Symphony: {'enabled' if state.enabled else 'disabled'}",
+        f"Symphony ({scope}): {'enabled' if state.enabled else 'disabled'}",
         f"Hooks: {'guarded' if guarded else 'pending verification'}",
     ]
+    if not state.active_run:
+        lines.append(f"Run ({scope}): none")
     if session_id and activation_session and activation_session != session_id:
         lines.append(
             f"Historical heartbeat from session {activation_session}; current session "

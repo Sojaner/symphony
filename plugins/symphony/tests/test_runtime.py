@@ -128,6 +128,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("guarded", self.context(result).lower())
         self.assertNotIn("unarmed", self.context(result).lower())
 
+    def test_status_names_the_current_project_and_empty_run_scope(self):
+        text = self.context(handle(self.payload("$symphony:symphony status"), self.environ))
+        self.assertIn("Symphony (this project): disabled", text)
+        self.assertIn("Run (this project): none", text)
+
+    def test_observed_role_requires_an_explicit_role_token(self):
+        self.assertEqual(
+            runtime_module._observed_role({"agent_type": "symphony_lead_gpt_5_high"}),
+            "lead",
+        )
+        self.assertEqual(
+            runtime_module._observed_role({"agent_type": "symphony_consultant_gpt_6_high"}),
+            "consultant",
+        )
+        self.assertEqual(
+            runtime_module._observed_role({"task_name": "/tmp/leader-not-an-agent"}),
+            "",
+        )
+        self.assertEqual(
+            runtime_module._observed_role({"role": "lead", "task_name": "consultant-not-role"}),
+            "lead",
+        )
+
     def test_status_does_not_call_a_historical_heartbeat_current(self):
         handle(self.payload("$symphony:symphony status"), self.environ)
         state = StateStore(self.state_root).load(self.project)
@@ -198,6 +221,7 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(self.output(result)["decision"], "block")
         self.assertIn("w1", self.output(result)["reason"])
+        self.assertIn("for this project", self.output(result)["reason"])
         self.assertEqual(self.output(replay)["decision"], "block")
 
     def test_host_observed_lead_completion_allows_normal_stop(self):
