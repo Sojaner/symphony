@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generated_at": "2026-09-21",
+  "generated_at": "2026-09-22",
   "source": "OpenAI model documentation and Claude Code's provider-fetched model catalog",
   "note": "Machine-maintained. The nine-cell size/complexity grid is product policy and lives in routing.py; only the tier-to-model resolution is edited here. Profiles are ordered best-first: the first whose requirements the account satisfies applies, and the last is the conservative floor used when nothing can be probed. Codex entitlement is a model roster, so requires_all must be a subset of it; Claude entitlement is a plan name, so requires_any must contain it.",
   "providers": {
@@ -16,7 +16,6 @@
           },
           "efforts": {
             "gpt-5.6-luna": [
-              "none",
               "low",
               "medium",
               "high",
@@ -24,7 +23,6 @@
               "max"
             ],
             "gpt-5.6-terra": [
-              "none",
               "low",
               "medium",
               "high",
@@ -32,7 +30,6 @@
               "max"
             ],
             "gpt-5.6-sol": [
-              "none",
               "low",
               "medium",
               "high",
