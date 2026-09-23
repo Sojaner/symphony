@@ -470,9 +470,9 @@ def agent_probe(home: Path) -> bool:
 
 
 def _today() -> str:
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
 
-    return datetime.now(UTC).date().isoformat()
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 def check_policy(*, require_fresh: bool = False, validate_profiles: bool = True) -> int:

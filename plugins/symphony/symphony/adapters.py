@@ -1,7 +1,7 @@
 """Translate provider hook payloads to and from Symphony's core model."""
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -58,7 +58,7 @@ def event_from_payload(provider: str, payload: dict[str, Any]) -> Event:
     return Event(
         event_id=hashlib.sha256(raw.encode()).hexdigest(),
         kind=kind,
-        observed_at=datetime.now(UTC).isoformat(),
+        observed_at=datetime.now(timezone.utc).isoformat(),
         payload=canonical,
     )
 

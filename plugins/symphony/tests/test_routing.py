@@ -1,5 +1,5 @@
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from plugins.symphony.symphony.model import CapabilitySnapshot
 from plugins.symphony.symphony.routing import (

@@ -1,7 +1,9 @@
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -42,12 +44,46 @@ class PackageContractTests(unittest.TestCase):
                 self.assertIsNotNone(match, provider)
                 self.assertTrue((PLUGIN / match.group(0)).is_file(), provider)
 
-    def test_codex_hooks_have_native_windows_commands(self):
+    def test_hook_starts_when_datetime_utc_is_unavailable(self):
+        """A generic python3 hook must work on Python 3.10, before UTC existed."""
+        from plugins.symphony.symphony.store import StateStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            project.mkdir()
+            state_root = Path(directory) / "state"
+            script = PLUGIN / "scripts" / "symphony_hook.py"
+            result = subprocess.run(
+                [sys.executable, "-c", (
+                    "import datetime, runpy, sys; "
+                    "datetime.__dict__.pop('UTC', None); "
+                    "runpy.run_path(sys.argv[1], run_name='__main__')"
+                ), str(script)],
+                input=json.dumps({
+                    "hook_event_name": "SessionStart",
+                    "session_id": "python310-smoke",
+                    "cwd": str(project),
+                }),
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": os.environ.get("PATH", ""),
+                    "SYMPHONY_STATE_DIR": str(state_root),
+                    "SYMPHONY_PROVIDER": "codex",
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                },
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            activation = StateStore(state_root).load(project).activation["codex"]
+            self.assertEqual(activation["session_id"], "python310-smoke")
+            self.assertEqual(activation["state"], "guarded")
+
+    def test_codex_windows_hooks_quote_script_paths_with_spaces(self):
         for handler in handlers("hooks/codex.json"):
             command = handler["commandWindows"]
             self.assertIn("set SYMPHONY_PROVIDER=codex&&", command)
-            self.assertIn("py -3 %PLUGIN_ROOT%\\scripts\\symphony_hook.py", command)
-            self.assertNotIn('"', command)
+            self.assertIn('py -3 "%PLUGIN_ROOT%\\scripts\\symphony_hook.py"', command)
             self.assertNotIn("${PLUGIN_ROOT}", command)
 
     def test_hook_manifests_contain_only_supported_events(self):

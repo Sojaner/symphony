@@ -1,7 +1,7 @@
 """Fast, offline hook runtime for Symphony's canonical lifecycle."""
 
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -1763,7 +1763,7 @@ def _record_fault(error: BaseException, environ: Mapping[str, str]) -> None:
         marker = _fault_log(environ)
         marker.parent.mkdir(parents=True, exist_ok=True)
         with marker.open("a", encoding="utf-8") as handle:
-            handle.write(f"{datetime.now(UTC).isoformat()} {type(error).__name__}\n")
+            handle.write(f"{datetime.now(timezone.utc).isoformat()} {type(error).__name__}\n")
         marker.chmod(0o600)
     except OSError:
         # A fault we cannot even record must still not block the host.
