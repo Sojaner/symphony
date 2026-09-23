@@ -55,11 +55,13 @@ WAITING = (
 )
 
 SKILLS = (
-    "When process skills are available, invoke them with the Skill tool; for Superpowers: "
-    "`superpowers:writing-plans` for multi-step work (skip its execution-choice handoff, because the "
-    "route already fixed the topology), `superpowers:test-driven-development` for behavior changes, "
-    "`superpowers:systematic-debugging` for bugs, `superpowers:requesting-code-review` for the "
-    "independent check, and `superpowers:verification-before-completion` before you report."
+    "Skills: before each action, including planning, implementing, debugging, reviewing, and "
+    "verifying, check your available skills. If there is even a 1% chance a skill applies, invoke "
+    "it with the Skill tool before acting and follow it; if it turns out not to fit, drop it. Process "
+    "skills come before implementation skills. Thoughts like \"this is simple\" or \"I already know "
+    "how\" are the signal to check, not to skip. Two exceptions: you cannot ask the user, so record a "
+    "question a skill wants answered in your result; and the route already fixed the topology, so skip "
+    "any step that asks you to choose one."
 )
 
 BODIES = {
@@ -79,13 +81,13 @@ BODIES = {
         "`SYMPHONY_ROLE: <role>` on the first line, then objective, ownership, evidence, constraints, "
         "acceptance_check, return_contract, size, and complexity. A consultant packet also needs one "
         "`SYMPHONY_DECISION: {\"size\":\"...\",\"complexity\":\"...\"}` line. Name any process skill "
-        "a child must use in its packet. " + WAITING + "\n\n" + SKILLS + "\n\n"
+        "a child must use in its packet. " + WAITING + "\n\n" + SKILLS + " Verify the integrated "
+        "result before you report.\n\n"
         "You cannot ask the user questions: record open decisions and assumptions in your result."
     ),
     "worker": (
         "Complete only the supplied objective and acceptance check. Return evidence to the lead. "
-        "Use any process skill the packet names through the Skill tool, and verify your result "
-        "before you report."
+        "Use any skill the packet names, and verify your result before you report.\n\n" + SKILLS
     ),
     "assessor": (
         "Assess only. Return size, complexity, risk, rationale, topology, and abstract role "
@@ -97,7 +99,7 @@ BODIES = {
         "Decide only the supplied question. Return recommendation, evidence, uncertainty, and "
         "consequences. Include one `SYMPHONY_DECISION: "
         '{"size":"small|medium|large","complexity":"simple|mixed|complex"}` line per actionable '
-        "decision. When asked for a review, review independently and do not fix the code."
+        "decision. When asked for a review, review independently and do not fix the code.\n\n" + SKILLS
     ),
 }
 
