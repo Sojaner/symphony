@@ -1,5 +1,7 @@
 import json
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -118,8 +120,38 @@ class PackageContractTests(unittest.TestCase):
 
     def test_capability_routing_assigns_supporting_workflows(self):
         routing = (PLUGIN / "skills/symphony/references/capability-routing.md").read_text(encoding="utf-8")
-        for capability in ("Ponytail", "Context7", "Compound Engineering", "Superpowers"):
+        for capability in ("Ponytail", "Context7", "Compound Engineering", "Superpowers", "Codebase Memory", "Matt Pocock"):
             self.assertIn(capability, routing)
+        for status in ("absent", "disabled", "failed", "incompatible", "incomplete"):
+            self.assertIn(status, routing)
+        self.assertIn("native practice", routing)
+        readme = (PLUGIN.parent.parent / "README.md").read_text(encoding="utf-8")
+        self.assertTrue("does not persist cross-session" in readme, "README overstates notice deduplication")
+
+    def test_generated_agents_keep_phase_practice_and_evidence_policy(self):
+        roles = {
+            "assessor": ("applicable phase practices", "native fallbacks", "evidence needed"),
+            "lead": ("ce-plan", "ce-work", "ce-code-review", "Verify the integrated"),
+            "worker": ("Codebase Memory", "Context7", "TDD", "verify your result"),
+            "consultant": ("ce-code-review", "code-review", "review independently"),
+        }
+        for role, phrases in roles.items():
+            agents = list((PLUGIN / "agents").glob(f"symphony-{role}-*.md"))
+            self.assertTrue(agents, role)
+            for path in agents:
+                body = path.read_text(encoding="utf-8")
+                for phrase in (*phrases, "advertised and callable", "native fallback", "artifact or fresh command/result", "incomplete"):
+                    self.assertIn(phrase, body, path.name)
+                self.assertNotIn("1% chance", body, path.name)
+
+        root = (PLUGIN / "skills/symphony/SKILL.md").read_text(encoding="utf-8")
+        for phrase in ("brainstorming", "native practice", "acceptance evidence", "fresh verification"):
+            self.assertIn(phrase, root)
+        result = subprocess.run(
+            [sys.executable, str(PLUGIN / "scripts/generate_agents.py"), "--check"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

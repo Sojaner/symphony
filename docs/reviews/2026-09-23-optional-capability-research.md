@@ -41,7 +41,7 @@ Claude `PreToolUse` can reject an invalid Agent call before execution. Preserve 
 
 If an installed skill introduces independent model elevation, engines, agents, approvals or shipping that cannot honor the packet, classify it as incompatible for that phase and use the native fallback. CE caller modes alone do not disable those features. Existing user instructions take precedence; do not reopen an already settled user choice merely because a supporting workflow normally asks it. [S2, S6]
 
-Reuse the existing **at-most-once per project/Symphony-version** recommendation cadence. Only notify for an applicable capability with a concrete benefit over the fallback. Aggregate material gaps into one short notice: missing capability, affected phase, benefit, current fallback, official installation reference. Distinguish disabled/broken/incompatible from absent; do not suggest reinstalling a working but incompatible workflow. No auto-install and no delayed startup.
+The current reference asks for **at most one recommendation per project/Symphony version**, but has no durable optional-capability notice record. Agents can suppress repeats in their available context; cross-session deduplication is not host-enforced. Only notify for an applicable capability with a concrete benefit over the fallback. Aggregate material gaps into one short notice: missing capability, affected phase, benefit, current fallback, official installation reference. Distinguish disabled/broken/incompatible from absent; do not suggest reinstalling a working but incompatible workflow. No auto-install and no delayed startup.
 
 ## Sources and versions
 
@@ -59,6 +59,6 @@ All web sources checked on 2026-09-23; mutable `main` and provider documentation
 
 ## Smallest implementation and verification
 
-Update the existing capability-routing table, root/lead guidance and packet/return contract with these practices and evidence requirements; add Matt Pocock explicitly. Reuse the current capability state and deduplication mechanism rather than adding a parallel registry. Label enforcement strength in status.
+Update the existing capability-routing table, root/lead guidance and packet/return contract with these practices and evidence requirements; add Matt Pocock explicitly. Keep the notice rule instruction-only unless a small reliable durable mechanism is justified and implemented. State the enforcement limit plainly.
 
 Add focused checks covering: present/absent/disabled/failed capability; a phase-inapplicable skill producing no notice; native fallback preserving the acceptance check; repeated missing-capability notice suppression; incompatible workflow retaining Symphony authority; missing evidence never promoted to verified; Claude pre-spawn rejection versus Codex post-spawn detection on the actual supported hook shapes. A real-host check is required before claiming broader Codex pre-spawn enforcement.

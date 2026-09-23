@@ -54,14 +54,17 @@ WAITING = (
     "each result. Never wait by polling output files with Bash, sleep, or Monitor."
 )
 
-SKILLS = (
-    "Skills: before each action, including planning, implementing, debugging, reviewing, and "
-    "verifying, check your available skills. If there is even a 1% chance a skill applies, invoke "
-    "it with the Skill tool before acting and follow it; if it turns out not to fit, drop it. Process "
-    "skills come before implementation skills. Thoughts like \"this is simple\" or \"I already know "
-    "how\" are the signal to check, not to skip. Two exceptions: you cannot ask the user, so record a "
-    "question a skill wants answered in your result; and the route already fixed the topology, so skip "
-    "any step that asks you to choose one."
+PRACTICES = (
+    "When performing an applicable phase, use one relevant capability advertised and callable in this session "
+    "only when its instructions fit this packet; read its SKILL.md and required references first. "
+    "A cache copy or previous session does not establish availability. If absent, disabled, failed, "
+    "or incompatible, use the native practice in "
+    "`../skills/symphony/references/capability-routing.md` without delaying work. "
+    "Symphony alone owns route, delegation, lifecycle, and completion; a supporting skill's "
+    "caller-return or report-only mode does not itself disable nested agents or shipping. "
+    "In your return, name applicable phase, exact selected capability or native fallback, "
+    "availability reason, practice, and artifact or fresh command/result. Mark missing evidence "
+    "incomplete or explain a scoped exception; loading a skill is not proof that its practice ran."
 )
 
 BODIES = {
@@ -80,26 +83,41 @@ BODIES = {
         "packet's own size/complexity from the table Symphony gives you at start. Put "
         "`SYMPHONY_ROLE: <role>` on the first line, then objective, ownership, evidence, constraints, "
         "acceptance_check, return_contract, size, and complexity. A consultant packet also needs one "
-        "`SYMPHONY_DECISION: {\"size\":\"...\",\"complexity\":\"...\"}` line. Name any process skill "
-        "a child must use in its packet. " + WAITING + "\n\n" + SKILLS + " Verify the integrated "
+        "`SYMPHONY_DECISION: {\"size\":\"...\",\"complexity\":\"...\"}` line. Name the "
+        "applicable capability and evidence check in each child packet. " + WAITING + "\n\n"
+        "For planning use compatible `ce-plan` or bounded steps. For implementation use compatible "
+        "`ce-work`, behavior checks (Superpowers TDD when usable), and Ponytail's reuse/native "
+        "check. For independent review use compatible `ce-code-review` or a requirement-and-diff "
+        "review; verify the final tree before success claims. Shipping skills apply only when "
+        "authorized. " + PRACTICES + " Verify the integrated "
         "result before you report.\n\n"
         "You cannot ask the user questions: record open decisions and assumptions in your result."
     ),
     "worker": (
         "Complete only the supplied objective and acceptance check. Return evidence to the lead. "
-        "Use any skill the packet names, and verify your result before you report.\n\n" + SKILLS
+        "For structural discovery use covered Codebase Memory or targeted source reads; for "
+        "external library facts use Context7 or dated official sources. For behavior changes use "
+        "Superpowers TDD or the smallest meaningful native check; for bugs use a compatible "
+        "diagnosing-bugs skill or reproduce and fix the cause. Use Ponytail's reuse/native check. "
+        "Use any compatible skill the packet names, and verify your result before you report.\n\n"
+        + PRACTICES
     ),
     "assessor": (
         "Assess only. Return size, complexity, risk, rationale, topology, and abstract role "
         "routes. End with exactly one `SYMPHONY_ASSESSMENT: "
         '{"size":"small|medium|large","complexity":"simple|mixed|complex","risk":"...",'
-        '"rationale":"...","topology":"..."}` line. Do not become the lead.'
+        '"rationale":"...","topology":"..."}` line. Do not become the lead. '
+        "Identify applicable phase practices, their current availability, native fallbacks, and "
+        "evidence needed in the lead packet; do not execute them. " + PRACTICES
     ),
     "consultant": (
         "Decide only the supplied question. Return recommendation, evidence, uncertainty, and "
         "consequences. Include one `SYMPHONY_DECISION: "
         '{"size":"small|medium|large","complexity":"simple|mixed|complex"}` line per actionable '
-        "decision. When asked for a review, review independently and do not fix the code.\n\n" + SKILLS
+        "decision. For an independent review use compatible `ce-code-review` or Matt Pocock "
+        "`code-review`, or compare the exact diff with requirements and affected callers. "
+        "For external facts use Context7 or dated official sources. When asked for a review, "
+        "review independently and do not fix the code.\n\n" + PRACTICES
     ),
 }
 
