@@ -81,6 +81,7 @@ def codex_roster(home: Path) -> list[dict]:
         item
         for item in cache.get("models", ())
         if isinstance(item, dict) and item.get("visibility") == "list" and item.get("slug")
+        and item["slug"] not in CODEX_RETIRED
     ]
 
 
@@ -133,7 +134,9 @@ def _app_server_roster(home: Path) -> list[dict]:
                             for level in item.get("supportedReasoningEfforts", ())
                         ],
                     }
-                    for item in models if not item.get("hidden") and item.get("model")
+                    for item in models
+                    if not item.get("hidden") and item.get("model")
+                    and item["model"] not in CODEX_RETIRED
                 ]
         raise RuntimeError("model/list did not return a complete roster within 30 seconds")
     finally:
@@ -232,7 +235,8 @@ def _run_provider_agent(provider: str, current: list[dict], roster: list[dict]) 
 
 def validate_matrix(provider: str, result: dict, current: list[dict], roster: list[dict]) -> dict:
     """Reject provider-agent output unless every route is complete and safe."""
-    models = ({entry["slug"]: set(efforts_of(entry)) for entry in roster}
+    models = ({entry["slug"]: set(efforts_of(entry)) for entry in roster
+               if entry["slug"] not in CODEX_RETIRED}
               if provider == "codex" else {entry["id"]: set(CLAUDE_EFFORTS) for entry in roster})
     expected_ids = [profile["id"] for profile in current]
     if not isinstance(result, dict) or not isinstance(result.get("profiles"), list):

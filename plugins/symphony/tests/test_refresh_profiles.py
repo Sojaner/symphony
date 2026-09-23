@@ -46,6 +46,20 @@ class RosterTests(unittest.TestCase):
                     roster("model"),
                 )
 
+    def test_retired_codex_models_are_not_selectable_from_the_roster(self):
+        with TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "models_cache.json").write_text(json.dumps({
+                "models": [
+                    {"slug": "gpt-5.5", "visibility": "list"},
+                    {"slug": "gpt-5.6-terra", "visibility": "list"},
+                ]
+            }))
+            self.assertEqual(
+                [item["slug"] for item in self.refresh.codex_roster(home)],
+                ["gpt-5.5"],
+            )
+
     def test_a_missing_roster_and_failed_live_query_stops_instead_of_guessing(self):
         with TemporaryDirectory() as directory:
             with patch.object(self.refresh, "_app_server_roster", side_effect=RuntimeError("offline")):
