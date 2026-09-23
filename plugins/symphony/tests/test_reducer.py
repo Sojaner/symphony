@@ -159,6 +159,33 @@ class LifecycleReducerTests(unittest.TestCase):
         self.assertEqual(replayed, state)
         self.assertEqual(replay_actions, actions)
 
+    def test_background_stop_requires_a_tracked_active_assessor_or_lead(self):
+        state = running_state(delegations=[delegation("assessor-1", role="assessor")])
+        for tasks in (
+            [{"id": "shell-1", "type": "shell"}],
+            [{"id": "assessor-1", "type": "shell"}],
+            [{"id": "other", "type": "subagent"}],
+            [{"type": "subagent"}],
+            [{"id": "assessor-1"}],
+        ):
+            with self.subTest(tasks=tasks):
+                _, actions = reduce(state, event("stop_requested", background_tasks=tasks))
+                self.assertEqual(actions, (Action("block_stop", {"active": ["assessor-1"]}),))
+
+        _, actions = reduce(state, event(
+            "stop_requested", background_tasks=[{"id": "assessor-1", "type": "subagent"}]
+        ))
+        self.assertEqual(actions, (Action("permit_stop"),))
+
+    def test_background_stop_does_not_wait_for_worker_or_completed_lead(self):
+        for tracked in (delegation("worker-1"), delegation("lead-1", "completed", "lead")):
+            with self.subTest(tracked=tracked):
+                state = running_state(delegations=[tracked])
+                _, actions = reduce(state, event(
+                    "stop_requested", background_tasks=[{"id": tracked.identity, "type": "subagent"}]
+                ))
+                self.assertEqual(actions[0].kind, "block_stop")
+
     def test_lead_completion_archives_run_and_permits_completion(self):
         original = running_state(delegations=[delegation("worker-1", "completed")])
 

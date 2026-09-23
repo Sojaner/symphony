@@ -1,7 +1,7 @@
 ---
-name: symphony-assessor-claude-sonnet-5-high
+name: symphony-assessor-claude-fable-5-1-high
 description: Classifies a bounded Symphony task without executing it.
-model: claude-sonnet-5
+model: claude-fable-5-1
 effort: high
 ---
 

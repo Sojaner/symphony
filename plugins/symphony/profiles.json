@@ -2,7 +2,7 @@
   "schema": 1,
   "generated_at": "2026-09-23",
   "source": "OpenAI model documentation and Claude Code's provider-fetched model catalog",
-  "note": "Machine-maintained provider choices for the fixed nine-cell size/complexity policy in routing.py. Each profile's matrix selects a model and effort per cell; tiers summarize those choices for agent packaging. Profiles are ordered best-first: the first whose requirements the account satisfies applies, and the last is the conservative floor when no entitlement is detected. Codex requires_all is checked against its model roster; Claude requires_any is checked against plan names.",
+  "note": "Machine-maintained provider choices for the fixed nine-cell size/complexity policy in routing.py. Each profile's matrix selects a model and effort per cell; tiers summarize those choices for agent packaging. Profiles are ordered best-first: the first whose requirements the account satisfies applies, and the last is the conservative floor when no entitlement is detected. Codex requires_all is checked against its model roster; Claude requires_all is checked against explicitly available model IDs.",
   "providers": {
     "codex": {
       "profiles": [
@@ -155,6 +155,81 @@
     "claude": {
       "profiles": [
         {
+          "id": "fable",
+          "tiers": {
+            "economy": "claude-sonnet-5",
+            "balanced": "claude-sonnet-5",
+            "capable": "claude-sonnet-5",
+            "strongest": "claude-fable-5-1"
+          },
+          "matrix": {
+            "small/simple": {
+              "model": "claude-sonnet-5",
+              "effort": "low"
+            },
+            "small/mixed": {
+              "model": "claude-sonnet-5",
+              "effort": "medium"
+            },
+            "small/complex": {
+              "model": "claude-fable-5-1",
+              "effort": "xhigh"
+            },
+            "medium/simple": {
+              "model": "claude-sonnet-5",
+              "effort": "low"
+            },
+            "medium/mixed": {
+              "model": "claude-sonnet-5",
+              "effort": "medium"
+            },
+            "medium/complex": {
+              "model": "claude-opus-5-5",
+              "effort": "high"
+            },
+            "large/simple": {
+              "model": "claude-sonnet-5",
+              "effort": "low"
+            },
+            "large/mixed": {
+              "model": "claude-sonnet-5",
+              "effort": "medium"
+            },
+            "large/complex": {
+              "model": "claude-opus-5-5",
+              "effort": "high"
+            }
+          },
+          "efforts": {
+            "claude-sonnet-5": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "claude-opus-5-5": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "claude-fable-5-1": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "requires_all": [
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5"
+          ]
+        },
+        {
           "id": "opus",
           "tiers": {
             "economy": "claude-sonnet-5",
@@ -214,12 +289,18 @@
               "high",
               "xhigh",
               "max"
+            ],
+            "claude-fable-5-1": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
             ]
           },
-          "requires_any": [
-            "max",
-            "enterprise",
-            "team"
+          "requires_all": [
+            "claude-opus-5-5",
+            "claude-sonnet-5"
           ]
         },
         {
@@ -277,6 +358,13 @@
               "max"
             ],
             "claude-opus-5-5": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "claude-fable-5-1": [
               "low",
               "medium",
               "high",

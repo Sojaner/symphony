@@ -57,6 +57,20 @@ The tables below are generated from `profiles.json` with the runtime resolver. T
 | large / mixed | `gpt-5.5/medium` | `gpt-5.5/medium` |
 | large / complex | `gpt-5.5/high` | `gpt-5.5/high` |
 
+### Claude Code: `fable`
+
+| Size / complexity | Normal risk | High risk |
+|---|---|---|
+| small / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
+| small / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/high` |
+| small / complex | `claude-fable-5-1/xhigh` | `claude-fable-5-1/xhigh` |
+| medium / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
+| medium / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/high` |
+| medium / complex | `claude-opus-5-5/high` | `claude-opus-5-5/high` |
+| large / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
+| large / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/medium` |
+| large / complex | `claude-opus-5-5/high` | `claude-opus-5-5/high` |
+
 ### Claude Code: `opus`
 
 | Size / complexity | Normal risk | High risk |
@@ -92,23 +106,26 @@ Each provider ships several profiles: an account routes through the best one it 
 
 A **tier clamp** means a weaker model does the work. It blocks the lead spawn and waits: the user accepts it with `/symphony:proceed` (Codex: `$symphony:symphony proceed`), which holds for the rest of that provider session and is asked again in the next one. An **effort clamp** on the same model is announced and the run continues, because effort is the dimension the matrix already trades away under risk.
 
-Recommend a useful missing capability at most once per project per Symphony version. Never install it automatically.
+## Optional phase practices
 
-## Workflow authority
+Symphony alone selects routes, delegation, lifecycle, reassessment, and completion. Apply a supporting practice only when its exact skill or tool is advertised and usable in this session, its instructions have been read, and it fits the packet and user instructions. A cache directory, plugin name, or past session proves neither availability nor use. Distinguish **advertised**, **readable/callable**, and **used with observable evidence**. If absent, disabled, failed, or incompatible, perform the native practice in the same row. Do not run every suite on every task or introduce a second scheduler.
 
-Symphony retains topology and lifecycle ownership. Supporting workflows operate inside the selected route and never ask the user to choose a second topology.
+| Phase and trigger | Compatible capability practice | Native practice and evidence | Installation benefit |
+|---|---|---|---|
+| Requirements need clarification | Root uses Superpowers `brainstorming`; Matt Pocock `grilling` only for explicit stress-testing or unsettled decisions. Keep interactive questions at the root. | Concise brief, material questions, agreed outcome, constraints, assumptions, success criteria. | Structured alternatives and decision testing. |
+| Structural code discovery | Codebase Memory graph search, relevant trace, snippets, and index coverage for every relied-on path; read coverage gaps directly. | Targeted source search/read and paths supporting conclusions. Healthy indexing alone is not complete coverage. | Faster relationship and impact discovery. |
+| Current external library/API facts | Context7 `resolve-library-id` then `query-docs` when callable; match the dependency version and inspect provenance. | Official versioned docs/source, retrieval date, source URL and conclusion; state uncertainty if inaccessible. | Focused documentation retrieval. |
+| Implementation planning | Compound Engineering `ce-plan` when structured planning is needed. Ponytail checks reuse, stdlib/native features, and installed dependencies. | Bounded ordered steps, ownership, dependencies, acceptance checks; omit speculative work. | Researched planning and a consistent simplicity check. |
+| Behavior change or bug fix | Compatible Superpowers `test-driven-development`; Matt Pocock `tdd` for agreed public seams or `diagnosing-bugs` for a reproducible symptom; compatible Compound Engineering `ce-work` for execution. | Repro or meaningful behavior check, observed failure when required, root-cause change, fresh passing command/result; explain a scoped testing exception. | Test sensitivity, diagnosis and execution conventions. |
+| Independent review | Compatible Compound Engineering `ce-code-review` or Matt Pocock `code-review`, within the assigned route and depth. | Exact revision/diff, requirement and caller/failure-path inspection, findings, disposition and coverage limits. | Risk-directed review and standards/spec comparison. |
+| Completion claim | Superpowers `verification-before-completion` when usable. | Inspect final artifacts and run the relevant fresh check; report command/result or an explicit incomplete/exception status. | Consistent verification discipline. |
+| Authorized commit, release, or monitoring | Relevant Compound Engineering shipping skill when its mode fits the packet; keep monitoring under Symphony. | Repository-native git/forge/release commands, exact revision checks, delivery identity/result, and host wait/status. | Established publishing and recovery checks. |
 
-| Phase | Primary capability | Constraint |
-|---|---|---|
-| Requirements and architecture | Superpowers brainstorming | Use grilling only for ambiguous or contested decisions |
-| Current external facts | Context7 | Prefer official sources and dated conclusions |
-| Implementation planning | Compound Engineering `ce-plan` | Ponytail prunes speculative work |
-| Code execution | Compound Engineering `ce-work` | Superpowers TDD covers behavioral changes |
-| Review | Compound Engineering `ce-code-review` | Superpowers verification gates completion |
-| Commit, release, monitoring | Relevant Compound Engineering shipping workflow | Symphony retains lifecycle ownership |
-| Every design and code phase | Ponytail | Choose the smallest correct native solution |
+Ponytail's simplicity check applies across design, implementation, and review; use the smallest correct change while preserving required validation, security, accessibility, and evidence. If a selected skill introduces independent model elevation, agents, approvals, shipping, or an execution engine that cannot honor the packet, classify it incompatible and use the native practice. Compound Engineering `ce-work` return-to-caller and `ce-code-review` report-only modes do not by themselves suppress nested delegation. Do not invoke a whole workflow merely because a piece of it is relevant.
 
-When a supporting capability is unavailable, use the closest native process without delaying the run.
+For Codex, resolve the exact advertised skill name and read its `SKILL.md` and required references; no universal Skill API is assumed. For Claude Code, use an enabled, model-invocable Skill mechanism when available. Do not infer invocation from a readable plugin copy. A lead names the applicable practice and evidence check in each child packet. Record per applicable phase: exact capability/source or `native`, availability reason, practice performed, and artifact or command/result. Skill loading proves invocation only; the lead checks the returned work, and missing evidence is incomplete or an explicit exception, never verified success. Host hooks observe only supported events and lifecycle facts, not semantic quality.
+
+Recommend a material missing capability only when its benefit improves this task's fallback. Aggregate gaps into one concise notice with capability, affected phase, benefit, native fallback, and official installation reference; aim for at most once per project and Symphony version. This is an instruction, not persisted cross-session deduplication: repeat suppression is only as reliable as observable session/project state. Distinguish absent from disabled, broken, and incompatible; do not suggest reinstalling the latter. Never auto-install or delay startup. Official references: [Superpowers](https://github.com/obra/superpowers), [Compound Engineering](https://github.com/EveryInc/compound-engineering-plugin), [Context7](https://github.com/upstash/context7), [Ponytail](https://github.com/DietrichGebert/ponytail), [Codebase Memory](https://github.com/DeusData/codebase-memory-mcp), [Matt Pocock skills](https://github.com/mattpocock/skills).
 
 ## Optional indexed memory
 

@@ -49,22 +49,75 @@ DESCRIPTIONS = {
     ("consultant", "high"): "Resolves a bounded Symphony decision and returns its local classification.",
 }
 
+WAITING = (
+    "Agents you spawn run in the background: after spawning, end your turn and you are woken with "
+    "each result. Never wait by polling output files with Bash, sleep, or Monitor."
+)
+
+PRACTICES = (
+    "When performing an applicable phase, use one relevant capability advertised and callable in this session "
+    "only when its instructions fit this packet; read its SKILL.md and required references first. "
+    "A cache copy or previous session does not establish availability. If absent, disabled, failed, "
+    "or incompatible, use the native practice in "
+    "`../skills/symphony/references/capability-routing.md` without delaying work. "
+    "Symphony alone owns route, delegation, lifecycle, and completion; a supporting skill's "
+    "caller-return or report-only mode does not itself disable nested agents or shipping. "
+    "In your return, name applicable phase, exact selected capability or native fallback, "
+    "availability reason, practice, and artifact or fresh command/result. Mark missing evidence "
+    "incomplete or explain a scoped exception; loading a skill is not proof that its practice ran."
+)
+
 BODIES = {
-    "lead": "Own execution, integration, verification, and communication for the supplied route.",
+    "lead": (
+        "Own execution, integration, verification, and communication for the supplied route. "
+        "The `SYMPHONY_ROUTE` line fixes your topology; follow it rather than doing everything "
+        "yourself.\n\n"
+        "- small: do the work directly; delegate only long-running mechanical units.\n"
+        "- medium: split independent implementation units into worker packets, do quick glue work "
+        "yourself, and integrate and verify the results.\n"
+        "- large: administer. Delegate all project work to workers and keep only planning, "
+        "integration, and verification.\n"
+        "- When the route calls for an independent check (high risk, or small/complex), a separate "
+        "consultant or worker performs the review. Never review your own work.\n\n"
+        "Spawn each child as `symphony:symphony-<role>-<model>-<effort>`, choosing the type for the "
+        "packet's own size/complexity from the table Symphony gives you at start. Put "
+        "`SYMPHONY_ROLE: <role>` on the first line, then objective, ownership, evidence, constraints, "
+        "acceptance_check, return_contract, size, and complexity. A consultant packet also needs one "
+        "`SYMPHONY_DECISION: {\"size\":\"...\",\"complexity\":\"...\"}` line. Name the "
+        "applicable capability and evidence check in each child packet. " + WAITING + "\n\n"
+        "For planning use compatible `ce-plan` or bounded steps. For implementation use compatible "
+        "`ce-work`, behavior checks (Superpowers TDD when usable), and Ponytail's reuse/native "
+        "check. For independent review use compatible `ce-code-review` or a requirement-and-diff "
+        "review; verify the final tree before success claims. Shipping skills apply only when "
+        "authorized. " + PRACTICES + " Verify the integrated "
+        "result before you report.\n\n"
+        "You cannot ask the user questions: record open decisions and assumptions in your result."
+    ),
     "worker": (
-        "Complete only the supplied objective and acceptance check. Return evidence to the lead."
+        "Complete only the supplied objective and acceptance check. Return evidence to the lead. "
+        "For structural discovery use covered Codebase Memory or targeted source reads; for "
+        "external library facts use Context7 or dated official sources. For behavior changes use "
+        "Superpowers TDD or the smallest meaningful native check; for bugs use a compatible "
+        "diagnosing-bugs skill or reproduce and fix the cause. Use Ponytail's reuse/native check. "
+        "Use any compatible skill the packet names, and verify your result before you report.\n\n"
+        + PRACTICES
     ),
     "assessor": (
         "Assess only. Return size, complexity, risk, rationale, topology, and abstract role "
         "routes. End with exactly one `SYMPHONY_ASSESSMENT: "
         '{"size":"small|medium|large","complexity":"simple|mixed|complex","risk":"...",'
-        '"rationale":"...","topology":"..."}` line. Do not become the lead.'
+        '"rationale":"...","topology":"..."}` line. Do not become the lead. '
+        "Identify applicable phase practices, their current availability, native fallbacks, and "
+        "evidence needed in the lead packet; do not execute them. " + PRACTICES
     ),
     "consultant": (
         "Decide only the supplied question. Return recommendation, evidence, uncertainty, and "
         "consequences. Include one `SYMPHONY_DECISION: "
         '{"size":"small|medium|large","complexity":"simple|mixed|complex"}` line per actionable '
-        "decision."
+        "decision. For an independent review use compatible `ce-code-review` or Matt Pocock "
+        "`code-review`, or compare the exact diff with requirements and affected callers. "
+        "For external facts use Context7 or dated official sources. When asked for a review, "
+        "review independently and do not fix the code.\n\n" + PRACTICES
     ),
 }
 
@@ -196,6 +249,11 @@ def main() -> int:
             + [f"no profile can select this agent: {name}" for name in extra]
             + broken
             + (["capability routing reference is stale"] if current_reference != expected_reference else [])
+            + [
+                f"agent file is stale: {name}"
+                for name in sorted(set(wanted) & set(present))
+                if present[name] != render(*wanted[name])
+            ]
         )
         for problem in problems:
             print(f"::error::run scripts/generate_agents.py -- {problem}")
@@ -204,10 +262,9 @@ def main() -> int:
         print(f"agent files and routing reference cover every selectable route ({len(wanted)} files)")
         return 0
 
-    # Descriptions are editorial, so an existing file is left alone.
     for name in extra:
         (AGENTS / name).unlink()
-    for name in missing:
+    for name in wanted:
         (AGENTS / name).write_text(render(*wanted[name]), encoding="utf-8")
     if current_reference != expected_reference:
         REFERENCE.write_text(expected_reference, encoding="utf-8")

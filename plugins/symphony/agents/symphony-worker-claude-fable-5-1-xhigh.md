@@ -1,7 +1,7 @@
 ---
-name: symphony-worker-claude-sonnet-5-xhigh
+name: symphony-worker-claude-fable-5-1-xhigh
 description: Completes bounded Symphony worker work.
-model: claude-sonnet-5
+model: claude-fable-5-1
 effort: xhigh
 ---
 

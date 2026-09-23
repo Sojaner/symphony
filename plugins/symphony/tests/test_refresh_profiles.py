@@ -66,6 +66,42 @@ class RosterTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self.refresh.codex_roster(Path(directory) / "absent")
 
+    def test_claude_agent_bootstraps_from_the_strongest_rostered_model(self):
+        current = json.loads(self.refresh.PROFILES.read_text())["providers"]["claude"]["profiles"]
+        declared = {model for profile in current for model in profile["efforts"]}
+        sonnet, opus, fable = (
+            next((model for model in sorted(declared)
+                  if self.refresh._model_rank("claude", model) == rank), f"claude-{family}-future")
+            for family, rank in (("sonnet", 1), ("opus", 2), ("fable", 3))
+        )
+        for ids, expected in (
+            ((sonnet, opus), opus),
+            ((sonnet,), sonnet),
+            ((sonnet, opus, fable), fable),
+            (("claude-opus-future",), "claude-opus-future"),
+        ):
+            with self.subTest(ids=ids):
+                result = {"profiles": []}
+                completed = unittest.mock.Mock(returncode=0, stdout=json.dumps(result))
+                with patch.object(self.refresh.subprocess, "run", return_value=completed) as run, \
+                     patch.object(self.refresh, "validate_matrix", return_value=result):
+                    self.refresh._run_provider_agent("claude", current, [{"id": model} for model in ids])
+                argv = run.call_args.args[0]
+                self.assertEqual(argv[argv.index("--model") + 1], expected)
+                effort = argv[argv.index("--effort") + 1]
+                if expected in declared:
+                    self.assertIn(effort, self.refresh.efforts_by_model(current, expected))
+                else:
+                    self.assertEqual(effort, "high")
+
+    def test_claude_agent_requires_a_rankable_rostered_model(self):
+        current = json.loads(self.refresh.PROFILES.read_text())["providers"]["claude"]["profiles"]
+        for entries in ([], [{"id": "unranked-model"}]):
+            with self.subTest(entries=entries), patch.object(self.refresh.subprocess, "run") as run:
+                with self.assertRaisesRegex(SystemExit, "no supported Claude model"):
+                    self.refresh._run_provider_agent("claude", current, entries)
+                run.assert_not_called()
+
 
 class ShippedProfileTests(unittest.TestCase):
     def test_shipped_matrices_cover_each_cell_and_back_the_tier_summary(self):
@@ -80,6 +116,39 @@ class ShippedProfileTests(unittest.TestCase):
                 )
                 for choice in profile["matrix"].values():
                     self.assertIn(choice["effort"], profile["efforts"][choice["model"]])
+
+    def test_claude_restricted_gates_cover_every_selected_model(self):
+        refresh = load()
+        profiles = json.loads(refresh.PROFILES.read_text())["providers"]["claude"]["profiles"]
+        for profile in profiles[:-1]:
+            with self.subTest(profile=profile["id"]):
+                self.assertEqual(
+                    set(profile["requires_all"]),
+                    {choice["model"] for choice in profile["matrix"].values()},
+                )
+
+    def test_refresh_updates_claude_model_gate_with_matrix(self):
+        refresh = load()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            document = json.loads(refresh.PROFILES.read_text())
+            path.write_text(json.dumps(document))
+
+            def decision(provider, current, roster):
+                profiles = [{"id": item["id"], "matrix": dict(item["matrix"])} for item in current]
+                if provider == "claude":
+                    profiles[0]["matrix"]["small/complex"] = {
+                        "model": "claude-opus-5-5", "effort": "xhigh"
+                    }
+                return {"profiles": profiles, "model_efforts": current[0]["efforts"], "rationale": "test"}
+
+            with patch.object(refresh, "PROFILES", path), \
+                 patch.object(refresh, "codex_roster", return_value=[]), \
+                 patch.object(refresh, "claude_roster", return_value=[]), \
+                 patch.object(refresh, "_run_provider_agent", side_effect=decision):
+                self.assertTrue(refresh.agent_probe(Path(directory)))
+            fable = json.loads(path.read_text())["providers"]["claude"]["profiles"][0]
+            self.assertEqual(fable["requires_all"], ["claude-opus-5-5", "claude-sonnet-5"])
 
 
 class SemanticMatrixTests(unittest.TestCase):

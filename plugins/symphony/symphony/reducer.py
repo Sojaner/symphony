@@ -333,6 +333,22 @@ def _stop_requested(state: ProjectState, event: Event):
             Action("archive_run", {"run_id": run.run_id}),
             Action("permit_stop"),
         )
+    waiting_for = {
+        item.identity for item in run.delegations
+        if item.state in _ACTIVE_STATES and item.role in {"assessor", "lead"}
+    }
+    if any(
+        isinstance(task, Mapping)
+        and task.get("type") == "subagent"
+        and task.get("id") in waiting_for
+        for task in (event.payload.get("background_tasks") or ())
+    ):
+        # Claude runs agents in the background and wakes the session with each
+        # result, so ending the turn is how the root waits. Blocking it here
+        # forced the root to busy-poll with shell loops, and the second stop
+        # abandoned the live run, so the lead spawn was refused and the
+        # assessment had to be repeated. The run stays open.
+        return state, (Action("permit_stop"),)
     reason = _stop_block_reason(run)
     if reason is None:
         return _archive(state, run, "completed", event.observed_at), (

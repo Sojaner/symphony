@@ -93,7 +93,9 @@ Symphony ships several profiles per provider and routes through the best one you
 | Medium | balanced/medium, mixed | balanced/high, mixed with optional consultation | capable/high, mixed with reserved consultation |
 | Large | economy/low, delegated | economy/medium, delegated with reserved consultation | economy/medium, delegated with strongest consultation |
 
-Pre-launch route enforcement needs a pre-spawn event, which only Claude Code provides; on Codex a mis-routed spawn is detected once the child starts and reported, not prevented.
+On Claude Code, a plan name alone does not establish Fable access. The Fable profile is selected only when `SYMPHONY_CLAUDE_AVAILABLE_MODELS` explicitly lists Fable, Opus, and Sonnet model IDs, or when you explicitly pin `SYMPHONY_PROFILE=fable`. An Opus/Sonnet list selects the Opus profile; unknown access uses the conservative Sonnet profile. A profile pin skips the access probe. Symphony names the exact packaged agent type for each role, and agents run in the background: the root ends its turn after a spawn and Claude Code wakes it with the result, so the Stop guard no longer holds a turn open while background agents run.
+
+Claude Code's Agent hook can reject an invalid spawn before launch. On Symphony's currently supported Codex collaboration path, a mis-routed spawn is detected after the child starts. Codex documents `PreToolUse` for ordinary `spawn_agent`, but Symphony has not verified pre-spawn enforcement on its exact collaboration path. Claude's packaged hooks match Agent calls, not Skill calls, so optional-capability practice is reported and checked by agents rather than host-enforced.
 
 The assessor is bounded, read-only, and separate from the lead. The lead route never inherits the assessor's expensive model or effort. Large-task leads administer dependency-aware work and reserve capacity for narrow consultant decisions. Small-task leads do straightforward work directly and delegate only genuinely independent or mechanical units.
 
@@ -113,7 +115,7 @@ Completed: worker [balanced/medium] — <identity> — <bounded objective>
 
 ## Optional capabilities
 
-Symphony uses available supporting workflows only for bounded jobs. Superpowers, Compound Engineering, Matt Pocock skills, and Ponytail may supply a suitable technique; Context7 may provide current official documentation; Codebase Memory may provide structural discovery and indexed document memory. Missing optional capabilities use native source inspection and repository documents without delaying startup.
+Symphony uses compatible, currently callable supporting workflows for applicable phases: Superpowers for clarification, behavior checks, and verification; Compound Engineering for planning, execution, review, and authorized shipping; Matt Pocock skills for bounded specialist work; Ponytail for simplicity; Context7 for current library facts; and Codebase Memory for structural discovery. A missing or unusable capability gets the corresponding native practice and observable check without delaying work. The [phase policy](plugins/symphony/skills/symphony/references/capability-routing.md) gives the exact fallbacks and evidence. Symphony may make one concise, useful missing-capability recommendation when observable state permits; it does not persist cross-session recommendation deduplication.
 
 Document memory is enabled only when Codebase Memory is available and its project index is healthy. It stores curated decisions and continuation state in `.symphony/context.md`, never secrets, transcripts, or copied source bodies.
 

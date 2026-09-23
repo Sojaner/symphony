@@ -11,11 +11,11 @@ SYMPHONY_ROLE: worker
 SYMPHONY_ROLE: consultant
 ```
 
-Claude blocks unmarked spawns before launch. Codex exposes no pre-spawn event, so there a mis-routed or unmarked spawn is detected once the child starts and reported, never prevented: the expensive route has already been paid for by then. An assessor must use high effort or above. A lead must use the matrix-selected effort, and workers and consultants cannot start until a lead is registered.
+Claude's Agent `PreToolUse` hook blocks unmarked spawns before launch. On Symphony's currently supported Codex collaboration path, observed events detect a mis-routed or unmarked spawn after the child starts; the cost of that spawn has already been incurred. Codex documentation also advertises `PreToolUse` for ordinary `spawn_agent`; extending Symphony's guarantee requires a real-host check of this exact collaboration path. An assessor must use high effort or above. A lead must use the matrix-selected effort, and workers and consultants cannot start until a lead is registered.
 
 Provider binding is mechanical:
 
-- Claude Code: select a packaged `symphony-<role>-<model>-<effort>` agent type. The agent definition pins both settings because Claude's Agent call does not expose per-call effort.
+- Claude Code: select a packaged `symphony-<role>-<model>-<effort>` agent type. The agent definition pins both settings because Claude's Agent call does not expose per-call effort. Reference it with the plugin prefix, `symphony:symphony-<role>-<model>-<effort>`. Symphony names the exact assessor and lead types in the root's guidance and the worker types in the lead's start context. Agents run in the background, and a background agent's result reaches Symphony through its `SubagentHandback` report.
 - Codex: pass `model` and `reasoning_effort`, use `fork_turns="none"`, and use `symphony_<role>_<model>_<effort>` as the task name. Relay a bounded packet explicitly; never fork the root history into an assessor or lead.
 
 Compact status shows at most five latest delegation records, ordered failed, active/waiting, then recently completed. `agents --all` shows every retained latest record, not every transition.
@@ -53,7 +53,7 @@ SYMPHONY_ROLE: lead
 SYMPHONY_ROUTE: {"size":"medium","complexity":"mixed","risk":"normal","rationale":"...","topology":"mixed"}
 ```
 
-The JSON values must use the matrix vocabulary above. Claude can reject malformed spawn markers before launch. Codex collaboration spawns do not emit `PreToolUse`, so Symphony correlates their task name and settings from the native child transcript and accepts the route from the assessor's final lifecycle message.
+The JSON values must use the matrix vocabulary above. Claude can reject malformed Agent spawn markers before launch. On the currently observed Codex collaboration path, Symphony correlates task name and settings from the native child transcript and accepts the route from the assessor's final lifecycle message; no pre-spawn rejection is established for that path.
 
 ## Actionable work packet
 
@@ -73,6 +73,10 @@ complexity: simple | mixed | complex
 **Bounded means scoped, never abridged.** A lead spawned with `fork_turns="none"` cannot see the request the user actually made, so the packet is the only copy. If the user asked for five things, `objective` states all five and `acceptance_check` is satisfied only when every one of them is met. Dropping items to make an objective read as a single sentence loses work silently: nothing downstream compares what was asked against what was done, and the completion gate checks only that no agent is still running. Split a request across several packets when the items are genuinely independent, and say so in each, but never narrow the request to fit the field.
 
 `size` and `complexity` are local to the packet. Each consultant decision is classified separately; a consultant may split one question into multiple packets.
+
+For applicable phases, put the exact advertised capability to try (or `native`), compatibility limits, and required observable practice in `constraints` and `acceptance_check`. Ask for a compact phase record in `return_contract`: exact capability/source or native fallback, availability reason (`usable`, `absent`, `disabled`, `failed`, or `incompatible`), practice performed, and artifact or fresh command/result. A child can discover a different actual state; report that state and use the native fallback. Missing evidence is `incomplete` or a scoped exception, never a verified success claim. The lead checks returned artifacts and results before integrating; a skill invocation alone proves no practice was completed.
+
+Symphony's hooks enforce supported routing and lifecycle events. They do not observe every Skill invocation: Claude's packaged hooks match `Agent` calls, not `Skill` calls, and Symphony does not claim host-enforced optional-practice compliance. Agent reports and lead inspection provide the practice evidence; label them separately from host-observed lifecycle facts.
 
 ## Lead
 

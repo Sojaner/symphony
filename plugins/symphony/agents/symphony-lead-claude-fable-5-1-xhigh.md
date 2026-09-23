@@ -1,7 +1,7 @@
 ---
-name: symphony-lead-claude-opus-5-5-xhigh
+name: symphony-lead-claude-fable-5-1-xhigh
 description: Completes bounded Symphony lead work.
-model: claude-opus-5-5
+model: claude-fable-5-1
 effort: xhigh
 ---
 
