@@ -175,11 +175,11 @@ def _carried_acceptance(
 def _entitlement_profile(
     state: ProjectState, provider: str, session_id: str, environ: Mapping[str, str]
 ) -> str:
-    """Which shipped profile this account can run, probed once per session.
+    """Which shipped profile this account can run, probed once per session/version.
 
     Entitlement does not change within a session, so the stored answer is
-    reused until the session does. A probe that yields nothing returns the
-    empty string, which routes through the conservative floor profile.
+    reused until the session or plugin version changes. A probe that yields
+    nothing returns the empty string, which routes through the conservative floor.
     """
     pinned = environ.get("SYMPHONY_PROFILE")
     if pinned:
@@ -187,7 +187,8 @@ def _entitlement_profile(
         # caches are unreadable, and what keeps tests off the developer's box.
         return pinned
     recorded = state.activation.get(provider, {})
-    if isinstance(recorded, Mapping) and recorded.get("profile"):
+    if (isinstance(recorded, Mapping) and recorded.get("plugin_version") == PLUGIN_VERSION
+            and recorded.get("profile")):
         if not session_id or recorded.get("session_id") == session_id:
             return str(recorded["profile"])
     entitled = _entitlement(provider, environ)

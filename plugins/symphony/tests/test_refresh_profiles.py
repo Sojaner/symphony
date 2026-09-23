@@ -66,6 +66,42 @@ class RosterTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self.refresh.codex_roster(Path(directory) / "absent")
 
+    def test_claude_agent_bootstraps_from_the_strongest_rostered_model(self):
+        current = json.loads(self.refresh.PROFILES.read_text())["providers"]["claude"]["profiles"]
+        declared = {model for profile in current for model in profile["efforts"]}
+        sonnet, opus, fable = (
+            next((model for model in sorted(declared)
+                  if self.refresh._model_rank("claude", model) == rank), f"claude-{family}-future")
+            for family, rank in (("sonnet", 1), ("opus", 2), ("fable", 3))
+        )
+        for ids, expected in (
+            ((sonnet, opus), opus),
+            ((sonnet,), sonnet),
+            ((sonnet, opus, fable), fable),
+            (("claude-opus-future",), "claude-opus-future"),
+        ):
+            with self.subTest(ids=ids):
+                result = {"profiles": []}
+                completed = unittest.mock.Mock(returncode=0, stdout=json.dumps(result))
+                with patch.object(self.refresh.subprocess, "run", return_value=completed) as run, \
+                     patch.object(self.refresh, "validate_matrix", return_value=result):
+                    self.refresh._run_provider_agent("claude", current, [{"id": model} for model in ids])
+                argv = run.call_args.args[0]
+                self.assertEqual(argv[argv.index("--model") + 1], expected)
+                effort = argv[argv.index("--effort") + 1]
+                if expected in declared:
+                    self.assertIn(effort, self.refresh.efforts_by_model(current, expected))
+                else:
+                    self.assertEqual(effort, "high")
+
+    def test_claude_agent_requires_a_rankable_rostered_model(self):
+        current = json.loads(self.refresh.PROFILES.read_text())["providers"]["claude"]["profiles"]
+        for entries in ([], [{"id": "unranked-model"}]):
+            with self.subTest(entries=entries), patch.object(self.refresh.subprocess, "run") as run:
+                with self.assertRaisesRegex(SystemExit, "no supported Claude model"):
+                    self.refresh._run_provider_agent("claude", current, entries)
+                run.assert_not_called()
+
 
 class ShippedProfileTests(unittest.TestCase):
     def test_shipped_matrices_cover_each_cell_and_back_the_tier_summary(self):

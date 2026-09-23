@@ -2,6 +2,7 @@ import json
 import sys
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,7 @@ from plugins.symphony.symphony.routing import (
     snapshot_for,
 )
 from plugins.symphony.symphony.runtime import handle
+from plugins.symphony.symphony import PLUGIN_VERSION
 from plugins.symphony.symphony.store import StateStore
 
 CODEX_FULL_SNAPSHOT = snapshot_for("codex", "full")
@@ -94,11 +96,12 @@ class EntitlementProbeTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def heartbeat(self, environ, provider="codex"):
+    def heartbeat(self, environ, provider="codex", **extra):
         payload = {
             "session_id": f"{provider}-session",
             "cwd": str(self.project),
             "hook_event_name": "SessionStart",
+            **extra,
         }
         if provider == "codex":
             payload.update({"turn_id": "turn-1", "model": "codex-model"})
@@ -148,6 +151,30 @@ class EntitlementProbeTests(unittest.TestCase):
         # re-probe, so the recorded answer survives.
         (Path(environ["CODEX_HOME"]) / "models_cache.json").unlink()
         self.assertEqual(self.heartbeat(environ).get("profile"), "full")
+
+    def test_an_old_claude_profile_is_not_reused_after_upgrade(self):
+        store = StateStore(self.state_root)
+        store.update(self.project, lambda state: (
+            replace(state, activation={"claude": {
+                "session_id": "claude-session", "plugin_version": "1.3.10", "profile": "opus"
+            }}), ()
+        ))
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
+        self.assertFalse(self.heartbeat(environ, "claude", source="resume").get("profile"))
+        handle({
+            "session_id": "claude-session", "cwd": str(self.project),
+            "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:start ship it",
+        }, environ)
+        self.assertFalse(store.load(self.project).activation["claude"].get("profile"))
+
+    def test_a_current_claude_profile_is_reused_within_its_session(self):
+        store = StateStore(self.state_root)
+        store.update(self.project, lambda state: (
+            replace(state, activation={"claude": {
+                "session_id": "claude-session", "plugin_version": PLUGIN_VERSION, "profile": "opus"
+            }}), ()
+        ))
+        self.assertEqual(self.heartbeat({"SYMPHONY_STATE_DIR": str(self.state_root)}, "claude")["profile"], "opus")
 
     def test_a_claude_plan_without_model_access_uses_the_floor(self):
         environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}

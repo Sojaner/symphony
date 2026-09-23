@@ -8,8 +8,8 @@ will not accept.
 
     refresh_profiles.py --verify   # reject any model the provider rejects
 
-Codex is the only provider whose identifiers churn. Claude's tiers are aliases
-that outlive model generations, so nothing here rewrites them.
+Both providers use exact model IDs. A refresh selects from each provider's
+current roster and rewrites the shipped profile matrix.
 """
 
 from __future__ import annotations
@@ -226,10 +226,21 @@ def _run_provider_agent(provider: str, current: list[dict], roster: list[dict]) 
         completed = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=900)
         print(f"Codex matrix agent: {model} at {effort} effort")
     else:
+        model = max(
+            (entry["id"] for entry in roster if _model_rank("claude", entry["id"]) is not None),
+            key=lambda name: (_model_rank("claude", name), name),
+            default=None,
+        )
+        if model is None:
+            raise SystemExit("::error::no supported Claude model can run the refresh agent")
+        effort = next(
+            (item for item in reversed(CLAUDE_EFFORTS) if item in efforts_by_model(current, model)),
+            "high",
+        )
         argv = ["claude", "--bare", "--print", "--no-session-persistence", "--tools", "",
-                "--model", "fable", "--effort", "max", "--output-format", "text", prompt]
+                "--model", model, "--effort", effort, "--output-format", "text", prompt]
         completed = subprocess.run(argv, capture_output=True, text=True, timeout=900)
-        print("Claude matrix agent: fable at max effort")
+        print(f"Claude matrix agent: {model} at {effort} effort")
     if completed.returncode:
         detail = (completed.stderr or completed.stdout).strip().splitlines()
         raise SystemExit(f"::error::{provider} matrix agent failed: {detail[-1][:300] if detail else completed.returncode}")
