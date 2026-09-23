@@ -187,7 +187,14 @@ def claude_roster() -> list[dict]:
 
 
 def _agent_prompt(provider: str, current: list[dict], roster: list[dict]) -> str:
+    floor = current[-1].get("matrix", {})
     return """Choose this provider's model/effort grid for Symphony. Optimize outcome quality against token and latency cost: use the cheapest adequate model and effort for routine cells, reserve stronger models and higher effort for work whose size/complexity benefits from them. The grid must be monotonic: complexity never lowers model capability or effort; increasing task size never raises model cost or effort. For the full entitlement profile, each cell must be at least as capable and effortful as its fallback profile.
+
+The last profile is also the runtime safety floor for users whose entitlements cannot be detected. Do not promote any fallback cell above the model capability/family of its currently shipped floor; those users may not have access to gated models. You may still choose each fallback cell's effort semantically. Current fallback model selections: """ + json.dumps({
+        cell: choice.get("model")
+        for cell, choice in floor.items()
+        if isinstance(choice, dict) and "model" in choice
+    }) + """
 
 Do not change the profile IDs or entitlement gates. Use only model IDs in the supplied roster. For every selected model, list its supported effort levels in provider-supported order. Return exactly one JSON object and no markdown or extra text with this shape:
 {"model_order":["least costly model", "...", "most capable model"],"model_efforts":{"model-id":["low","medium"]},"profiles":[{"id":"full","matrix":{"small/simple":{"model":"model-id","effort":"medium"},...}}],"rationale":"brief basis for the tradeoffs"}
