@@ -46,26 +46,37 @@ MATRIX = {
 }
 
 PROFILES_PATH = Path(__file__).resolve().parent.parent / "profiles.json"
+NO_PROFILE = "unavailable"
 
 
 @lru_cache(maxsize=1)
 def _profiles() -> dict:
     """The shipped tier-to-model profiles, maintained at release time."""
-    return json.loads(PROFILES_PATH.read_text(encoding="utf-8"))["providers"]
+    providers = json.loads(PROFILES_PATH.read_text(encoding="utf-8"))["providers"]
+    for provider in ("codex", "claude"):
+        profiles = providers[provider]["profiles"]
+        if not isinstance(profiles, list) or not profiles or any(not isinstance(item, dict) for item in profiles):
+            raise ValueError(f"{provider} needs a nonempty profile list")
+        ids = [item.get("id") for item in profiles]
+        if (any(not isinstance(pid, str) or not pid or pid == NO_PROFILE for pid in ids)
+                or len(set(ids)) != len(ids)):
+            raise ValueError(f"{provider} needs unique profile IDs excluding {NO_PROFILE!r}")
+    return providers
 
 
 def profiles_for(provider: str) -> tuple[dict, ...]:
-    """Every shipped profile for a provider, best first, floor last."""
+    """Every shipped profile in preference order, unknown-entitlement floor last."""
     return tuple(_profiles()[provider]["profiles"])
 
 
 def snapshot_for(provider: str, profile_id: str | None = None) -> CapabilitySnapshot:
     """The capability snapshot for one entitlement profile.
 
-    With no profile named, the last profile applies: it is the conservative
-    floor, so an account whose entitlement could not be probed is never routed
-    to a model it may not be able to run.
+    With no profile named, use the last profile as a conservative default for
+    unknown entitlement. A known roster with no matching profile is unavailable.
     """
+    if profile_id == NO_PROFILE:
+        return CapabilitySnapshot(provider, (), {}, {}, "profile:unavailable", None, "")
     profiles = profiles_for(provider)
     profile = next(
         (item for item in profiles if item["id"] == profile_id),
@@ -149,20 +160,32 @@ def _supported_effort(requested: str, supported: tuple[str, ...]) -> str:
     return max(lower, key=EFFORTS.index) if lower else min(supported, key=EFFORTS.index)
 
 
+def model_is_weaker(model: str, baseline: str) -> bool:
+    """Compare reviewed capability ranks; unknown models stay conservative."""
+    if model == baseline:
+        return False
+    try:
+        models = json.loads((PROFILES_PATH.parent / "model-policy.json").read_text(encoding="utf-8"))["models"]
+        return models[model]["capability_rank"] < models[baseline]["capability_rank"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return True
+
+
 def clamp_against_best(provider: str, route: Route, profile_id: str | None) -> dict[str, object]:
     """How far this account's entitlement moves a route off the matrix.
 
-    A clamp is relative to the best profile the provider ships, not to the
-    applied one: within a profile every tier resolves, so the loss only shows
-    when compared against what a fully entitled account would have run.
+    A clamp compares the applied route with the primary policy profile. A
+    different model needs consent only when its reviewed capability is lower.
     """
     best = resolve_tier(route, snapshot_for(provider, profiles_for(provider)[0]["id"]))
     actual = resolve_tier(route, snapshot_for(provider, profile_id))
+    best_model = best["lead_model"]
+    actual_model = actual["lead_model"]
     return {
-        "tier_clamped": actual["lead_model"] != best["lead_model"],
+        "tier_clamped": model_is_weaker(actual_model, best_model),
         "effort_clamped": actual["lead_effort"] != best["lead_effort"],
-        "intended_model": best["lead_model"],
+        "intended_model": best_model,
         "intended_effort": best["lead_effort"],
-        "actual_model": actual["lead_model"],
+        "actual_model": actual_model,
         "actual_effort": actual["lead_effort"],
     }

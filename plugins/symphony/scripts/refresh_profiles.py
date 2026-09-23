@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep the shipped capability profiles current without a maintainer in the loop.
+"""Refresh shipped capability profiles against a reviewed model policy.
 
 Neither host lets a hook discover models, so the tier-to-model map is a build
 artifact. This keeps that artifact honest: it reads each provider's own roster,
@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 import json
+import math
 import os
 from pathlib import Path
-import re
 import select
 import subprocess
 import sys
@@ -30,15 +31,12 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ROOT / "profiles.json"
+MODEL_POLICY = ROOT / "model-policy.json"
 
-# Ordered by the provider's stated price/capability positioning. Terra remains
-# in the rank only to migrate old profiles; Symphony no longer selects it.
-CODEX_RANK = ("gpt-5.5", "gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra")
-CODEX_RETIRED = {"gpt-5.6-terra"}
 CODEX_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 sys.path.insert(0, str(ROOT))
-from symphony.routing import Assessment, MATRIX as ROUTING_MATRIX, route_for  # noqa: E402
+from symphony.routing import Assessment, MATRIX as ROUTING_MATRIX, NO_PROFILE, route_for  # noqa: E402
 
 CELLS = tuple(f"{size}/{complexity}" for size, complexity in ROUTING_MATRIX)
 TIER_CELLS = {
@@ -49,20 +47,65 @@ TIER_CELLS = {
 }
 
 
+def _policy() -> dict:
+    try:
+        return json.loads(MODEL_POLICY.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"::error::cannot read Codex model policy: {error}")
+
+
+def _current(model: str) -> bool:
+    if not isinstance(model, str):
+        return False
+    entry = _policy().get("models", {}).get(model, {})
+    if entry.get("lifecycle") != "current":
+        return False
+    try:
+        return "retirement_date" not in entry or date.fromisoformat(_today()) < date.fromisoformat(entry["retirement_date"])
+    except (TypeError, ValueError):
+        return False
+
+
+def _selectable(entry: dict, model_key: str) -> bool:
+    model = entry.get(model_key)
+    rate_key = "api_usd_per_million_tokens" if model_key == "id" else "codex_credits_per_million_tokens"
+    if (not isinstance(model, str) or not _current(model)
+            or rate_key not in _policy()["models"][model]):
+        return False
+    if entry.get("lifecycle") not in (None, "current"):
+        return False
+    if entry.get("status") not in (None, "current", "active", "available"):
+        return False
+    return not any(entry.get(flag) is True for flag in (
+        "retired", "deprecated", "legacy", "isRetired", "isDeprecated", "isLegacy"
+    ))
+
+
+def _older_without_price_advantage(provider: str, model: str, available: set[str]) -> bool:
+    """Prefer newer adequate models unless the older rate vector is cheaper."""
+    entries = _policy()["models"]
+    choice = entries[model]
+    rate_key = "codex_credits_per_million_tokens" if provider == "codex" else "api_usd_per_million_tokens"
+    older_rates = choice[rate_key]
+    for other in available:
+        newer = entries[other]
+        if (other == model or newer["family"] != choice["family"]
+                or newer["generation"] <= choice["generation"]
+                or newer["capability_rank"] < choice["capability_rank"]):
+            continue
+        newer_rates = newer[rate_key]
+        components = older_rates.keys()
+        if (any(older_rates[key] > newer_rates[key] for key in components)
+                or all(older_rates[key] == newer_rates[key] for key in components)):
+            return True
+    return False
+
+
 def _model_rank(provider: str, model: str) -> int | None:
-    """Independent provider-family ordering; never trust an agent's ranking."""
-    if provider == "codex":
-        if model in CODEX_RANK:
-            return CODEX_RANK.index(model)
-        match = re.fullmatch(r"gpt-(\d+)(?:[.-].*)?", model)
-        if match and int(match.group(1)) > 6:
-            return len(CODEX_RANK) + int(match.group(1))
-        return None
-    lowered = model.lower()
-    for family, rank in (("haiku", 0), ("sonnet", 1), ("opus", 2), ("fable", 3)):
-        if family in lowered:
-            return rank
-    return None
+    """Reviewed provider capability rank; unknown IDs fail closed."""
+    entry = _policy().get("models", {}).get(model, {})
+    rate_key = "codex_credits_per_million_tokens" if provider == "codex" else "api_usd_per_million_tokens"
+    return entry.get("capability_rank") if rate_key in entry else None
 
 
 def codex_roster(home: Path) -> list[dict]:
@@ -70,7 +113,7 @@ def codex_roster(home: Path) -> list[dict]:
     cache_path = home / "models_cache.json"
     if not cache_path.exists():
         try:
-            return _app_server_roster(home)
+            return [entry for entry in _app_server_roster(home) if _selectable(entry, "slug")]
         except (OSError, ValueError, RuntimeError) as error:
             raise SystemExit(f"::error::no readable Codex model roster at {home}: {error}")
     try:
@@ -80,8 +123,8 @@ def codex_roster(home: Path) -> list[dict]:
     return [
         item
         for item in cache.get("models", ())
-        if isinstance(item, dict) and item.get("visibility") == "list" and item.get("slug")
-        and item["slug"] not in CODEX_RETIRED
+        if isinstance(item, dict) and item.get("visibility") == "list"
+        and _selectable(item, "slug")
     ]
 
 
@@ -135,8 +178,7 @@ def _app_server_roster(home: Path) -> list[dict]:
                         ],
                     }
                     for item in models
-                    if not item.get("hidden") and item.get("model")
-                    and item["model"] not in CODEX_RETIRED
+                    if not item.get("hidden") and _selectable(item, "model")
                 ]
         raise RuntimeError("model/list did not return a complete roster within 30 seconds")
     finally:
@@ -183,12 +225,13 @@ def claude_roster() -> list[dict]:
             + urllib.parse.quote(str(last_id), safe="")
             if page.get("has_more") and last_id else ""
         )
-    return [item for item in models if isinstance(item, dict) and item.get("id")]
+    return [item for item in models if isinstance(item, dict) and _selectable(item, "id")]
 
 
 def _agent_prompt(provider: str, current: list[dict], roster: list[dict]) -> str:
     floor = current[-1].get("matrix", {})
-    return """Choose this provider's model/effort grid for Symphony. Optimize outcome quality against token and latency cost: use the cheapest adequate model and effort for routine cells, reserve stronger models and higher effort for work whose size/complexity benefits from them. The grid must be monotonic: complexity never lowers model capability or effort; increasing task size never raises model cost or effort. For the full entitlement profile, each cell must be at least as capable and effortful as its fallback profile.
+    policy = _policy().get("models", {})
+    return """Choose this provider's model/effort grid for Symphony. Optimize outcome quality against token and latency cost: use the cheapest adequate model and effort for routine cells, reserve stronger models and higher effort for work whose size/complexity benefits from them. The grid must be monotonic: complexity never lowers model capability or effort; increasing task size never raises model token rates or effort. For the full entitlement profile, each cell must be at least as capable and effortful as its fallback profile. Token rates are per million tokens, output includes reasoning, and Claude rates also include cache-write durations; effort and latency affect usage, so do not infer a fixed total cost or effort multiplier from rates alone. Prefer a newer adequate generation within the same family; select an older one only when every published rate is no greater and at least one is cheaper than every newer adequate available model.
 
 The last profile is also the runtime safety floor for users whose entitlements cannot be detected. Do not promote any fallback cell above the model capability/family of its currently shipped floor; those users may not have access to gated models. You may still choose each fallback cell's effort semantically. Current fallback model selections: """ + json.dumps({
         cell: choice.get("model")
@@ -196,24 +239,32 @@ The last profile is also the runtime safety floor for users whose entitlements c
         if isinstance(choice, dict) and "model" in choice
     }) + """
 
-Do not change the profile IDs or entitlement gates. Use only model IDs in the supplied roster. For every selected model, list its supported effort levels in provider-supported order. Return exactly one JSON object and no markdown or extra text with this shape:
-{"model_order":["least costly model", "...", "most capable model"],"model_efforts":{"model-id":["low","medium"]},"profiles":[{"id":"full","matrix":{"small/simple":{"model":"model-id","effort":"medium"},...}}],"rationale":"brief basis for the tradeoffs"}
+Do not change the profile IDs or entitlement gates. For gated Codex profiles after the first profile, select only models in that profile's requires_all list so accounts with just those models retain a usable route. Use only model IDs in the supplied roster. For every selected model, list its supported effort levels in provider-supported order. Return exactly one JSON object and no markdown or extra text with this shape:
+{"model_order":["least capable model", "...", "most capable model"],"model_efforts":{"model-id":["low","medium"]},"profiles":[{"id":"full","matrix":{"small/simple":{"model":"model-id","effort":"medium"},...}}],"rationale":"brief basis for the tradeoffs"}
 
 Every profile must contain all nine matrix cells: small/simple, small/mixed, small/complex, medium/simple, medium/mixed, medium/complex, large/simple, large/mixed, large/complex. Every effort must be listed in that model's model_efforts entry. Return only this provider's decision; do not edit files or run commands.
 
 Provider: """ + provider + "\nCurrent profile IDs/gates: " + json.dumps([
         {key: profile[key] for key in ("id", "requires_all", "requires_any") if key in profile}
         for profile in current
-    ]) + "\nCurrent routing matrix: " + json.dumps(list(CELLS)) + "\nProvider model roster: " + json.dumps(roster)
+    ]) + "\nCurrent routing matrix: " + json.dumps(list(CELLS)) + "\nProvider model roster: " + json.dumps(roster) + (
+        "\nReviewed model policy (capability rank, lifecycle, and "
+        + ("Codex credits" if provider == "codex" else "Claude API USD")
+        + " per million input, cached input, and output tokens): "
+        + json.dumps({model: policy[model] for model in policy if model in {
+            entry.get("slug" if provider == "codex" else "id") for entry in roster
+        }})
+    )
 
 
 def _run_provider_agent(provider: str, current: list[dict], roster: list[dict]) -> dict:
     prompt = _agent_prompt(provider, current, roster)
     if provider == "codex":
         available = {entry["slug"]: entry for entry in roster}
+        candidates = {name for name in available if _selectable(available[name], "slug")}
         ranked = sorted(
-            (name for name in available if name not in CODEX_RETIRED and _model_rank(provider, name) is not None),
-            key=lambda name: _model_rank(provider, name),
+            (name for name in candidates if not _older_without_price_advantage(provider, name, candidates)),
+            key=lambda name: (_model_rank(provider, name), _policy()["models"][name]["generation"]),
         )
         if not ranked:
             raise SystemExit("::error::no supported Codex model can run the refresh agent")
@@ -226,9 +277,10 @@ def _run_provider_agent(provider: str, current: list[dict], roster: list[dict]) 
         completed = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=900)
         print(f"Codex matrix agent: {model} at {effort} effort")
     else:
+        candidates = {entry["id"] for entry in roster if _selectable(entry, "id")}
         model = max(
-            (entry["id"] for entry in roster if _model_rank("claude", entry["id"]) is not None),
-            key=lambda name: (_model_rank("claude", name), name),
+            (name for name in candidates if not _older_without_price_advantage(provider, name, candidates)),
+            key=lambda name: (_model_rank("claude", name), _policy()["models"][name]["generation"], name),
             default=None,
         )
         if model is None:
@@ -253,9 +305,15 @@ def _run_provider_agent(provider: str, current: list[dict], roster: list[dict]) 
 
 def validate_matrix(provider: str, result: dict, current: list[dict], roster: list[dict]) -> dict:
     """Reject provider-agent output unless every route is complete and safe."""
+    if (not isinstance(current, list) or not current
+            or any(not isinstance(profile, dict) or not isinstance(profile.get("id"), str)
+                   or not profile["id"] or profile["id"] == NO_PROFILE for profile in current)
+            or len({profile["id"] for profile in current}) != len(current)):
+        raise SystemExit(f"::error::{provider} needs nonempty unique profile IDs excluding {NO_PROFILE!r}")
     models = ({entry["slug"]: set(efforts_of(entry)) for entry in roster
-               if entry["slug"] not in CODEX_RETIRED}
-              if provider == "codex" else {entry["id"]: set(CLAUDE_EFFORTS) for entry in roster})
+               if _selectable(entry, "slug")}
+              if provider == "codex" else {entry["id"]: set(CLAUDE_EFFORTS) for entry in roster
+                                           if _selectable(entry, "id")})
     expected_ids = [profile["id"] for profile in current]
     if not isinstance(result, dict) or not isinstance(result.get("profiles"), list):
         raise SystemExit(f"::error::{provider} matrix output must contain a profile list")
@@ -293,6 +351,8 @@ def validate_matrix(provider: str, result: dict, current: list[dict], roster: li
         if not isinstance(matrix, dict) or set(matrix) != set(CELLS):
             raise SystemExit(f"::error::{provider} profile {profile['id']} must define exactly nine matrix cells")
         normalized = {}
+        prior = next(item for item in current if item["id"] == profile["id"])
+        limited_models = set(prior.get("requires_all", ())) if provider == "codex" and profile["id"] != expected_ids[0] else set()
         for cell in CELLS:
             choice = matrix[cell]
             if not isinstance(choice, dict):
@@ -302,6 +362,10 @@ def validate_matrix(provider: str, result: dict, current: list[dict], roster: li
                 raise SystemExit(f"::error::{provider} {cell} must name a string model and effort")
             if model not in models or rank.get(model) is None:
                 raise SystemExit(f"::error::{provider} {cell} model is absent from its roster/order: {model!r}")
+            if limited_models and model not in limited_models:
+                raise SystemExit(f"::error::{provider} {profile['id']} must preserve its gated model coverage")
+            if _older_without_price_advantage(provider, model, set(models)):
+                raise SystemExit(f"::error::{provider} {cell} selects older {model} without a token-rate advantage")
             if effort not in models[model] or effort not in declared_efforts.get(model, ()):
                 raise SystemExit(f"::error::{provider} unsupported effort {effort!r} for {model}")
             size, complexity = cell.split("/")
@@ -318,8 +382,13 @@ def validate_matrix(provider: str, result: dict, current: list[dict], roster: li
                 raise SystemExit(f"::error::{provider} effort must not fall as complexity increases")
         for complexity in ("simple", "mixed", "complex"):
             cells = [normalized[f"{size}/{complexity}"] for size in ("small", "medium", "large")]
-            if [rank[item["model"]] for item in cells] != sorted((rank[item["model"]] for item in cells), reverse=True):
-                raise SystemExit(f"::error::{provider} model cost must not rise as task size increases")
+            if provider in ("codex", "claude"):
+                rates = _policy()["models"]
+                rate_key = "codex_credits_per_million_tokens" if provider == "codex" else "api_usd_per_million_tokens"
+                for component in rates[cells[0]["model"]][rate_key]:
+                    values = [rates[item["model"]][rate_key][component] for item in cells]
+                    if values != sorted(values, reverse=True):
+                        raise SystemExit(f"::error::{provider} {component} token rate must not rise as task size increases")
             if [CODEX_EFFORTS.index(item["effort"]) for item in cells] != sorted((CODEX_EFFORTS.index(item["effort"]) for item in cells), reverse=True):
                 raise SystemExit(f"::error::{provider} effort must not rise as task size increases")
         normalized_profiles.append({"id": profile["id"], "matrix": normalized})
@@ -345,6 +414,8 @@ def validate_matrix(provider: str, result: dict, current: list[dict], roster: li
             if CODEX_EFFORTS.index(full[cell]["effort"]) < CODEX_EFFORTS.index(fallback[cell]["effort"]):
                 raise SystemExit(f"::error::{provider} full profile cannot use lower effort than fallback at {cell}")
             prior_floor = shipped_fallback.get(cell)
+            if prior_floor and _model_rank(provider, prior_floor["model"]) is None:
+                raise SystemExit(f"::error::{provider} prior fallback model lacks a reviewed capability rank at {cell}")
             if prior_floor and rank[fallback[cell]["model"]] > _model_rank(provider, prior_floor["model"]):
                 raise SystemExit(f"::error::{provider} fallback cannot use a more gated model at {cell}")
             improved |= rank[full[cell]["model"]] > rank[fallback[cell]["model"]] or full[cell]["effort"] != fallback[cell]["effort"]
@@ -368,6 +439,9 @@ def agent_probe(home: Path) -> bool:
         decisions = {provider: future.result() for provider, future in futures.items()}
     updated = json.loads(json.dumps(document))
     for provider, decision in decisions.items():
+        available = codex_models if provider == "codex" else claude_models
+        model_key = "slug" if provider == "codex" else "id"
+        updated["providers"][provider]["available_models"] = sorted({entry[model_key] for entry in available})
         profiles = {profile["id"]: profile for profile in decision["profiles"]}
         for profile in updated["providers"][provider]["profiles"]:
             matrix = profiles[profile["id"]]["matrix"]
@@ -375,7 +449,7 @@ def agent_probe(home: Path) -> bool:
             profile["tiers"] = {tier: matrix[cell]["model"] for tier, cell in TIER_CELLS.items()}
             profile["efforts"] = decision["model_efforts"]
             if profile.get("requires_all") is not None and (
-                provider == "claude" or profile["id"] == "full"
+                provider == "claude" or profile["id"] == "full" or profile["requires_all"]
             ):
                 profile["requires_all"] = sorted({choice["model"] for choice in matrix.values()})
         print(f"{provider} matrix rationale: {decision['rationale'] or '(not supplied)'}")
@@ -401,8 +475,146 @@ def _today() -> str:
     return datetime.now(UTC).date().isoformat()
 
 
+def check_policy(*, require_fresh: bool = False, validate_profiles: bool = True) -> int:
+    """Check reviewed rates and shipped routes offline; selected models stand in for availability."""
+    policy = _policy()
+    failures = []
+    try:
+        reviewed = date.fromisoformat(policy["reviewed_at"])
+        age = (date.fromisoformat(_today()) - reviewed).days
+        if age < 0:
+            failures.append("policy review date is in the future")
+        if require_fresh and age > 45:
+            failures.append("policy review is older than 45 days; review provider sources and refresh model-policy.json")
+    except (KeyError, TypeError, ValueError):
+        failures.append("policy needs an ISO reviewed_at date")
+    if not isinstance(policy.get("sources"), list) or not policy["sources"] or any(
+        not isinstance(source, str) or not source.startswith("https://") for source in policy["sources"]
+    ):
+        failures.append("policy needs reviewed HTTPS sources")
+    entries = policy.get("models")
+    if not isinstance(entries, dict) or not entries:
+        failures.append("policy needs model entries")
+        entries = {}
+    for model, entry in entries.items():
+        rate_key = "codex_credits_per_million_tokens" if model.startswith("gpt-") else "api_usd_per_million_tokens"
+        dimensions = {"input", "cached_input", "output"} if model.startswith("gpt-") else {
+            "input", "cached_input", "output", "cache_write_5m", "cache_write_1h"
+        }
+        rates = entry.get(rate_key, {}) if isinstance(entry, dict) else {}
+        if (not isinstance(entry, dict) or type(entry.get("capability_rank")) is not int
+                or entry["capability_rank"] < 0
+                or not isinstance(entry.get("family"), str) or not entry["family"]
+                or type(entry.get("generation")) not in (int, float)
+                or not math.isfinite(entry["generation"]) or entry["generation"] <= 0
+                or not (model.startswith("gpt-") or model.startswith("claude-"))
+                or entry.get("lifecycle") not in ("current", "superseded", "legacy", "deprecated", "retiring", "retired")
+                or not isinstance(rates, dict) or set(rates) != dimensions
+                or any(type(rates.get(component)) not in (int, float) or not math.isfinite(rates[component])
+                       or rates[component] <= 0
+                       for component in dimensions)):
+            failures.append(f"{model}: invalid capability, lifecycle, or published token rates")
+        if isinstance(entry, dict) and "retirement_date" in entry:
+            try:
+                retirement = date.fromisoformat(entry["retirement_date"])
+                if entry.get("lifecycle") == "current" and retirement <= date.fromisoformat(_today()):
+                    failures.append(f"{model}: current model has reached its retirement date")
+            except (TypeError, ValueError):
+                failures.append(f"{model}: invalid retirement date")
+    if not validate_profiles:
+        for failure in failures:
+            print(f"::error::model policy: {failure}")
+        if failures:
+            return 1
+        print("reviewed policy metadata is consistent (shipped routes not checked)")
+        return 0
+    try:
+        providers = json.loads(PROFILES.read_text(encoding="utf-8"))["providers"]
+    except (OSError, ValueError, KeyError) as error:
+        failures.append(f"cannot read shipped profiles: {error}")
+        providers = {}
+    if not isinstance(providers, dict) or set(providers) != {"codex", "claude"}:
+        failures.append("shipped profiles must contain exactly codex and claude providers")
+        providers = providers if isinstance(providers, dict) else {}
+    for provider, block in providers.items():
+        profiles = block.get("profiles") if isinstance(block, dict) else None
+        if not isinstance(profiles, list) or not profiles or any(not isinstance(profile, dict) for profile in profiles):
+            failures.append(f"{provider}: needs a nonempty profile list")
+            continue
+        ids = [profile.get("id") for profile in profiles]
+        if (any(not isinstance(pid, str) or not pid or pid == NO_PROFILE for pid in ids)
+                or len(set(ids)) != len(ids)):
+            failures.append(f"{provider}: needs unique profile IDs excluding {NO_PROFILE!r}")
+            continue
+        selected = {choice.get("model") for profile in profiles for choice in profile.get("matrix", {}).values()}
+        available = block.get("available_models")
+        if (not isinstance(available, list) or not available
+                or any(not isinstance(model, str) for model in available)
+                or len(set(available)) != len(available)
+                or any(not _current(model) or _model_rank(provider, model) is None for model in available)
+                or not selected <= set(available)):
+            failures.append(f"{provider}: needs a reviewed availability snapshot containing every selected model")
+            continue
+        support_by_model = {}
+        for profile in profiles:
+            pid = profile.get("id", "?")
+            matrix = profile.get("matrix", {})
+            if set(matrix) != set(CELLS):
+                failures.append(f"{provider}/{pid}: matrix must cover nine cells")
+                continue
+            if profile.get("tiers") != {tier: matrix[cell].get("model") for tier, cell in TIER_CELLS.items()}:
+                failures.append(f"{provider}/{pid}: tiers disagree with matrix")
+            efforts = profile.get("efforts", {})
+            for model, levels in efforts.items():
+                if model in support_by_model and support_by_model[model] != levels:
+                    failures.append(f"{provider}/{pid}: effort support differs for {model}")
+                support_by_model[model] = levels
+                if not _current(model) or _model_rank(provider, model) is None:
+                    failures.append(f"{provider}/{pid}: non-current effort model {model}")
+                if (not isinstance(levels, list) or not levels or len(set(levels)) != len(levels)
+                        or any(level not in CODEX_EFFORTS for level in levels)
+                        or levels != [level for level in CODEX_EFFORTS if level in levels]):
+                    failures.append(f"{provider}/{pid}: invalid efforts for {model}")
+            for cell, choice in matrix.items():
+                model = choice.get("model")
+                if not _current(model) or _model_rank(provider, model) is None:
+                    failures.append(f"{provider}/{pid}/{cell}: non-current or unknown model {model}")
+                if choice.get("effort") not in efforts.get(model, []):
+                    failures.append(f"{provider}/{pid}/{cell}: effort missing from declaration")
+                size, complexity = cell.split("/")
+                risk_floor = route_for(Assessment(size, complexity, risk="high")).lead_effort
+                if risk_floor not in efforts.get(model, []):
+                    failures.append(f"{provider}/{pid}/{cell}: cannot preserve high-risk {risk_floor} effort")
+            for gate in ("requires_all", "requires_any"):
+                for model in profile.get(gate, []):
+                    if not _current(model) or _model_rank(provider, model) is None:
+                        failures.append(f"{provider}/{pid}: non-current or unknown gate model {model}")
+            if pid != profiles[-1].get("id") and set(profile.get("requires_all", [])) != {choice["model"] for choice in matrix.values()}:
+                failures.append(f"{provider}/{pid}: gate must cover selected models")
+        if not profiles or failures:
+            continue
+        support = {model: efforts_by_model(profiles, model) for model in selected}
+        roster = ([{"slug": model, "supported_reasoning_levels": [
+            {"effort": level} for level in support.get(model, CODEX_EFFORTS)
+        ]} for model in available]
+                  if provider == "codex" else [{"id": model} for model in available])
+        candidate = {"profiles": profiles, "model_order": sorted(selected), "model_efforts": support}
+        try:
+            validate_matrix(provider, candidate, profiles, roster)
+        except (SystemExit, KeyError, TypeError, ValueError) as error:
+            failures.append(f"{provider}: {error}")
+    for failure in failures:
+        print(f"::error::model policy: {failure}")
+    if failures:
+        return 1
+    print("shipped matrices and reviewed policy are consistent (live provider support not checked)")
+    return 0
+
+
 def verify() -> int:
     """Reject any shipped model/effort selection the provider will not accept."""
+    if check_policy(require_fresh=True):
+        return 1
     document = json.loads(PROFILES.read_text(encoding="utf-8"))
     failures: list[str] = []
     for provider, block in document["providers"].items():
@@ -474,14 +686,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent-probe", action="store_true", help="run provider matrix agents in parallel")
     parser.add_argument("--verify", action="store_true", help="check every shipped model resolves")
+    parser.add_argument("--check-policy", action="store_true", help="check reviewed policy and shipped matrices offline")
     parser.add_argument(
         "--codex-home",
         type=Path,
         default=Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
     )
     args = parser.parse_args()
+    if args.check_policy and check_policy():
+        return 1
     if args.agent_probe:
+        if check_policy(require_fresh=True, validate_profiles=False):
+            return 1
         changed = agent_probe(args.codex_home)
+        if check_policy():
+            return 1
         output = os.environ.get("GITHUB_OUTPUT")
         if output:
             with Path(output).open("a", encoding="utf-8") as stream:

@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from plugins.symphony.symphony.runtime import handle
+from plugins.symphony.symphony.runtime import _route_drift, handle
 from plugins.symphony.symphony.routing import profiles_for, snapshot_for
 from plugins.symphony.symphony.store import StateStore
 
@@ -113,7 +113,7 @@ class RouteDriftTests(unittest.TestCase):
         output = self.output(self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER))
 
         self.assertEqual(output["decision"], "block")
-        self.assertIn("no longer available", output["reason"])
+        self.assertIn("would now run", output["reason"])
         self.assertIn(FULL_ROUTE["model"], output["reason"])
         self.assertIn("proceed", output["reason"])
 
@@ -149,6 +149,13 @@ class RouteDriftTests(unittest.TestCase):
         )
 
         self.assertNotEqual(output.get("decision"), "block", output.get("reason"))
+
+    def test_drift_uses_model_capability_and_effort_not_profile_order(self):
+        luna = {"route": {"lead_model": "gpt-6-luna", "lead_effort": "medium"}}
+        sol = {"route": {"lead_model": "gpt-6-sol", "lead_effort": "medium"}}
+        self.assertFalse(_route_drift(luna, "gpt-6-sol", "medium")["weaker"])
+        self.assertTrue(_route_drift(sol, "gpt-6-luna", "medium")["weaker"])
+        self.assertTrue(_route_drift(sol, "gpt-6-sol", "low")["weaker"])
 
     def test_the_tier_not_the_stored_model_is_what_a_spawn_must_match(self):
         """The 1.0 deadlock: a stored model that no longer exists.

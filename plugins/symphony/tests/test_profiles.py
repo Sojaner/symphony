@@ -124,6 +124,68 @@ class EntitlementProbeTests(unittest.TestCase):
         environ = self.codex_home(roster(*required[:-1]))
         self.assertEqual(self.heartbeat(environ).get("profile"), "base")
 
+    def test_luna_and_sol_roster_keeps_cheaper_full_policy_cells(self):
+        available = {"gpt-6-luna", "gpt-6-sol"}
+        environ = self.codex_home(roster(*available))
+        profile = self.heartbeat(environ).get("profile")
+        self.assertEqual(profile, "luna-sol")
+        snapshot = snapshot_for("codex", profile)
+        full = snapshot_for("codex", "full")
+        for cell, choice in full.matrix.items():
+            size, complexity = cell.split("/")
+            expected_model = "gpt-6-sol" if choice["model"] == "gpt-6-astra" else choice["model"]
+            with self.subTest(cell=cell):
+                resolved = resolve_tier(route_for(Assessment(size, complexity)), snapshot)
+                self.assertEqual((resolved["lead_model"], resolved["lead_effort"]),
+                                 (expected_model, choice["effort"]))
+                self.assertIn(resolved["lead_model"], available)
+                self.assertFalse(resolved["degraded"])
+        self.assertEqual(snapshot.matrix["small/simple"]["model"], "gpt-6-luna")
+        self.assertEqual(snapshot.matrix["small/complex"]["model"], "gpt-6-sol")
+
+    def test_a_sol_only_roster_routes_every_cell_to_sol(self):
+        environ = self.codex_home(roster("gpt-6-sol"))
+        profile = self.heartbeat(environ).get("profile")
+        self.assertEqual(profile, "sol")
+        snapshot = snapshot_for("codex", profile)
+        for size in ("small", "medium", "large"):
+            for complexity in ("simple", "mixed", "complex"):
+                with self.subTest(size=size, complexity=complexity):
+                    resolved = resolve_tier(route_for(Assessment(size, complexity)), snapshot)
+                    self.assertEqual(resolved["lead_model"], "gpt-6-sol")
+                    self.assertFalse(resolved["degraded"])
+
+        payload = {"session_id": "codex-session", "cwd": str(self.project),
+                   "turn_id": "turn-2", "model": "codex-model", "hook_event_name": "PreToolUse",
+                   "tool_name": "spawn_agent"}
+        assessor = handle({**payload, "tool_input": {
+            "message": "SYMPHONY_ROLE: assessor\nShip it", "model": "gpt-6-sol",
+            "reasoning_effort": "high",
+        }}, environ)
+        self.assertNotEqual(json.loads(assessor.stdout or "{}").get("decision"), "block")
+        route = json.dumps({"size": "small", "complexity": "simple", "risk": "normal"})
+        lead = handle({**payload, "tool_input": {
+            "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {route}\nShip it",
+            "model": "gpt-6-sol", "reasoning_effort": "low",
+        }}, environ)
+        self.assertNotEqual(json.loads(lead.stdout or "{}").get("decision"), "block")
+
+    def test_a_known_unsupported_roster_discloses_and_blocks_launch(self):
+        environ = self.codex_home(roster("unrelated-model"))
+        self.assertEqual(self.heartbeat(environ).get("profile"), "unavailable")
+        payload = {
+            "session_id": "codex-session", "cwd": str(self.project),
+            "turn_id": "turn-2", "model": "codex-model",
+        }
+        prompt = handle({**payload, "hook_event_name": "UserPromptSubmit",
+                         "prompt": "$symphony:symphony start ship it"}, environ)
+        self.assertIn("no launchable route", prompt.stdout)
+        spawn = handle({**payload, "hook_event_name": "PreToolUse", "tool_name": "spawn_agent",
+                        "tool_input": {"message": "SYMPHONY_ROLE: assessor\nShip it",
+                                       "model": "unrelated-model", "reasoning_effort": "high"}}, environ)
+        self.assertEqual(json.loads(spawn.stdout)["decision"], "block")
+        self.assertIn("no launchable route", spawn.stdout)
+
     def test_a_hidden_model_does_not_count_as_entitlement(self):
         required = profiles_for("codex")[0].get("requires_all", [])
         environ = self.codex_home(
@@ -133,7 +195,9 @@ class EntitlementProbeTests(unittest.TestCase):
 
     def test_an_unreadable_roster_records_no_profile(self):
         environ = {"SYMPHONY_STATE_DIR": str(self.state_root), "CODEX_HOME": str(self.root / "absent")}
-        self.assertFalse(self.heartbeat(environ).get("profile"))
+        profile = self.heartbeat(environ).get("profile")
+        self.assertFalse(profile)
+        self.assertEqual(snapshot_for("codex", profile).tiers["strongest"], "gpt-6-luna")
 
     def test_a_pinned_profile_skips_the_probe_entirely(self):
         environ = {
@@ -188,7 +252,7 @@ class EntitlementProbeTests(unittest.TestCase):
         for index, (models, expected) in enumerate((
             ("claude-sonnet-5,claude-opus-5-5", "opus"),
             ("claude-sonnet-5,claude-opus-5-5,claude-fable-5-1", "fable"),
-            ("claude-fable-5-1", "sonnet"),
+            ("claude-fable-5-1", "unavailable"),
         )):
             with self.subTest(models=models):
                 self.state_root = self.root / f"state-{index}"

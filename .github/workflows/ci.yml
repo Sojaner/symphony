@@ -18,6 +18,9 @@ jobs:
       - name: Check patches
         run: git diff --check
 
+      - name: Validate shipped model lifecycle and token-rate policy
+        run: python3 plugins/symphony/scripts/refresh_profiles.py --check-policy
+
       - name: Check packaged agents and routing reference match the shipped profiles
         run: python3 plugins/symphony/scripts/generate_agents.py --check
 

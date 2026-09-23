@@ -33,29 +33,57 @@ The tables below are generated from `profiles.json` with the runtime resolver. T
 
 | Size / complexity | Normal risk | High risk |
 |---|---|---|
-| small / simple | `gpt-5.5/low` | `gpt-5.5/medium` |
+| small / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
 | small / mixed | `gpt-6-sol/medium` | `gpt-6-sol/high` |
 | small / complex | `gpt-6-astra/high` | `gpt-6-astra/high` |
-| medium / simple | `gpt-5.5/low` | `gpt-5.5/medium` |
+| medium / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
 | medium / mixed | `gpt-6-sol/medium` | `gpt-6-sol/high` |
 | medium / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
-| large / simple | `gpt-5.5/low` | `gpt-5.5/medium` |
-| large / mixed | `gpt-5.5/medium` | `gpt-5.5/medium` |
+| large / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
+| large / mixed | `gpt-6-luna/medium` | `gpt-6-luna/medium` |
+| large / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
+
+### Codex: `luna-sol`
+
+| Size / complexity | Normal risk | High risk |
+|---|---|---|
+| small / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
+| small / mixed | `gpt-6-sol/medium` | `gpt-6-sol/high` |
+| small / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
+| medium / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
+| medium / mixed | `gpt-6-sol/medium` | `gpt-6-sol/high` |
+| medium / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
+| large / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
+| large / mixed | `gpt-6-luna/medium` | `gpt-6-luna/medium` |
+| large / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
+
+### Codex: `sol`
+
+| Size / complexity | Normal risk | High risk |
+|---|---|---|
+| small / simple | `gpt-6-sol/low` | `gpt-6-sol/medium` |
+| small / mixed | `gpt-6-sol/medium` | `gpt-6-sol/high` |
+| small / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
+| medium / simple | `gpt-6-sol/low` | `gpt-6-sol/medium` |
+| medium / mixed | `gpt-6-sol/medium` | `gpt-6-sol/high` |
+| medium / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
+| large / simple | `gpt-6-sol/low` | `gpt-6-sol/medium` |
+| large / mixed | `gpt-6-sol/medium` | `gpt-6-sol/medium` |
 | large / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
 
 ### Codex: `base` (fallback)
 
 | Size / complexity | Normal risk | High risk |
 |---|---|---|
-| small / simple | `gpt-5.5/low` | `gpt-5.5/medium` |
-| small / mixed | `gpt-5.5/medium` | `gpt-5.5/high` |
-| small / complex | `gpt-5.5/high` | `gpt-5.5/high` |
-| medium / simple | `gpt-5.5/low` | `gpt-5.5/medium` |
-| medium / mixed | `gpt-5.5/medium` | `gpt-5.5/high` |
-| medium / complex | `gpt-5.5/high` | `gpt-5.5/high` |
-| large / simple | `gpt-5.5/low` | `gpt-5.5/medium` |
-| large / mixed | `gpt-5.5/medium` | `gpt-5.5/medium` |
-| large / complex | `gpt-5.5/high` | `gpt-5.5/high` |
+| small / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
+| small / mixed | `gpt-6-luna/medium` | `gpt-6-luna/high` |
+| small / complex | `gpt-6-luna/high` | `gpt-6-luna/high` |
+| medium / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
+| medium / mixed | `gpt-6-luna/medium` | `gpt-6-luna/high` |
+| medium / complex | `gpt-6-luna/high` | `gpt-6-luna/high` |
+| large / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
+| large / mixed | `gpt-6-luna/medium` | `gpt-6-luna/medium` |
+| large / complex | `gpt-6-luna/high` | `gpt-6-luna/high` |
 
 ### Claude Code: `fable`
 

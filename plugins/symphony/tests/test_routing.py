@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from plugins.symphony.symphony.model import CapabilitySnapshot
 from plugins.symphony.symphony.routing import (
     Assessment,
+    model_is_weaker,
     snapshot_for,
     resolve_tier,
     route_for,
@@ -11,6 +12,12 @@ from plugins.symphony.symphony.routing import (
 
 
 class RoutingTests(unittest.TestCase):
+    def test_model_comparison_uses_reviewed_capability_ranks(self):
+        self.assertFalse(model_is_weaker("gpt-6-sol", "gpt-6-luna"))
+        self.assertFalse(model_is_weaker("gpt-5.6-luna", "gpt-6-luna"))
+        self.assertTrue(model_is_weaker("gpt-6-luna", "gpt-6-sol"))
+        self.assertTrue(model_is_weaker("unknown-model", "gpt-6-luna"))
+
     def test_nine_cell_matrix(self):
         expected = {
             ("small", "simple"): ("capable", "medium", "direct", "none"),

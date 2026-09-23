@@ -76,6 +76,7 @@ jobs:
 
       - name: Run the deterministic suite against the new map
         run: |
+          python3 plugins/symphony/scripts/refresh_profiles.py --check-policy
           python3 -m unittest discover -s plugins/symphony/tests
           python3 plugins/symphony/scripts/generate_agents.py --check
           for provider in codex claude; do
@@ -102,7 +103,7 @@ jobs:
           # commit gets. That is why the full suite and smokes run above.
           git push
           gh release create "v$next" --target "$(git rev-parse HEAD)" --title "v$next" \
-            --notes "Automated capability map refresh. Every model was verified against its provider before release."
+            --notes "Automated capability map refresh. Model access and effort support were verified against providers; lifecycle and token rates were checked against the reviewed model policy before release."
 
       - name: Report a failure the maintainer has to see
         if: failure()

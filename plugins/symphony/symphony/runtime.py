@@ -15,7 +15,10 @@ from .model import Action, Delegation, Event, ProjectState
 from .reducer import reduce
 from .routing import (
     Assessment,
+    EFFORTS,
+    NO_PROFILE,
     clamp_against_best,
+    model_is_weaker,
     profiles_for,
     resolve_tier,
     route_for,
@@ -180,7 +183,12 @@ def _entitlement_profile(
     Entitlement does not change within a session, so the stored answer is
     reused until the session or plugin version changes. A probe that yields
     nothing returns the empty string, which routes through the conservative floor.
+    A readable roster with no matching shipped profile is unavailable.
     """
+    try:
+        profiles = profiles_for(provider)
+    except (OSError, ValueError, KeyError, TypeError):
+        return NO_PROFILE
     pinned = environ.get("SYMPHONY_PROFILE")
     if pinned:
         # An explicit pin skips probing entirely: useful when a host's private
@@ -194,15 +202,18 @@ def _entitlement_profile(
     entitled = _entitlement(provider, environ)
     if entitled is None:
         return ""
-    for profile in profiles_for(provider):
+    for profile in profiles:
         required_all = {str(item) for item in profile.get("requires_all", ())}
         required_any = {str(item) for item in profile.get("requires_any", ())}
+        selected = {str(choice["model"]) for choice in profile.get("matrix", {}).values()}
         if required_all and not required_all <= entitled:
             continue
         if required_any and not required_any & entitled:
             continue
+        if not selected <= entitled:
+            continue
         return str(profile["id"])
-    return ""
+    return NO_PROFILE
 
 
 def _entitlement(provider: str, environ: Mapping[str, str]) -> set[str] | None:
@@ -389,6 +400,8 @@ def _handle_prompt(
 
 def _task_guidance(state: ProjectState, task: str, provider: str) -> str:
     """Guidance for substantive work: recover an active run, or open a new one."""
+    if _applied_profile(state, provider) == NO_PROFILE:
+        return "Symphony has no launchable route in this account's available model roster."
     if state.active_run:
         return _recovery_guidance(state)
     return _assessment_guidance(task, provider, state)
@@ -541,10 +554,7 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
                         str(assessment["size"]), str(assessment["complexity"]),
                         str(assessment.get("risk", "normal")),
                     ))
-                    snapshot = snapshot_for(provider, resolved_profile or None)
-                    drift = _route_drift(
-                        state, provider, assessment, snapshot, model, effort, resolved_profile
-                    )
+                    drift = _route_drift(assessment, model, effort)
                     if drift and drift["weaker"] and _accepted_route(state, provider, session) != selected:
                         expected["approval_required"] = _drift_block(provider, drift).payload["reason"]
                     clamp = _clamp_actions(state, provider, route, session, resolved_profile)
@@ -811,6 +821,12 @@ def _prepare_delegation(
             # Nothing is being governed, so this spawn is not Symphony's to judge.
             return state, ()
         return state, (_block_tool("Add exactly one SYMPHONY_ROLE: assessor|lead|worker|consultant line, then retry the spawn."),)
+    try:
+        profiles_for(provider)
+    except (OSError, ValueError, KeyError, TypeError):
+        return state, (_block_tool("Symphony capability profiles are invalid; repair the shipped profiles before spawning."),)
+    if _applied_profile(state, provider) == NO_PROFILE:
+        return state, (_block_tool("Symphony has no launchable route in this account's available model roster."),)
     if not state.active_run and role != "assessor":
         return state, (
             _block_tool(
@@ -871,7 +887,7 @@ def _prepare_delegation(
         resolved = resolve_tier(route, snapshot)
         required_model = str(resolved["lead_model"])
         required_effort = str(resolved["lead_effort"])
-        drift = _route_drift(state, provider, recorded, snapshot, required_model, required_effort)
+        drift = _route_drift(recorded, required_model, required_effort)
         if drift and drift["weaker"]:
             if _accepted_route(state, provider, spawn_session) != f"{required_model}/{required_effort}":
                 return state, (_drift_block(provider, drift),)
@@ -1026,37 +1042,23 @@ def _required_lead_route(recorded: Mapping[str, object]) -> tuple[str, str]:
 
 
 def _route_drift(
-    state: ProjectState,
-    provider: str,
     recorded: Mapping[str, object],
-    snapshot,
     model: str,
     effort: str,
-    profile_id: str | None = None,
 ) -> dict[str, str] | None:
     """How a standing assessment's route has moved since it was accepted.
 
     Only one move needs the user's agreement: the work was sized once, and the
-    route that sizing chose is no longer purchasable, so the same work would now
-    run weaker. A reassessment writes its own baseline, and easier work drawing a
-    cheaper model is the matrix behaving correctly, so neither of those gates.
+    route that sizing chose would now run with less model capability or effort.
+    A reassessment writes its own baseline.
     """
     stored_model, stored_effort = _required_lead_route(recorded)
     if not stored_model or (stored_model == model and stored_effort == effort):
         return None
-    stored = recorded.get("route") or {}
-    was = str(stored.get("profile") or "") if isinstance(stored, Mapping) else ""
-    now = _applied_profile(state, provider) if profile_id is None else profile_id
-    order = [profile["id"] for profile in profiles_for(provider)]
-    if was and now and was != now and was in order and now in order:
-        # Profiles ship best-first, so a higher index is a weaker entitlement.
-        # An upgrade moves the other way and nobody needs to consent to that.
-        gone = order.index(now) > order.index(was)
-    else:
-        # Same entitlement, so the shipped map itself moved. The refresh only
-        # ever substitutes downward, so a vanished model means weaker.
-        efforts = snapshot.supported_efforts.get(stored_model) or ()
-        gone = stored_model not in snapshot.available_models or stored_effort not in efforts
+    gone = model_is_weaker(model, stored_model) or (
+        effort in EFFORTS and stored_effort in EFFORTS
+        and EFFORTS.index(effort) < EFFORTS.index(stored_effort)
+    )
     return {
         "stored_model": stored_model,
         "stored_effort": stored_effort,
@@ -1069,9 +1071,9 @@ def _route_drift(
 def _drift_block(provider: str, drift: Mapping[str, str]) -> Action:
     control = _control_name("proceed", provider)
     return _block_tool(
-        f"The route this assessment accepted is gone: {drift['stored_model']} at "
-        f"{drift['stored_effort']} effort is no longer available, so the same work would "
-        f"now run on {drift['model']} at {drift['effort']} effort. Run `{control}` to "
+        f"The route this assessment accepted was {drift['stored_model']} at "
+        f"{drift['stored_effort']} effort; the same work would now run on "
+        f"{drift['model']} at {drift['effort']} effort. Run `{control}` to "
         "accept the weaker route, or reassess so the sizing matches what you can buy."
     )
 
