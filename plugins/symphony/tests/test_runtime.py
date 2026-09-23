@@ -323,6 +323,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("accepted assessment", self.flush().lower())
         self.assertIsNone(StateStore(self.state_root).load(self.project).active_run.outcome)
 
+        assessor = {
+            **self.payload(""), "hook_event_name": "SubagentStart", "agent_id": "assessor-1",
+            "agent_type": codex_agent_type("assessor", CODEX_STRONGEST, "high"),
+            "model": CODEX_STRONGEST, "model_reasoning_effort": "high",
+        }
+        handle(assessor, self.environ)
+        marker = json.dumps({"size": "small", "complexity": "simple", "risk": "normal",
+                             "rationale": "bounded task", "topology": "direct"})
+        handle({**assessor, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": f"SYMPHONY_ASSESSMENT: {marker}"}, self.environ)
+        handle({**lead, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": "Done at high effort"}, self.environ)
+        state = StateStore(self.state_root).load(self.project)
+        self.assertEqual(state.active_run.status, "recovering")
+        self.assertIsNone(state.active_run.outcome)
+        self.assertIn("observed", self.output(handle({**self.payload(""), "hook_event_name": "Stop"}, self.environ))["reason"])
+
     def test_codex_lead_completion_waits_for_matrix_effort(self):
         self.open_run("Ship it")
         assessor = {

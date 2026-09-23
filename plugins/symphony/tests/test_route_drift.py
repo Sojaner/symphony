@@ -182,6 +182,8 @@ class RouteDriftTests(unittest.TestCase):
         self.proceed("base", "session-2")
         result = self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER)
         self.assertNotEqual(self.output(result).get("decision"), "block")
+        # Another session's heartbeat must not erase the route this spawn passed.
+        self.start("full", "stranger")
 
         lead = {
             **self.payload("session-2", "SubagentStart"),

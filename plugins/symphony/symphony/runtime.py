@@ -496,16 +496,19 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
         if current is None and state.active_run and state.active_run.lead_identity == str(identity):
             provider = str(source.payload.get("provider") or "codex")
             activation = state.activation.get(provider, {})
-            if isinstance(activation, Mapping) and activation.get("session_id") == source.payload.get("session_id"):
+            if pending.get("role") == "lead" and pending.get("model") and pending.get("effort"):
+                selected = f"{pending['model']}/{pending['effort']}"
+            elif isinstance(activation, Mapping) and activation.get("session_id") == source.payload.get("session_id"):
                 selected = _standing_route(state, provider)
             else:
                 selected = "/".join(_required_lead_route(state.active_run.assessment))
             model, _, effort = selected.partition("/")
-            assessment = dict(state.active_run.assessment)
-            assessment["_lead_expected_route"] = {
-                "identity": str(identity), "model": model, "effort": effort,
-            }
-            state = replace(state, active_run=replace(state.active_run, assessment=assessment))
+            if model and effort:
+                assessment = dict(state.active_run.assessment)
+                assessment["_lead_expected_route"] = {
+                    "identity": str(identity), "model": model, "effort": effort,
+                }
+                state = replace(state, active_run=replace(state.active_run, assessment=assessment))
     else:
         actions = opening
     update = {
@@ -604,7 +607,8 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
             )
             return state, actions
         expected = assessment.get("_lead_expected_route", {})
-        if isinstance(expected, Mapping) and expected.get("identity") == str(identity):
+        if (isinstance(expected, Mapping) and expected.get("identity") == str(identity)
+                and expected.get("model") and expected.get("effort")):
             required_model = str(expected.get("model") or "")
             required_effort = str(expected.get("effort") or "")
         else:
