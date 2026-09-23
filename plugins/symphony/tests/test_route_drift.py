@@ -218,6 +218,58 @@ class RouteDriftTests(unittest.TestCase):
         self.assertIsNone(state.active_run)
         self.assertEqual(state.recent_runs[-1].status, "completed")
 
+    def test_native_replacement_uses_its_session_profile_without_pretool(self):
+        self.accept_under("full", "session-1", FULL_ROUTE["model"], FULL_ROUTE["effort"])
+        original = {
+            **self.payload("session-1", "SubagentStart"), "agent_id": "original-lead",
+            "agent_type": "symphony_lead_" + FULL_ROUTE["model"].replace("-", "_").replace(".", "_") + "_" + FULL_ROUTE["effort"],
+            "model": FULL_ROUTE["model"], "model_reasoning_effort": FULL_ROUTE["effort"],
+        }
+        handle(original, self.env("full"))
+        handle({**original, "hook_event_name": "SubagentStop", "status": "failed"}, self.env("full"))
+        for index in range(4):
+            self.start("full", f"z{index}")
+        self.start("base", "a-current")
+        self.proceed("base", "a-current")
+        self.start("full", "z5")
+
+        replacement = {
+            **self.payload("a-current", "SubagentStart"), "agent_id": "replacement-lead",
+            "agent_type": "symphony_lead_" + BASE_ROUTE["model"].replace("-", "_").replace(".", "_") + "_" + BASE_ROUTE["effort"],
+            "model": BASE_ROUTE["model"], "model_reasoning_effort": BASE_ROUTE["effort"],
+        }
+        handle(replacement, self.env("base"))
+        handle({**replacement, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": "Done"}, self.env("base"))
+        state = StateStore(self.state_root).load(self.project)
+        self.assertIsNone(state.active_run)
+        self.assertEqual(state.recent_runs[-1].status, "completed")
+
+    def test_native_weaker_replacement_still_requires_proceed(self):
+        self.accept_under("full", "session-1", FULL_ROUTE["model"], FULL_ROUTE["effort"])
+        original = {
+            **self.payload("session-1", "SubagentStart"), "agent_id": "original-lead",
+            "agent_type": "symphony_lead_" + FULL_ROUTE["model"].replace("-", "_").replace(".", "_") + "_" + FULL_ROUTE["effort"],
+            "model": FULL_ROUTE["model"], "model_reasoning_effort": FULL_ROUTE["effort"],
+        }
+        handle(original, self.env("full"))
+        handle({**original, "hook_event_name": "SubagentStop", "status": "failed"}, self.env("full"))
+        self.start("base", "session-2")
+
+        replacement = {
+            **self.payload("session-2", "SubagentStart"), "agent_id": "replacement-lead",
+            "agent_type": "symphony_lead_" + BASE_ROUTE["model"].replace("-", "_").replace(".", "_") + "_" + BASE_ROUTE["effort"],
+            "model": BASE_ROUTE["model"], "model_reasoning_effort": BASE_ROUTE["effort"],
+        }
+        handle(replacement, self.env("base"))
+        handle({**replacement, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": "Done"}, self.env("base"))
+        state = StateStore(self.state_root).load(self.project)
+        self.assertEqual(state.active_run.status, "recovering")
+        self.assertIsNone(state.active_run.outcome)
+        blocked = self.output(handle({**self.payload("session-2", "Stop")}, self.env("base")))
+        self.assertIn("proceed", blocked["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()
