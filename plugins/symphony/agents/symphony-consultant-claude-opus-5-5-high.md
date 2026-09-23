@@ -1,7 +1,7 @@
 ---
-name: symphony-consultant-opus-high
-description: Resolves a bounded difficult Symphony decision and returns its local classification.
-model: opus
+name: symphony-consultant-claude-opus-5-5-high
+description: Resolves a bounded Symphony decision and returns its local classification.
+model: claude-opus-5-5
 effort: high
 ---
 

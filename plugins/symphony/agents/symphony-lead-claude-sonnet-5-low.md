@@ -1,7 +1,7 @@
 ---
-name: symphony-lead-sonnet-low
+name: symphony-lead-claude-sonnet-5-low
 description: Administers large simple Symphony work through bounded delegation.
-model: sonnet
+model: claude-sonnet-5
 effort: low
 ---
 

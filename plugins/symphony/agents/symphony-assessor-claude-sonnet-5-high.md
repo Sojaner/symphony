@@ -1,7 +1,7 @@
 ---
-name: symphony-assessor-opus-high
+name: symphony-assessor-claude-sonnet-5-high
 description: Classifies a bounded Symphony task without executing it.
-model: opus
+model: claude-sonnet-5
 effort: high
 ---
 

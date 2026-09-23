@@ -1,7 +1,7 @@
 ---
-name: symphony-worker-sonnet-high
+name: symphony-worker-claude-opus-5-5-high
 description: Completes a bounded difficult Symphony task.
-model: sonnet
+model: claude-opus-5-5
 effort: high
 ---
 

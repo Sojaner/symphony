@@ -1,7 +1,7 @@
 ---
-name: symphony-worker-sonnet-low
+name: symphony-worker-claude-sonnet-5-low
 description: Completes a cheap bounded mechanical Symphony task.
-model: sonnet
+model: claude-sonnet-5
 effort: low
 ---
 
