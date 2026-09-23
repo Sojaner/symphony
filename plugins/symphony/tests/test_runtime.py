@@ -1099,6 +1099,9 @@ class RuntimeTests(unittest.TestCase):
             },
             self.environ,
         )
+        reconciled = StateStore(self.state_root).load(self.project)
+        self.assertIsNone(reconciled.active_run)
+        self.assertEqual(reconciled.recent_runs[-1].outcome, {"status": "completed"})
         handle(
             {
                 **lead,
@@ -1112,6 +1115,7 @@ class RuntimeTests(unittest.TestCase):
             StateStore(self.state_root).load(self.project).recent_runs[-1].outcome["status"],
             "completed",
         )
+        self.assertEqual(len(StateStore(self.state_root).load(self.project).recent_runs), 1)
 
     def test_late_unclassified_consultant_blocks_deferred_stop(self):
         marker = json.dumps(
@@ -1174,7 +1178,128 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(self.output(blocked)["decision"], "block")
         self.assertIn("consultant", self.output(blocked)["reason"].lower())
+        self.assertIn("Keep protocol markers out of the final answer", self.output(blocked)["reason"])
+        self.assertIn("status confirms", self.output(blocked)["reason"])
         self.assertIsNotNone(StateStore(self.state_root).load(self.project).active_run)
+
+        handle(
+            {
+                **consultant,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": 'SYMPHONY_DECISION: {"size":"small","complexity":"simple"}',
+            },
+            self.environ,
+        )
+        released = handle({**self.payload(""), "hook_event_name": "Stop", "stop_hook_active": True}, self.environ)
+        state = StateStore(self.state_root).load(self.project)
+        self.assertEqual(released.stdout, "")
+        self.assertIsNone(state.active_run)
+        self.assertEqual(state.recent_runs[-1].status, "completed")
+        self.assertEqual(state.recent_runs[-1].outcome, {"status": "completed"})
+
+    def test_route_rejection_cancels_deferred_lead_completion(self):
+        self.open_run("Ship it")
+        assessor = {
+            **self.payload(""), "hook_event_name": "SubagentStart", "agent_id": "assessor-1",
+            "agent_type": codex_agent_type("assessor", CODEX_STRONGEST, "high"),
+            "model": CODEX_STRONGEST, "model_reasoning_effort": "high",
+        }
+        handle(assessor, self.environ)
+        handle({**assessor, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": 'SYMPHONY_ASSESSMENT: {"size":"small","complexity":"simple","risk":"normal","rationale":"bounded","topology":"direct"}'},
+               self.environ)
+        lead = {**self.payload(""), "hook_event_name": "SubagentStart",
+                "agent_id": "lead-1", "agent_type": codex_agent_type("lead", self.simple["model"], self.simple["effort"]),
+                "model": self.simple["model"], "model_reasoning_effort": self.simple["effort"]}
+        consultant = {**self.payload(""), "hook_event_name": "SubagentStart",
+                      "agent_id": "consultant-1", "agent_type": "consultant"}
+        handle(lead, self.environ)
+        handle(consultant, self.environ)
+        handle({**consultant, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": "Unclassified advice"}, self.environ)
+        handle({**lead, "hook_event_name": "SubagentStop", "status": "completed"}, self.environ)
+        self.assertIn("_pending_lead_completion", StateStore(self.state_root).load(self.project).active_run.assessment)
+
+        transcript = self.root / "corrected-lead.jsonl"
+        transcript.write_text(json.dumps({
+            "type": "turn_context", "payload": {"model": "wrong-model", "effort": self.simple["effort"]},
+        }), encoding="utf-8")
+        handle({**lead, "hook_event_name": "SubagentStop", "status": "completed",
+                "agent_transcript_path": str(transcript)}, self.environ)
+        rejected = StateStore(self.state_root).load(self.project).active_run
+        self.assertEqual(rejected.status, "recovering")
+        self.assertIn("_lead_route_mismatch", rejected.assessment)
+
+        handle({**consultant, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": 'SYMPHONY_DECISION: {"size":"small","complexity":"simple"}'},
+               self.environ)
+        state = StateStore(self.state_root).load(self.project)
+        self.assertIsNotNone(state.active_run)
+        self.assertEqual(state.active_run.status, "recovering")
+        self.assertIsNone(state.active_run.outcome)
+
+    def test_late_old_lead_result_cannot_replace_deferred_current_lead(self):
+        self.open_run("Ship it")
+        assessor = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "assessor-1",
+            "agent_type": codex_agent_type("assessor", CODEX_STRONGEST, "high"),
+            "model": CODEX_STRONGEST,
+            "model_reasoning_effort": "high",
+        }
+        handle(assessor, self.environ)
+        handle(
+            {
+                **assessor,
+                "hook_event_name": "SubagentStop",
+                "status": "completed",
+                "last_assistant_message": 'SYMPHONY_ASSESSMENT: {"size":"small","complexity":"simple","risk":"normal","rationale":"bounded","topology":"direct"}',
+            },
+            self.environ,
+        )
+        lead = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "lead-1",
+            "agent_type": codex_agent_type("lead", self.simple["model"], self.simple["effort"]),
+            "model": self.simple["model"],
+            "model_reasoning_effort": self.simple["effort"],
+        }
+        consultant = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "consultant-1",
+            "agent_type": "consultant",
+        }
+        handle(lead, self.environ)
+        handle(consultant, self.environ)
+        handle(
+            {**consultant, "hook_event_name": "SubagentStop", "status": "completed",
+             "last_assistant_message": "Unclassified advice"},
+            self.environ,
+        )
+        handle({**lead, "hook_event_name": "SubagentStop", "status": "completed"}, self.environ)
+        handle({**self.payload(""), "hook_event_name": "Interrupt"}, self.environ)
+        replacement = {**lead, "agent_id": "lead-2"}
+        handle(replacement, self.environ)
+        self.assertNotIn(
+            "_pending_lead_completion",
+            StateStore(self.state_root).load(self.project).active_run.assessment,
+        )
+        handle({**replacement, "hook_event_name": "SubagentStop", "status": "completed"}, self.environ)
+        handle({**lead, "hook_event_name": "SubagentStop", "status": "completed"}, self.environ)
+        handle(
+            {**consultant, "hook_event_name": "SubagentStop", "status": "completed",
+             "last_assistant_message": 'SYMPHONY_DECISION: {"size":"small","complexity":"simple"}'},
+            self.environ,
+        )
+
+        state = StateStore(self.state_root).load(self.project)
+        self.assertIsNone(state.active_run)
+        self.assertEqual(state.recent_runs[-1].status, "completed")
+        self.assertEqual(state.recent_runs[-1].outcome, {"status": "completed"})
 
     def test_invalid_consultant_does_not_suppress_failed_lead_recovery(self):
         self.open_run("Ship it")

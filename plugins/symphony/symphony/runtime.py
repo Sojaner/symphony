@@ -515,6 +515,14 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
             ),
         )
         actions = opening + lead_actions
+        if state.active_run:
+            deferred = state.active_run.assessment.get("_pending_lead_completion")
+            if (isinstance(deferred, Mapping)
+                    and (deferred.get("identity") != state.active_run.lead_identity
+                         or deferred.get("owner_generation") != state.active_run.owner_generation)):
+                assessment = dict(state.active_run.assessment)
+                assessment.pop("_pending_lead_completion", None)
+                state = replace(state, active_run=replace(state.active_run, assessment=assessment))
         if current is None and state.active_run and state.active_run.lead_identity == str(identity):
             provider = str(source.payload.get("provider") or "codex")
             activation = state.activation.get(provider, {})
@@ -647,9 +655,34 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
                     },
                 ),
             )
+        elif not state.active_run.assessment.get("_invalid_consultants"):
+            pending = state.active_run.assessment.get("_pending_lead_completion")
+            if isinstance(pending, Mapping):
+                assessment = dict(state.active_run.assessment)
+                assessment.pop("_pending_lead_completion", None)
+                state = replace(state, active_run=replace(state.active_run, assessment=assessment))
+                lead = next(
+                    (item for item in state.active_run.delegations
+                     if item.identity == pending.get("identity")),
+                    None,
+                )
+                if (lead and lead.state.lower() in {"completed", "done", "success", "succeeded"}
+                        and pending.get("identity") == state.active_run.lead_identity
+                        and pending.get("owner_generation") == state.active_run.owner_generation):
+                    state, completion_actions = reduce(
+                        state,
+                        _derived(state, source, "lead_completed", dict(pending), "deferred-lead-completion"),
+                    )
+                    actions += completion_actions
     if role == "lead" and terminal and state.active_run:
+        if str(identity) != state.active_run.lead_identity:
+            return state, actions
         successful = status.lower() in {"completed", "done", "success", "succeeded"}
         assessment = state.active_run.assessment
+        if not successful and str(identity) == state.active_run.lead_identity and assessment.get("_pending_lead_completion"):
+            assessment = dict(assessment)
+            assessment.pop("_pending_lead_completion", None)
+            state = replace(state, active_run=replace(state.active_run, assessment=assessment))
         if successful and not (assessment.get("size") and assessment.get("complexity")):
             actions += (
                 Action(
@@ -696,6 +729,7 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
                 mismatch += f". {approval_required}"
             updated_assessment = dict(state.active_run.assessment)
             updated_assessment["_lead_route_mismatch"] = mismatch
+            updated_assessment.pop("_pending_lead_completion", None)
             state = replace(
                 state, active_run=replace(state.active_run, assessment=updated_assessment)
             )
@@ -725,6 +759,13 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
             state = replace(state, active_run=replace(state.active_run, assessment=updated_assessment))
         invalid_consultants = state.active_run.assessment.get("_invalid_consultants", ())
         if successful and invalid_consultants:
+            assessment = dict(state.active_run.assessment)
+            assessment["_pending_lead_completion"] = {
+                "identity": str(identity),
+                "owner_generation": state.active_run.owner_generation,
+                "outcome": {"status": status},
+            }
+            state = replace(state, active_run=replace(state.active_run, assessment=assessment))
             actions += (
                 Action(
                     "inject_context",
@@ -1382,7 +1423,8 @@ def _stop_block_text(
     return (
         f"Symphony stop is blocked for {scope}: {reason}. Let the tracked agents finish, "
         f"wait for the host stop timeout, or run `{force}` to end the run and "
-        "record what was not reconciled."
+        "record what was not reconciled. Keep protocol markers out of the final answer, "
+        "and report completion only after durable status confirms it."
     )
 
 
