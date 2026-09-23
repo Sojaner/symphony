@@ -49,10 +49,43 @@ DESCRIPTIONS = {
     ("consultant", "high"): "Resolves a bounded Symphony decision and returns its local classification.",
 }
 
+WAITING = (
+    "Agents you spawn run in the background: after spawning, end your turn and you are woken with "
+    "each result. Never wait by polling output files with Bash, sleep, or Monitor."
+)
+
+SKILLS = (
+    "When process skills are available, invoke them with the Skill tool; for Superpowers: "
+    "`superpowers:writing-plans` for multi-step work (skip its execution-choice handoff, because the "
+    "route already fixed the topology), `superpowers:test-driven-development` for behavior changes, "
+    "`superpowers:systematic-debugging` for bugs, `superpowers:requesting-code-review` for the "
+    "independent check, and `superpowers:verification-before-completion` before you report."
+)
+
 BODIES = {
-    "lead": "Own execution, integration, verification, and communication for the supplied route.",
+    "lead": (
+        "Own execution, integration, verification, and communication for the supplied route. "
+        "The `SYMPHONY_ROUTE` line fixes your topology; follow it rather than doing everything "
+        "yourself.\n\n"
+        "- small: do the work directly; delegate only long-running mechanical units.\n"
+        "- medium: split independent implementation units into worker packets, do quick glue work "
+        "yourself, and integrate and verify the results.\n"
+        "- large: administer. Delegate all project work to workers and keep only planning, "
+        "integration, and verification.\n"
+        "- When the route calls for an independent check (high risk, or small/complex), a separate "
+        "consultant or worker performs the review. Never review your own work.\n\n"
+        "Spawn each child as `symphony:symphony-<role>-<model>-<effort>`, choosing the type for the "
+        "packet's own size/complexity from the table Symphony gives you at start. Put "
+        "`SYMPHONY_ROLE: <role>` on the first line, then objective, ownership, evidence, constraints, "
+        "acceptance_check, return_contract, size, and complexity. A consultant packet also needs one "
+        "`SYMPHONY_DECISION: {\"size\":\"...\",\"complexity\":\"...\"}` line. Name any process skill "
+        "a child must use in its packet. " + WAITING + "\n\n" + SKILLS + "\n\n"
+        "You cannot ask the user questions: record open decisions and assumptions in your result."
+    ),
     "worker": (
-        "Complete only the supplied objective and acceptance check. Return evidence to the lead."
+        "Complete only the supplied objective and acceptance check. Return evidence to the lead. "
+        "Use any process skill the packet names through the Skill tool, and "
+        "`superpowers:verification-before-completion` when available before you report."
     ),
     "assessor": (
         "Assess only. Return size, complexity, risk, rationale, topology, and abstract role "
@@ -64,7 +97,7 @@ BODIES = {
         "Decide only the supplied question. Return recommendation, evidence, uncertainty, and "
         "consequences. Include one `SYMPHONY_DECISION: "
         '{"size":"small|medium|large","complexity":"simple|mixed|complex"}` line per actionable '
-        "decision."
+        "decision. When asked for a review, review independently and do not fix the code."
     ),
 }
 
@@ -196,6 +229,11 @@ def main() -> int:
             + [f"no profile can select this agent: {name}" for name in extra]
             + broken
             + (["capability routing reference is stale"] if current_reference != expected_reference else [])
+            + [
+                f"agent file is stale: {name}"
+                for name in sorted(set(wanted) & set(present))
+                if present[name] != render(*wanted[name])
+            ]
         )
         for problem in problems:
             print(f"::error::run scripts/generate_agents.py -- {problem}")
@@ -204,10 +242,9 @@ def main() -> int:
         print(f"agent files and routing reference cover every selectable route ({len(wanted)} files)")
         return 0
 
-    # Descriptions are editorial, so an existing file is left alone.
     for name in extra:
         (AGENTS / name).unlink()
-    for name in missing:
+    for name in wanted:
         (AGENTS / name).write_text(render(*wanted[name]), encoding="utf-8")
     if current_reference != expected_reference:
         REFERENCE.write_text(expected_reference, encoding="utf-8")

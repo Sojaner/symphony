@@ -59,7 +59,7 @@ def _model_rank(provider: str, model: str) -> int | None:
             return len(CODEX_RANK) + int(match.group(1))
         return None
     lowered = model.lower()
-    for family, rank in (("haiku", 0), ("sonnet", 1), ("opus", 2)):
+    for family, rank in (("haiku", 0), ("sonnet", 1), ("opus", 2), ("fable", 3)):
         if family in lowered:
             return rank
     return None
@@ -227,9 +227,9 @@ def _run_provider_agent(provider: str, current: list[dict], roster: list[dict]) 
         print(f"Codex matrix agent: {model} at {effort} effort")
     else:
         argv = ["claude", "--bare", "--print", "--no-session-persistence", "--tools", "",
-                "--model", "opus", "--effort", "max", "--output-format", "text", prompt]
+                "--model", "fable", "--effort", "max", "--output-format", "text", prompt]
         completed = subprocess.run(argv, capture_output=True, text=True, timeout=900)
-        print("Claude matrix agent: opus at max effort")
+        print("Claude matrix agent: fable at max effort")
     if completed.returncode:
         detail = (completed.stderr or completed.stdout).strip().splitlines()
         raise SystemExit(f"::error::{provider} matrix agent failed: {detail[-1][:300] if detail else completed.returncode}")

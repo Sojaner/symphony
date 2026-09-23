@@ -154,7 +154,7 @@ class EntitlementProbeTests(unittest.TestCase):
         completed = unittest.mock.Mock(stdout=json.dumps({"subscriptionType": "team"}))
         with patch("plugins.symphony.symphony.runtime.subprocess.run", return_value=completed) as run:
             profile = self.heartbeat(environ, "claude").get("profile")
-        self.assertEqual(profile, "opus")
+        self.assertEqual(profile, "fable")
         self.assertEqual(run.call_args.args[0], ["claude", "auth", "status"])
 
     def test_an_unknown_claude_plan_uses_the_floor_profile(self):

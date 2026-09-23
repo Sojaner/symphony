@@ -15,7 +15,7 @@ Claude blocks unmarked spawns before launch. Codex exposes no pre-spawn event, s
 
 Provider binding is mechanical:
 
-- Claude Code: select a packaged `symphony-<role>-<model>-<effort>` agent type. The agent definition pins both settings because Claude's Agent call does not expose per-call effort.
+- Claude Code: select a packaged `symphony-<role>-<model>-<effort>` agent type. The agent definition pins both settings because Claude's Agent call does not expose per-call effort. Reference it with the plugin prefix, `symphony:symphony-<role>-<model>-<effort>`. Symphony names the exact assessor and lead types in the root's guidance and the worker types in the lead's start context. Agents run in the background, and a background agent's result reaches Symphony through its `SubagentHandback` report.
 - Codex: pass `model` and `reasoning_effort`, use `fork_turns="none"`, and use `symphony_<role>_<model>_<effort>` as the task name. Relay a bounded packet explicitly; never fork the root history into an assessor or lead.
 
 Compact status shows at most five latest delegation records, ordered failed, active/waiting, then recently completed. `agents --all` shows every retained latest record, not every transition.

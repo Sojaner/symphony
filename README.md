@@ -93,6 +93,8 @@ Symphony ships several profiles per provider and routes through the best one you
 | Medium | balanced/medium, mixed | balanced/high, mixed with optional consultation | capable/high, mixed with reserved consultation |
 | Large | economy/low, delegated | economy/medium, delegated with reserved consultation | economy/medium, delegated with strongest consultation |
 
+On Claude Code, Max, Team, and Enterprise plans route the strongest tier (assessor, consultant, and small/complex leads) to Fable; set `SYMPHONY_PROFILE=opus` to keep Opus there if your plan lacks Fable. Symphony names the exact packaged agent type for each role, and agents run in the background: the root ends its turn after a spawn and Claude Code wakes it with the result, so the Stop guard no longer holds a turn open while background agents run.
+
 Pre-launch route enforcement needs a pre-spawn event, which only Claude Code provides; on Codex a mis-routed spawn is detected once the child starts and reported, not prevented.
 
 The assessor is bounded, read-only, and separate from the lead. The lead route never inherits the assessor's expensive model or effort. Large-task leads administer dependency-aware work and reserve capacity for narrow consultant decisions. Small-task leads do straightforward work directly and delegate only genuinely independent or mechanical units.

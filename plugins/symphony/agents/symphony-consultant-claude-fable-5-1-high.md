@@ -1,7 +1,7 @@
 ---
-name: symphony-consultant-claude-sonnet-5-high
+name: symphony-consultant-claude-fable-5-1-high
 description: Resolves a bounded Symphony decision and returns its local classification.
-model: claude-sonnet-5
+model: claude-fable-5-1
 effort: high
 ---
 

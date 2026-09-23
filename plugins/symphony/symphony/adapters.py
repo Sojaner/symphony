@@ -44,6 +44,15 @@ def event_from_payload(provider: str, payload: dict[str, Any]) -> Event:
         child_metadata = _codex_subagent_metadata(payload)
         canonical.update(child_metadata)
         canonical["_symphony_child_metadata"] = tuple(child_metadata)
+    if provider == "claude" and name == "SubagentStop":
+        # A background agent delivers its report through a SubagentHandback
+        # call and then says a one-line goodbye, which is all the host puts in
+        # last_assistant_message. The result markers live in the report.
+        report = _claude_handback_report(payload)
+        if report:
+            canonical["last_assistant_message"] = (
+                report + "\n" + str(payload.get("last_assistant_message") or "")
+            )
     canonical["provider"] = provider
     raw = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str)
     return Event(
@@ -85,6 +94,30 @@ def _codex_subagent_metadata(payload: dict[str, Any]) -> dict[str, str]:
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return found
     return found
+
+
+def _claude_handback_report(payload: dict[str, Any]) -> str:
+    """The last report a Claude subagent handed back to its caller, if any."""
+    transcript = payload.get("agent_transcript_path")
+    if not transcript:
+        return ""
+    report = ""
+    try:
+        with Path(str(transcript)).open(encoding="utf-8") as handle:
+            for line in handle:
+                if "SubagentHandback" not in line:
+                    continue
+                content = (json.loads(line).get("message") or {}).get("content")
+                for item in content if isinstance(content, list) else ():
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") == "tool_use"
+                        and item.get("name") == "SubagentHandback"
+                    ):
+                        report = str((item.get("input") or {}).get("message") or report)
+    except (OSError, TypeError, ValueError, AttributeError):
+        return report
+    return report
 
 
 def render(

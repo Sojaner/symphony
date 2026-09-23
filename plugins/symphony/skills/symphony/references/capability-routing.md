@@ -57,6 +57,20 @@ The tables below are generated from `profiles.json` with the runtime resolver. T
 | large / mixed | `gpt-5.5/medium` | `gpt-5.5/medium` |
 | large / complex | `gpt-5.5/high` | `gpt-5.5/high` |
 
+### Claude Code: `fable`
+
+| Size / complexity | Normal risk | High risk |
+|---|---|---|
+| small / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
+| small / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/high` |
+| small / complex | `claude-fable-5-1/xhigh` | `claude-fable-5-1/xhigh` |
+| medium / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
+| medium / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/high` |
+| medium / complex | `claude-opus-5-5/high` | `claude-opus-5-5/high` |
+| large / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
+| large / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/medium` |
+| large / complex | `claude-opus-5-5/high` | `claude-opus-5-5/high` |
+
 ### Claude Code: `opus`
 
 | Size / complexity | Normal risk | High risk |
@@ -107,6 +121,8 @@ Symphony retains topology and lifecycle ownership. Supporting workflows operate 
 | Review | Compound Engineering `ce-code-review` | Superpowers verification gates completion |
 | Commit, release, monitoring | Relevant Compound Engineering shipping workflow | Symphony retains lifecycle ownership |
 | Every design and code phase | Ponytail | Choose the smallest correct native solution |
+
+Interactive phases (brainstorming, clarifying questions, choosing how to finish a branch) run at the root, because agents cannot ask the user. Non-interactive process skills run inside the lead and its children, and a lead names in each packet the skill a child must use.
 
 When a supporting capability is unavailable, use the closest native process without delaying the run.
 

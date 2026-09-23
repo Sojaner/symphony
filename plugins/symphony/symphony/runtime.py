@@ -133,6 +133,14 @@ def _transition(
             )
         else:
             actions += observed_actions
+            if (
+                provider == "claude"
+                and state.active_run
+                and state.active_run.lead_identity
+                and state.active_run.lead_identity == str(payload.get("agent_id") or "")
+            ):
+                # SubagentStart context reaches the starting agent, not the root.
+                actions += (Action("inject_context", {"text": _claude_lead_guidance(state)}),)
     elif source.kind == "post_tool_use":
         state, parent_actions = _consume_parent_actions(state)
         actions += parent_actions
@@ -393,7 +401,7 @@ def _task_guidance(state: ProjectState, task: str, provider: str) -> str:
     """Guidance for substantive work: recover an active run, or open a new one."""
     if state.active_run:
         return _recovery_guidance(state)
-    return _assessment_guidance(task, provider)
+    return _assessment_guidance(task, provider, state)
 
 
 def _parse_control(prompt: str) -> tuple[str, str] | None:
@@ -471,6 +479,17 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
     pending: Mapping[str, object] = {}
     if source.kind == "subagent_started" and current is None:
         state, pending = _consume_pending_delegation(state, source.payload)
+    if (
+        source.payload.get("provider") == "claude"
+        and current is None
+        and not pending
+        and not _observed_role(source.payload)
+    ):
+        # Every Symphony spawn on Claude passes PreToolUse with a role marker,
+        # so an agent that arrives with neither is the host's or another
+        # plugin's. Recording those as workers buried the real delegations
+        # under dozens of anonymous entries.
+        return state, opening
     terminal = source.kind == "subagent_stopped"
     status = str(source.payload.get("status") or ("completed" if terminal else "working"))
     role = str(pending.get("role") or _observed_role(source.payload) or (current.role if current else "worker"))
@@ -1281,7 +1300,9 @@ def _consume_pending_delegation(
     ]
     if matching:
         item = pending.pop(matching[0])
-    elif len(pending) == 1 and not observed_role:
+    elif len(pending) == 1 and not observed_role and payload.get("provider") != "claude":
+        # Claude always names the packaged agent type, so an unnamed start
+        # there is somebody else's agent and must not claim this spawn.
         item = pending.pop(0)
     else:
         return state, {}
@@ -1418,7 +1439,7 @@ def _render_actions(
             rendered.append(Action("inject_context", {"text": "Symphony is disabled for future tasks in this project."}))
         elif action.kind == "request_assessment":
             task = state.active_run.task if state.active_run else "the task"
-            rendered.append(Action("inject_context", {"text": _assessment_guidance(task, provider)}))
+            rendered.append(Action("inject_context", {"text": _assessment_guidance(task, provider, state)}))
         elif action.kind == "execute_bypass":
             rendered.append(
                 Action(
@@ -1439,9 +1460,10 @@ def _render_actions(
             route = state.active_run.assessment.get("route", {}) if state.active_run else {}
             model, effort = _required_lead_route(state.active_run.assessment) if state.active_run else ("", "")
             profile = route.get("profile", "") if isinstance(route, Mapping) else ""
+            agent = f" as `symphony:symphony-lead-{model}-{effort}`" if provider == "claude" and model else ""
             rendered.append(Action("inject_context", {"text":
                 f"Symphony accepted the assessed route. Selected {provider} lead"
-                f" ({profile} profile): {model}/{effort}. Spawn only this model and effort "
+                f" ({profile} profile): {model}/{effort}. Spawn only this model and effort{agent} "
                 "with the accepted SYMPHONY_ROUTE marker; keep the root thin."}))
         elif action.kind == "reject_lead_replacement":
             lead = state.active_run.lead_identity if state.active_run else "the registered lead"
@@ -1476,7 +1498,57 @@ def _render_actions(
     return tuple(rendered)
 
 
-def _assessment_guidance(task: str, provider: str = "") -> str:
+def _claude_cells(snapshot, role: str) -> list[str]:
+    """The packaged agent type the matrix selects for each cell."""
+    cells = []
+    for size in ("small", "medium", "large"):
+        for complexity in ("simple", "mixed", "complex"):
+            normal, high = (
+                resolve_tier(route_for(Assessment(size, complexity, risk)), snapshot)
+                for risk in ("normal", "high")
+            )
+            cell = f"{size}/{complexity} `symphony:symphony-{role}-{normal['lead_model']}-{normal['lead_effort']}`"
+            if (high["lead_model"], high["lead_effort"]) != (normal["lead_model"], normal["lead_effort"]):
+                cell += f" (high risk: `symphony:symphony-{role}-{high['lead_model']}-{high['lead_effort']}`)"
+            cells.append(cell)
+    return cells
+
+
+def _claude_lead_guidance(state: ProjectState) -> str:
+    """What a Claude lead needs at start and cannot derive: its children's types."""
+    snapshot = _snapshot(state, "claude")
+    return (
+        "Symphony worker agent types by the packet's own size/complexity: "
+        + "; ".join(_claude_cells(snapshot, "worker"))
+        + f". Consultants use `symphony:symphony-consultant-{snapshot.tiers['strongest']}-high`."
+    )
+
+
+def _claude_guidance(state: ProjectState | None) -> str:
+    """Name the exact agent types, how to wait, and where user-facing skills run.
+
+    The root is the cheapest model in the session. Left to derive a packaged
+    agent type from the matrix it guessed, and without being told how Claude
+    delivers background results it busy-polled the agent's output file.
+    """
+    snapshot = _snapshot(state, "claude") if state else snapshot_for("claude")
+    cells = _claude_cells(snapshot, "lead")
+    return (
+        f"On Claude Code, spawn the assessor as `symphony:symphony-assessor-{snapshot.tiers['strongest']}-high` "
+        "and the lead by its assessed cell: " + "; ".join(cells) + ". "
+        "Agents run in the background: after a spawn, end your turn and Claude Code wakes you with the "
+        "agent's result. Never wait by polling with Bash, sleep, Monitor, or by reading the agent's output "
+        "file, and never repeat an assessment that is still running. "
+        "User-facing steps stay at the root, because agents cannot ask the user anything: when the request "
+        "needs requirements or design clarification and a brainstorming skill is available (for example "
+        "`superpowers:brainstorming`), run it with the user before the assessor and relay the agreed design "
+        "in full; after the lead returns, run any user-facing finishing skill (for example "
+        "`superpowers:finishing-a-development-branch`) at the root. "
+    )
+
+
+def _assessment_guidance(task: str, provider: str = "", state: ProjectState | None = None) -> str:
+    claude = _claude_guidance(state) if provider == "claude" else ""
     codex = (
         "On Codex, use `fork_turns=\"none\"` for assessor and lead, name them "
         "`symphony_<role>_<model>_<effort>`, and require the assessor's final response to contain one exact "
@@ -1496,7 +1568,7 @@ def _assessment_guidance(task: str, provider: str = "") -> str:
         "consultants also need SYMPHONY_DECISION JSON with decision-local size and complexity. "
         "Relay the task in full: the lead cannot see this conversation, so if the request has several parts, "
         "every part goes in the packet and the acceptance check covers all of them. "
-        f"{codex}Task: {task}"
+        f"{codex}{claude}Task: {task}"
     )
 
 
