@@ -493,6 +493,57 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
             ),
         )
         actions = opening + lead_actions
+        if current is None and state.active_run and state.active_run.lead_identity == str(identity):
+            provider = str(source.payload.get("provider") or "codex")
+            activation = state.activation.get(provider, {})
+            session = str(source.payload.get("session_id") or "")
+            profiles = activation.get("session_profiles", ()) if isinstance(activation, Mapping) else ()
+            session_profile = next(
+                (str(item.get("profile") or "") for item in reversed(profiles)
+                 if isinstance(item, Mapping) and item.get("session_id") == session),
+                None,
+            )
+            resolved_profile = None
+            if pending.get("role") == "lead" and pending.get("model") and pending.get("effort"):
+                selected = f"{pending['model']}/{pending['effort']}"
+            elif (session_profile is not None and state.active_run.assessment.get("size")
+                  and state.active_run.assessment.get("complexity")):
+                recorded = state.active_run.assessment
+                route = route_for(Assessment(
+                    str(recorded["size"]), str(recorded["complexity"]),
+                    str(recorded.get("risk", "normal")),
+                ))
+                resolved = resolve_tier(route, snapshot_for(provider, session_profile or None))
+                selected = f"{resolved['lead_model']}/{resolved['lead_effort']}"
+                resolved_profile = session_profile
+            elif isinstance(activation, Mapping) and activation.get("session_id") == source.payload.get("session_id"):
+                selected = _standing_route(state, provider)
+                resolved_profile = _applied_profile(state, provider)
+            else:
+                selected = "/".join(_required_lead_route(state.active_run.assessment))
+            model, _, effort = selected.partition("/")
+            if model and effort:
+                assessment = dict(state.active_run.assessment)
+                expected = {
+                    "identity": str(identity), "model": model, "effort": effort,
+                }
+                if resolved_profile is not None and assessment.get("size"):
+                    route = route_for(Assessment(
+                        str(assessment["size"]), str(assessment["complexity"]),
+                        str(assessment.get("risk", "normal")),
+                    ))
+                    snapshot = snapshot_for(provider, resolved_profile or None)
+                    drift = _route_drift(
+                        state, provider, assessment, snapshot, model, effort, resolved_profile
+                    )
+                    if drift and drift["weaker"] and _accepted_route(state, provider, session) != selected:
+                        expected["approval_required"] = _drift_block(provider, drift).payload["reason"]
+                    clamp = _clamp_actions(state, provider, route, session, resolved_profile)
+                    blocked = next((item for item in clamp if item.kind == "block_tool"), None)
+                    if blocked:
+                        expected["approval_required"] = blocked.payload["reason"]
+                assessment["_lead_expected_route"] = expected
+                state = replace(state, active_run=replace(state.active_run, assessment=assessment))
     else:
         actions = opening
     update = {
@@ -590,7 +641,13 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
                 ),
             )
             return state, actions
-        required_model, required_effort = _required_lead_route(assessment)
+        expected = assessment.get("_lead_expected_route", {})
+        if (isinstance(expected, Mapping) and expected.get("identity") == str(identity)
+                and expected.get("model") and expected.get("effort")):
+            required_model = str(expected.get("model") or "")
+            required_effort = str(expected.get("effort") or "")
+        else:
+            required_model, required_effort = _required_lead_route(assessment)
         observed_lead = next(
             (
                 item
@@ -599,15 +656,30 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
             ),
             None,
         )
+        approval_required = (
+            str(expected.get("approval_required") or "")
+            if isinstance(expected, Mapping) and expected.get("identity") == str(identity)
+            else ""
+        )
         if (
             successful
-            and (required_model or required_effort)
+            and state.active_run.lead_identity == str(identity)
             and observed_lead
             and (
-                (required_model and observed_lead.requested_tier != required_model)
+                approval_required
+                or (required_model and observed_lead.requested_tier != required_model)
                 or (required_effort and observed_lead.requested_effort != required_effort)
             )
         ):
+            observed = f"{observed_lead.requested_tier}/{observed_lead.requested_effort}"
+            mismatch = f"lead route mismatch: expected {required_model}/{required_effort}; observed {observed}"
+            if approval_required:
+                mismatch += f". {approval_required}"
+            updated_assessment = dict(state.active_run.assessment)
+            updated_assessment["_lead_route_mismatch"] = mismatch
+            state = replace(
+                state, active_run=replace(state.active_run, assessment=updated_assessment)
+            )
             state, recovery_actions = reduce(
                 state,
                 _derived(
@@ -623,11 +695,15 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
                 Action(
                     "inject_context",
                     {
-                        "text": f"Lead completion is waiting for the matrix-selected {required_model}/{required_effort}. Replace or retry the lead with the recorded route."
+                        "text": f"Lead completion rejected: {mismatch}. Replace or retry the lead with the recorded route."
                     },
                 ),
             )
             return state, actions
+        if successful and state.active_run.lead_identity == str(identity) and assessment.get("_lead_route_mismatch"):
+            updated_assessment = dict(assessment)
+            updated_assessment.pop("_lead_route_mismatch", None)
+            state = replace(state, active_run=replace(state.active_run, assessment=updated_assessment))
         invalid_consultants = state.active_run.assessment.get("_invalid_consultants", ())
         if successful and invalid_consultants:
             actions += (
@@ -799,7 +875,8 @@ def _prepare_delegation(
         if model != required_model or effort != required_effort:
             return state, (
                 _block_tool(
-                    f"Spawn the selected lead as {required_model} at {required_effort} effort, then retry."
+                    f"Lead route mismatch: expected {required_model}/{required_effort}; "
+                    f"observed {model}/{effort}. Spawn the selected lead with the expected route, then retry."
                 ),
             )
         if not (recorded.get("size") and recorded.get("complexity")):
@@ -889,7 +966,7 @@ def _snapshot(state: ProjectState, provider: str):
 
 
 def _clamp_actions(
-    state: ProjectState, provider: str, route, session_id: str = ""
+    state: ProjectState, provider: str, route, session_id: str = "", profile_id: str | None = None
 ) -> tuple[Action, ...] | None:
     """Gate a tier clamp, disclose an effort clamp, stay silent otherwise.
 
@@ -898,7 +975,7 @@ def _clamp_actions(
     the dimension the matrix already trades away under risk, so it is announced
     and the run continues.
     """
-    profile = _applied_profile(state, provider)
+    profile = _applied_profile(state, provider) if profile_id is None else profile_id
     clamp = clamp_against_best(provider, route, profile or None)
     if clamp["tier_clamped"]:
         if _accepted_profile(state, provider, session_id) == profile and profile:
@@ -946,6 +1023,7 @@ def _route_drift(
     snapshot,
     model: str,
     effort: str,
+    profile_id: str | None = None,
 ) -> dict[str, str] | None:
     """How a standing assessment's route has moved since it was accepted.
 
@@ -959,7 +1037,7 @@ def _route_drift(
         return None
     stored = recorded.get("route") or {}
     was = str(stored.get("profile") or "") if isinstance(stored, Mapping) else ""
-    now = _applied_profile(state, provider)
+    now = _applied_profile(state, provider) if profile_id is None else profile_id
     order = [profile["id"] for profile in profiles_for(provider)]
     if was and now and was != now and was in order and now in order:
         # Profiles ship best-first, so a higher index is a weaker entitlement.
@@ -1358,7 +1436,13 @@ def _render_actions(
         elif action.kind == "replace_lead":
             rendered.append(Action("inject_context", {"text": "The observed lead is unavailable. Spawn one safe replacement at the recorded owner generation."}))
         elif action.kind == "route_run":
-            rendered.append(Action("inject_context", {"text": "Symphony accepted the assessed route. Spawn only the selected lead and keep the root thin."}))
+            route = state.active_run.assessment.get("route", {}) if state.active_run else {}
+            model, effort = _required_lead_route(state.active_run.assessment) if state.active_run else ("", "")
+            profile = route.get("profile", "") if isinstance(route, Mapping) else ""
+            rendered.append(Action("inject_context", {"text":
+                f"Symphony accepted the assessed route. Selected {provider} lead"
+                f" ({profile} profile): {model}/{effort}. Spawn only this model and effort "
+                "with the accepted SYMPHONY_ROUTE marker; keep the root thin."}))
         elif action.kind == "reject_lead_replacement":
             lead = state.active_run.lead_identity if state.active_run else "the registered lead"
             rendered.append(Action("inject_context", {"text":

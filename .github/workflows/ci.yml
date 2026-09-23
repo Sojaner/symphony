@@ -18,7 +18,7 @@ jobs:
       - name: Check patches
         run: git diff --check
 
-      - name: Check the packaged agents match the shipped profiles
+      - name: Check packaged agents and routing reference match the shipped profiles
         run: python3 plugins/symphony/scripts/generate_agents.py --check
 
       - name: Run installed-package smokes

@@ -1,5 +1,8 @@
 import json
+import sys
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -219,6 +222,34 @@ class AgentFileContractTests(unittest.TestCase):
         floor = profiles_for("claude")[-1]
         expected = f"symphony-assessor-{floor['tiers']['strongest']}-high.md"
         self.assertTrue((agents / expected).is_file(), f"{expected} is missing")
+
+    def test_reference_refresh_detects_profile_meaning_changes(self):
+        generator = self.generator()
+        routing_module = sys.modules[generator.profiles_for.__module__]
+        original = generator.REFERENCE.read_text(encoding="utf-8")
+        document = json.loads(routing_module.PROFILES_PATH.read_text(encoding="utf-8"))
+        profiles = document["providers"]["codex"]["profiles"]
+        cell = next(cell for cell in profiles[0]["matrix"] if profiles[0]["matrix"][cell] != profiles[-1]["matrix"][cell])
+        profiles[0]["matrix"][cell] = profiles[-1]["matrix"][cell]
+        with TemporaryDirectory() as directory:
+            changed_profiles = Path(directory) / "profiles.json"
+            changed_profiles.write_text(json.dumps(document), encoding="utf-8")
+            generated_reference = Path(directory) / "capability-routing.md"
+            generated_reference.write_text(original, encoding="utf-8")
+            with patch.object(routing_module, "PROFILES_PATH", changed_profiles), patch.object(generator, "REFERENCE", generated_reference):
+                routing_module._profiles.cache_clear()
+                try:
+                    with patch.object(sys, "argv", ["generate_agents.py", "--check"]), redirect_stdout(StringIO()):
+                        self.assertEqual(generator.main(), 1)
+                    with patch.object(sys, "argv", ["generate_agents.py"]):
+                        self.assertEqual(generator.main(), 0)
+                    changed = generated_reference.read_text(encoding="utf-8")
+                    self.assertNotEqual(changed, original)
+                    self.assertEqual(changed, generator.reference_text(changed))
+                    with patch.object(sys, "argv", ["generate_agents.py", "--check"]):
+                        self.assertEqual(generator.main(), 0)
+                finally:
+                    routing_module._profiles.cache_clear()
 
 
 class ClampGateTests(unittest.TestCase):

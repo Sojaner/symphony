@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the packaged Claude agent files from the shipped profiles.
+"""Generate the packaged Claude agents and routing reference from shipped profiles.
 
 Claude cannot pin reasoning effort on an Agent call, so Symphony encodes the
 model and effort in the agent type name and the runtime parses them back out.
@@ -33,7 +33,10 @@ from symphony.routing import (  # noqa: E402
 )
 
 AGENTS = Path(__file__).resolve().parents[1] / "agents"
+REFERENCE = Path(__file__).resolve().parents[1] / "skills/symphony/references/capability-routing.md"
 PROVIDER = "claude"
+START = "<!-- generated routes: start -->"
+END = "<!-- generated routes: end -->"
 
 DESCRIPTIONS = {
     ("lead", "low"): "Administers large simple Symphony work through bounded delegation.",
@@ -85,6 +88,41 @@ def required_agents() -> dict[tuple[str, str, str], None]:
         wanted[("assessor", strongest, "high")] = None
         wanted[("consultant", strongest, "high")] = None
     return wanted
+
+
+def resolved_routes() -> str:
+    """Show the actual model and effort selected for every shipped profile."""
+    lines = [
+        "The tables below are generated from `profiles.json` with the runtime resolver. "
+        "The last profile for each provider is the fallback when entitlement is unknown.",
+    ]
+    for provider, label in (("codex", "Codex"), ("claude", "Claude Code")):
+        profiles = profiles_for(provider)
+        for profile in profiles:
+            suffix = " (fallback)" if profile is profiles[-1] else ""
+            lines.extend((
+                "",
+                f"### {label}: `{profile['id']}`{suffix}",
+                "",
+                "| Size / complexity | Normal risk | High risk |",
+                "|---|---|---|",
+            ))
+            snapshot = snapshot_for(provider, profile["id"])
+            for size, complexity in MATRIX:
+                choices = []
+                for risk in ("normal", "high"):
+                    resolved = resolve_tier(route_for(Assessment(size, complexity, risk)), snapshot)
+                    choices.append(f"`{resolved['lead_model']}/{resolved['lead_effort']}`")
+                lines.append(f"| {size} / {complexity} | {choices[0]} | {choices[1]} |")
+    return "\n".join(lines) + "\n"
+
+
+def reference_text(current: str) -> str:
+    if current.count(START) != 1 or current.count(END) != 1:
+        raise ValueError("capability routing reference needs one generated-routes marker pair")
+    before, rest = current.split(START, 1)
+    _, after = rest.split(END, 1)
+    return before + START + "\n" + resolved_routes() + END + after
 
 
 def render(role: str, model: str, effort: str) -> str:
@@ -149,18 +187,21 @@ def main() -> int:
         for name in sorted(set(wanted) & set(present))
         for problem in contract_errors(name, present[name])
     ]
+    current_reference = REFERENCE.read_text(encoding="utf-8")
+    expected_reference = reference_text(current_reference)
 
     if args.check:
         problems = (
             [f"no agent file for a route the profiles can select: {name}" for name in missing]
             + [f"no profile can select this agent: {name}" for name in extra]
             + broken
+            + (["capability routing reference is stale"] if current_reference != expected_reference else [])
         )
         for problem in problems:
             print(f"::error::run scripts/generate_agents.py -- {problem}")
         if problems:
             return 1
-        print(f"agent files cover every selectable route ({len(wanted)} files)")
+        print(f"agent files and routing reference cover every selectable route ({len(wanted)} files)")
         return 0
 
     # Descriptions are editorial, so an existing file is left alone.
@@ -168,6 +209,8 @@ def main() -> int:
         (AGENTS / name).unlink()
     for name in missing:
         (AGENTS / name).write_text(render(*wanted[name]), encoding="utf-8")
+    if current_reference != expected_reference:
+        REFERENCE.write_text(expected_reference, encoding="utf-8")
     print(f"agents: {len(wanted)} required, {len(missing)} added, {len(extra)} removed")
     return 1 if broken else 0
 
