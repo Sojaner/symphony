@@ -103,7 +103,8 @@ class ClaudeCompatTests(unittest.TestCase):
         self.spawn_assessor()
         for active in (False, True):
             output = self.hook(
-                "Stop", stop_hook_active=active, background_tasks=[{"id": "assessor-1"}]
+                "Stop", stop_hook_active=active,
+                background_tasks=[{"id": "assessor-1", "type": "subagent"}]
             )
             self.assertNotEqual(output.get("decision"), "block")
         run = self.state().active_run
@@ -112,6 +113,12 @@ class ClaudeCompatTests(unittest.TestCase):
     def test_stop_without_background_agents_still_guards_once(self):
         self.spawn_assessor()
         self.assertEqual(self.hook("Stop", background_tasks=[]).get("decision"), "block")
+
+    def test_unrelated_or_roleless_background_tasks_do_not_release_managed_run(self):
+        self.spawn_assessor()
+        for tasks in ([{"id": "other", "type": "subagent"}], [{"id": "shell", "type": "shell"}], [{"id": "assessor-1"}]):
+            with self.subTest(tasks=tasks):
+                self.assertEqual(self.hook("Stop", background_tasks=tasks).get("decision"), "block")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 from typing import Mapping
 
@@ -209,7 +208,7 @@ def _entitlement(provider: str, environ: Mapping[str, str]) -> set[str] | None:
     """What the account grants, read without touching any credential file."""
     if provider == "codex":
         return _codex_entitlement(environ)
-    return _claude_entitlement()
+    return _claude_entitlement(environ)
 
 
 def _codex_entitlement(environ: Mapping[str, str]) -> set[str] | None:
@@ -225,21 +224,11 @@ def _codex_entitlement(environ: Mapping[str, str]) -> set[str] | None:
     }
 
 
-def _claude_entitlement() -> set[str] | None:
-    try:
-        completed = subprocess.run(
-            ["claude", "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=True,
-        )
-        # Only the plan name is read. The same response carries an email address
-        # and an organisation id, which are none of Symphony's business.
-        plan = str(json.loads(completed.stdout).get("subscriptionType") or "").strip().lower()
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-    return {plan} if plan else None
+def _claude_entitlement(environ: Mapping[str, str]) -> set[str] | None:
+    # Claude's plan name does not establish access to restricted models. Until
+    # the CLI exposes usable models, require an explicit model-access opt-in.
+    models = environ.get("SYMPHONY_CLAUDE_AVAILABLE_MODELS", "")
+    return {model.strip() for model in models.split(",") if model.strip()} or None
 
 
 # ponytail: wall clock, because neither host reports whether another session is

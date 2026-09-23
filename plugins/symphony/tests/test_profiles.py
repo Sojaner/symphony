@@ -149,28 +149,34 @@ class EntitlementProbeTests(unittest.TestCase):
         (Path(environ["CODEX_HOME"]) / "models_cache.json").unlink()
         self.assertEqual(self.heartbeat(environ).get("profile"), "full")
 
-    def test_a_claude_plan_selects_its_profile_without_reading_credentials(self):
+    def test_a_claude_plan_without_model_access_uses_the_floor(self):
         environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
         completed = unittest.mock.Mock(stdout=json.dumps({"subscriptionType": "team"}))
-        with patch("plugins.symphony.symphony.runtime.subprocess.run", return_value=completed) as run:
+        with patch("subprocess.run", return_value=completed) as run:
             profile = self.heartbeat(environ, "claude").get("profile")
-        self.assertEqual(profile, "fable")
-        self.assertEqual(run.call_args.args[0], ["claude", "auth", "status"])
+        self.assertFalse(profile)
+        run.assert_not_called()
 
-    def test_an_unknown_claude_plan_uses_the_floor_profile(self):
-        environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
-        completed = unittest.mock.Mock(stdout=json.dumps({"subscriptionType": "pro"}))
-        with patch("plugins.symphony.symphony.runtime.subprocess.run", return_value=completed):
-            self.assertEqual(self.heartbeat(environ, "claude").get("profile"), "sonnet")
+    def test_explicit_claude_model_access_selects_only_usable_profiles(self):
+        for index, (models, expected) in enumerate((
+            ("claude-sonnet-5,claude-opus-5-5", "opus"),
+            ("claude-sonnet-5,claude-opus-5-5,claude-fable-5-1", "fable"),
+            ("claude-fable-5-1", "sonnet"),
+        )):
+            with self.subTest(models=models):
+                self.state_root = self.root / f"state-{index}"
+                environ = {
+                    "SYMPHONY_STATE_DIR": str(self.state_root),
+                    "SYMPHONY_CLAUDE_AVAILABLE_MODELS": models,
+                }
+                self.assertEqual(self.heartbeat(environ, "claude").get("profile"), expected)
 
-    def test_a_failing_probe_never_breaks_the_hook(self):
-        environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
-        with patch(
-            "plugins.symphony.symphony.runtime.subprocess.run", side_effect=OSError("no binary")
-        ):
-            activation = self.heartbeat(environ, "claude")
-        self.assertEqual(activation.get("state"), "guarded")
-        self.assertFalse(activation.get("profile"))
+    def test_an_explicit_claude_profile_pin_is_an_opt_in(self):
+        environ = {
+            "SYMPHONY_STATE_DIR": str(self.state_root),
+            "SYMPHONY_PROFILE": "fable",
+        }
+        self.assertEqual(self.heartbeat(environ, "claude").get("profile"), "fable")
 
 
 if __name__ == "__main__":

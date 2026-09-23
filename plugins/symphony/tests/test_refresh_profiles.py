@@ -81,6 +81,39 @@ class ShippedProfileTests(unittest.TestCase):
                 for choice in profile["matrix"].values():
                     self.assertIn(choice["effort"], profile["efforts"][choice["model"]])
 
+    def test_claude_restricted_gates_cover_every_selected_model(self):
+        refresh = load()
+        profiles = json.loads(refresh.PROFILES.read_text())["providers"]["claude"]["profiles"]
+        for profile in profiles[:-1]:
+            with self.subTest(profile=profile["id"]):
+                self.assertEqual(
+                    set(profile["requires_all"]),
+                    {choice["model"] for choice in profile["matrix"].values()},
+                )
+
+    def test_refresh_updates_claude_model_gate_with_matrix(self):
+        refresh = load()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            document = json.loads(refresh.PROFILES.read_text())
+            path.write_text(json.dumps(document))
+
+            def decision(provider, current, roster):
+                profiles = [{"id": item["id"], "matrix": dict(item["matrix"])} for item in current]
+                if provider == "claude":
+                    profiles[0]["matrix"]["small/complex"] = {
+                        "model": "claude-opus-5-5", "effort": "xhigh"
+                    }
+                return {"profiles": profiles, "model_efforts": current[0]["efforts"], "rationale": "test"}
+
+            with patch.object(refresh, "PROFILES", path), \
+                 patch.object(refresh, "codex_roster", return_value=[]), \
+                 patch.object(refresh, "claude_roster", return_value=[]), \
+                 patch.object(refresh, "_run_provider_agent", side_effect=decision):
+                self.assertTrue(refresh.agent_probe(Path(directory)))
+            fable = json.loads(path.read_text())["providers"]["claude"]["profiles"][0]
+            self.assertEqual(fable["requires_all"], ["claude-opus-5-5", "claude-sonnet-5"])
+
 
 class SemanticMatrixTests(unittest.TestCase):
     def setUp(self):

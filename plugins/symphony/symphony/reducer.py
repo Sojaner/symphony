@@ -333,7 +333,16 @@ def _stop_requested(state: ProjectState, event: Event):
             Action("archive_run", {"run_id": run.run_id}),
             Action("permit_stop"),
         )
-    if _active_identities(run) and event.payload.get("background_tasks"):
+    waiting_for = {
+        item.identity for item in run.delegations
+        if item.state in _ACTIVE_STATES and item.role in {"assessor", "lead"}
+    }
+    if any(
+        isinstance(task, Mapping)
+        and task.get("type") == "subagent"
+        and task.get("id") in waiting_for
+        for task in (event.payload.get("background_tasks") or ())
+    ):
         # Claude runs agents in the background and wakes the session with each
         # result, so ending the turn is how the root waits. Blocking it here
         # forced the root to busy-poll with shell loops, and the second stop

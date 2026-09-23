@@ -363,7 +363,9 @@ def agent_probe(home: Path) -> bool:
             profile["matrix"] = matrix
             profile["tiers"] = {tier: matrix[cell]["model"] for tier, cell in TIER_CELLS.items()}
             profile["efforts"] = decision["model_efforts"]
-            if profile.get("requires_all") is not None and profile["id"] == "full":
+            if profile.get("requires_all") is not None and (
+                provider == "claude" or profile["id"] == "full"
+            ):
                 profile["requires_all"] = sorted({choice["model"] for choice in matrix.values()})
         print(f"{provider} matrix rationale: {decision['rationale'] or '(not supplied)'}")
     changed = document["providers"] != updated["providers"]

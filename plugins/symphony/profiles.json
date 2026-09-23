@@ -2,7 +2,7 @@
   "schema": 1,
   "generated_at": "2026-09-23",
   "source": "OpenAI model documentation and Claude Code's provider-fetched model catalog",
-  "note": "Machine-maintained provider choices for the fixed nine-cell size/complexity policy in routing.py. Each profile's matrix selects a model and effort per cell; tiers summarize those choices for agent packaging. Profiles are ordered best-first: the first whose requirements the account satisfies applies, and the last is the conservative floor when no entitlement is detected. Codex requires_all is checked against its model roster; Claude requires_any is checked against plan names.",
+  "note": "Machine-maintained provider choices for the fixed nine-cell size/complexity policy in routing.py. Each profile's matrix selects a model and effort per cell; tiers summarize those choices for agent packaging. Profiles are ordered best-first: the first whose requirements the account satisfies applies, and the last is the conservative floor when no entitlement is detected. Codex requires_all is checked against its model roster; Claude requires_all is checked against explicitly available model IDs.",
   "providers": {
     "codex": {
       "profiles": [
@@ -223,10 +223,10 @@
               "max"
             ]
           },
-          "requires_any": [
-            "max",
-            "enterprise",
-            "team"
+          "requires_all": [
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5"
           ]
         },
         {
@@ -298,10 +298,9 @@
               "max"
             ]
           },
-          "requires_any": [
-            "max",
-            "enterprise",
-            "team"
+          "requires_all": [
+            "claude-opus-5-5",
+            "claude-sonnet-5"
           ]
         },
         {
