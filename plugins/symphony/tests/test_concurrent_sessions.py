@@ -17,6 +17,11 @@ from tempfile import TemporaryDirectory
 from plugins.symphony.symphony import runtime as runtime_module
 from plugins.symphony.symphony.model import Action, ProjectState
 from plugins.symphony.symphony.runtime import handle
+from plugins.symphony.symphony.routing import profiles_for, snapshot_for
+
+FULL_SIMPLE = snapshot_for("codex", "full").matrix["small/simple"]
+BASE_SIMPLE = snapshot_for("codex", "base").matrix["small/simple"]
+CODEX_STRONGEST = profiles_for("codex")[0]["tiers"]["strongest"]
 
 MARKER = json.dumps(
     {"size": "small", "complexity": "simple", "risk": "normal",
@@ -106,14 +111,14 @@ class GovernanceLabelTests(unittest.TestCase):
 
     def open_lead(self):
         handle({**self.payload(""), "hook_event_name": "SessionStart"}, self.environ)
-        for role, model, effort in (("assessor", "gpt-6-astra", "high"), ("lead", "gpt-6-sol", "medium")):
+        for role, model, effort in (("assessor", CODEX_STRONGEST, "high"), ("lead", FULL_SIMPLE["model"], FULL_SIMPLE["effort"])):
             body = f"SYMPHONY_ROLE: {role}\n" + (f"SYMPHONY_ROUTE: {MARKER}\n" if role == "lead" else "")
             handle({**self.payload(""), "hook_event_name": "PreToolUse", "tool_name": "spawn_agent",
                     "tool_input": {"message": body + "Ship it", "model": model,
                                    "reasoning_effort": effort}}, self.environ)
         handle({**self.payload(""), "hook_event_name": "SubagentStart", "agent_id": "lead-1",
-                "agent_type": "symphony_lead_x_medium", "model": "gpt-6-sol",
-                "model_reasoning_effort": "medium"}, self.environ)
+                "agent_type": "symphony_lead_x_medium", "model": FULL_SIMPLE["model"],
+                "model_reasoning_effort": FULL_SIMPLE["effort"]}, self.environ)
 
     def test_a_one_shot_run_labels_its_lead_transactional(self):
         handle(self.payload("$symphony:symphony start Ship it"), self.environ)
@@ -211,10 +216,10 @@ class ConcurrentSessionTests(unittest.TestCase):
 
     def run_with_live_lead(self, session="root-a"):
         handle(self.payload(session, "SessionStart"), self.environ)
-        self.spawn(session, "assessor", "gpt-6-astra", "high")
-        self.start_agent(session, "assessor-1", "assessor", "gpt-6-astra", "high")
-        self.spawn(session, "lead", "gpt-6-sol", "medium", MARKER)
-        self.start_agent(session, "lead-1", "lead", "gpt-6-sol", "medium")
+        self.spawn(session, "assessor", CODEX_STRONGEST, "high")
+        self.start_agent(session, "assessor-1", "assessor", CODEX_STRONGEST, "high")
+        self.spawn(session, "lead", FULL_SIMPLE["model"], FULL_SIMPLE["effort"], MARKER)
+        self.start_agent(session, "lead-1", "lead", FULL_SIMPLE["model"], FULL_SIMPLE["effort"])
 
     def state(self):
         path = next(self.state_root.glob("*.json"))
@@ -223,13 +228,13 @@ class ConcurrentSessionTests(unittest.TestCase):
     # ---- the renderer must speak ------------------------------------------
     def test_a_second_lead_is_told_it_is_not_the_lead(self):
         self.run_with_live_lead()
-        spoken = self.text(self.start_agent("root-a", "lead-2", "lead", "gpt-6-sol", "medium"))
+        spoken = self.text(self.start_agent("root-a", "lead-2", "lead", FULL_SIMPLE["model"], FULL_SIMPLE["effort"]))
         self.assertTrue(spoken, "Symphony rejected a second lead and said nothing")
         self.assertIn("lead", spoken.lower())
 
     def test_a_stale_completion_is_not_silently_swallowed(self):
         self.run_with_live_lead()
-        self.start_agent("root-a", "lead-2", "lead", "gpt-6-sol", "medium")
+        self.start_agent("root-a", "lead-2", "lead", FULL_SIMPLE["model"], FULL_SIMPLE["effort"])
         self.stop_agent("root-a", "lead-2")
         spoken = self.text(handle(self.payload("root-a"), self.environ))
         self.assertTrue(spoken, "a completion from a non-lead was ignored silently")
@@ -293,14 +298,14 @@ class ConcurrentSessionTests(unittest.TestCase):
         """
         env = {**self.environ, "SYMPHONY_PROFILE": "base"}
         handle(self.payload("root-a", "SessionStart"), env)
-        self.spawn_in("root-a", env, "assessor", "gpt-5.5", "high")
-        blocked = self.text(self.spawn_in("root-a", env, "lead", "gpt-5.5", "medium", MARKER))
+        self.spawn_in("root-a", env, "assessor", BASE_SIMPLE["model"], "high")
+        blocked = self.text(self.spawn_in("root-a", env, "lead", BASE_SIMPLE["model"], BASE_SIMPLE["effort"], MARKER))
         self.assertIn("proceed", blocked)
 
         handle({**self.payload("root-a"), "prompt": "$symphony:symphony proceed"}, env)
         handle(self.payload("stranger", "SessionStart"), env)
 
-        after = self.text(self.spawn_in("root-a", env, "lead", "gpt-5.5", "medium", MARKER))
+        after = self.text(self.spawn_in("root-a", env, "lead", BASE_SIMPLE["model"], BASE_SIMPLE["effort"], MARKER))
         self.assertNotIn(
             "proceed", after, "a stranger's heartbeat undid the clamp this session accepted"
         )

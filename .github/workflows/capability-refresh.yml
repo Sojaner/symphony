@@ -48,9 +48,11 @@ jobs:
           printenv OPENAI_API_KEY | codex login --with-api-key
           echo "CODEX_HOME=$CODEX_HOME" >> "$GITHUB_ENV"
 
-      - name: Update the profiles from the roster
+      - name: Let both provider agents choose their matrices in parallel
         id: probe
-        run: python3 plugins/symphony/scripts/refresh_profiles.py --probe
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python3 plugins/symphony/scripts/refresh_profiles.py --agent-probe
 
       - name: Regenerate the packaged agents
         run: python3 plugins/symphony/scripts/generate_agents.py

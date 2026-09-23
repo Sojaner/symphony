@@ -6,7 +6,25 @@ from tempfile import TemporaryDirectory
 from plugins.symphony.symphony.model import Delegation, Event, ProjectState, RunState
 from plugins.symphony.symphony import runtime as runtime_module
 from plugins.symphony.symphony.runtime import compact_delegations, format_delegation, handle
+from plugins.symphony.symphony.routing import profiles_for, snapshot_for
 from plugins.symphony.symphony.store import StateStore
+
+CODEX_FULL = profiles_for("codex")[0]
+CLAUDE_FULL = profiles_for("claude")[0]
+CODEX_STRONGEST = CODEX_FULL["tiers"]["strongest"]
+CLAUDE_STRONGEST = CLAUDE_FULL["tiers"]["strongest"]
+
+
+def route_choice(size="small", complexity="simple", provider="codex"):
+    return snapshot_for(provider, profiles_for(provider)[0]["id"]).matrix[f"{size}/{complexity}"]
+
+
+def claude_agent_type(role, choice):
+    return f"symphony:symphony-{role}-{choice['model']}-{choice['effort']}"
+
+
+def codex_agent_type(role, model, effort):
+    return f"symphony_{role}_{model.replace('-', '_').replace('.', '_')}_{effort}"
 
 
 class RuntimeTests(unittest.TestCase):
@@ -21,7 +39,15 @@ class RuntimeTests(unittest.TestCase):
             "SYMPHONY_STATE_DIR": str(self.state_root),
             "SYMPHONY_PROFILE": "full",
         }
-        self.claude_environ = {**self.environ, "SYMPHONY_PROFILE": "opus"}
+        self.claude_environ = {**self.environ, "SYMPHONY_PROFILE": CLAUDE_FULL["id"]}
+        self.simple = route_choice()
+        self.mixed = route_choice("medium", "mixed")
+        self.large = route_choice("large", "complex")
+        self.claude_simple = route_choice(provider="claude")
+        self.claude_medium = route_choice("medium", "simple", "claude")
+        self.claude_mixed = route_choice("medium", "mixed", "claude")
+        self.claude_large = route_choice("large", "simple", "claude")
+        self.claude_assessor_type = f"symphony:symphony-assessor-{CLAUDE_STRONGEST}-high"
 
     def tearDown(self):
         self.temp.cleanup()
@@ -69,13 +95,13 @@ class RuntimeTests(unittest.TestCase):
         }
         if provider == "claude":
             hook["tool_input"] = {
-                "subagent_type": "symphony-assessor-opus-high",
+                "subagent_type": f"symphony-assessor-{CLAUDE_STRONGEST}-high",
                 "prompt": f"SYMPHONY_ROLE: assessor\n{task}",
             }
         else:
             hook["tool_input"] = {
                 "message": f"SYMPHONY_ROLE: assessor\n{task}",
-                "model": "gpt-6-astra",
+                "model": CODEX_STRONGEST,
                 "reasoning_effort": "high",
             }
         return handle(hook, environ)
@@ -242,8 +268,8 @@ class RuntimeTests(unittest.TestCase):
                 "tool_name": "spawn_agent",
                 "tool_input": {
                     "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
-                    "model": "gpt-6-sol",
-                    "reasoning_effort": "medium",
+                    "model": self.simple["model"],
+                    "reasoning_effort": self.simple["effort"],
                 },
             },
             self.environ,
@@ -253,9 +279,9 @@ class RuntimeTests(unittest.TestCase):
             {
                 "hook_event_name": "SubagentStart",
                 "agent_id": "lead-1",
-                "agent_type": "symphony_lead_gpt_6_sol_medium",
-                "model": "gpt-6-sol",
-                "model_reasoning_effort": "medium",
+                "agent_type": f"symphony_lead_{self.simple['model'].replace('-', '_')}_{self.simple['effort']}",
+                "model": self.simple["model"],
+                "model_reasoning_effort": self.simple["effort"],
             }
         )
         handle(started, self.environ)
@@ -277,8 +303,8 @@ class RuntimeTests(unittest.TestCase):
             **self.payload(""),
             "hook_event_name": "SubagentStart",
             "agent_id": "lead-1",
-            "agent_type": "symphony_lead_gpt_6_sol_high",
-            "model": "gpt-6-sol",
+            "agent_type": f"symphony_lead_{self.simple['model'].replace('-', '_')}_high",
+            "model": self.simple["model"],
             "model_reasoning_effort": "high",
         }
         handle(lead, self.environ)
@@ -345,16 +371,16 @@ class RuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(result.stdout, "", "a stop result carries no injected context")
-        self.assertIn("gpt-6-sol/medium", self.flush().lower())
+        self.assertIn(f"{self.simple['model']}/{self.simple['effort']}".lower(), self.flush().lower())
         recovering = StateStore(self.state_root).load(self.project).active_run
         self.assertEqual(recovering.status, "recovering")
         replacement = {
             **self.payload(""),
             "hook_event_name": "SubagentStart",
             "agent_id": "lead-2",
-            "agent_type": "symphony_lead_gpt_6_sol_medium",
-            "model": "gpt-6-sol",
-            "model_reasoning_effort": "medium",
+            "agent_type": f"symphony_lead_{self.simple['model'].replace('-', '_')}_{self.simple['effort']}",
+            "model": self.simple["model"],
+            "model_reasoning_effort": self.simple["effort"],
         }
         handle(replacement, self.environ)
         replaced = StateStore(self.state_root).load(self.project).active_run
@@ -384,13 +410,13 @@ class RuntimeTests(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "session_meta",
-                            "payload": {"agent_path": "/root/symphony_assessor_gpt_6_astra_high"},
+                            "payload": {"agent_path": f"/root/{codex_agent_type('assessor', CODEX_STRONGEST, 'high')}"},
                         }
                     ),
                     json.dumps(
                         {
                             "type": "turn_context",
-                            "payload": {"model": "gpt-6-astra", "effort": "high"},
+                            "payload": {"model": CODEX_STRONGEST, "effort": "high"},
                         }
                     ),
                 )
@@ -431,8 +457,8 @@ class RuntimeTests(unittest.TestCase):
         state = StateStore(self.state_root).load(self.project)
         self.assertEqual(state.active_run.assessment["size"], "small")
         self.assertEqual(state.active_run.assessment["complexity"], "simple")
-        self.assertEqual(state.active_run.assessment["route"]["lead_model"], "gpt-6-sol")
-        self.assertEqual(state.active_run.assessment["route"]["lead_effort"], "medium")
+        self.assertEqual(state.active_run.assessment["route"]["lead_model"], self.simple["model"])
+        self.assertEqual(state.active_run.assessment["route"]["lead_effort"], self.simple["effort"])
 
         lead_transcript = self.root / "lead.jsonl"
         lead_transcript.write_text(
@@ -441,13 +467,13 @@ class RuntimeTests(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "session_meta",
-                            "payload": {"agent_path": "/root/symphony_lead_gpt_6_sol_medium"},
+                            "payload": {"agent_path": f"/root/symphony_lead_{self.simple['model'].replace('-', '_')}_{self.simple['effort']}"},
                         }
                     ),
                     json.dumps(
                         {
                             "type": "turn_context",
-                            "payload": {"model": "gpt-6-sol", "effort": "medium"},
+                            "payload": {"model": self.simple["model"], "effort": self.simple["effort"]},
                         }
                     ),
                 )
@@ -530,13 +556,13 @@ class RuntimeTests(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "session_meta",
-                            "payload": {"agent_path": "/root/symphony_assessor_gpt_6_astra_high"},
+                            "payload": {"agent_path": f"/root/symphony_assessor_{CODEX_STRONGEST.replace('-', '_')}_high"},
                         }
                     ),
                     json.dumps(
                         {
                             "type": "turn_context",
-                            "payload": {"model": "gpt-6-astra", "effort": "high"},
+                            "payload": {"model": CODEX_STRONGEST, "effort": "high"},
                         }
                     ),
                 )
@@ -566,7 +592,7 @@ class RuntimeTests(unittest.TestCase):
 
         state = StateStore(self.state_root).load(self.project)
         assessor = state.active_run.delegations[-1]
-        self.assertEqual((assessor.requested_tier, assessor.requested_effort), ("gpt-6-astra", "high"))
+        self.assertEqual((assessor.requested_tier, assessor.requested_effort), (CODEX_STRONGEST, "high"))
         self.assertEqual(state.active_run.assessment["size"], "small")
 
     def test_failed_lead_stays_recoverable_and_stop_remains_guarded(self):
@@ -661,8 +687,8 @@ class RuntimeTests(unittest.TestCase):
             "tool_name": "spawn_agent",
             "tool_input": {
                 "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
-                "model": "gpt-6-luna",
-                "reasoning_effort": "high",
+                "model": self.mixed["model"],
+                "reasoning_effort": self.mixed["effort"],
             },
         }
         handle(hook, self.environ)
@@ -677,7 +703,7 @@ class RuntimeTests(unittest.TestCase):
         status = self.context(handle(self.payload("$symphony:symphony status"), self.environ))
         self.assertIn("Assessment: medium/mixed", status)
         self.assertIn("Topology: mixed", status)
-        self.assertIn("Lead route: gpt-6-luna/high", status)
+        self.assertIn(f"Lead route: {self.mixed['model']}/{self.mixed['effort']}", status)
         self.assertIn("Lead: lead-1", status)
 
     def test_pre_tool_use_denies_unclassified_agent_spawn(self):
@@ -729,7 +755,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload(""),
                 "hook_event_name": "SubagentStart",
                 "agent_id": "assessor-1",
-                "agent_type": "symphony_assessor_gpt_6_astra_high",
+                "agent_type": f"symphony_assessor_{CODEX_STRONGEST.replace('-', '_')}_high",
             },
             self.environ,
         )
@@ -748,8 +774,8 @@ class RuntimeTests(unittest.TestCase):
             "tool_name": "spawn_agent",
             "tool_input": {
                 "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nRun it",
-                "model": "gpt-6-luna",
-                "reasoning_effort": "medium",
+                "model": self.large["model"],
+                "reasoning_effort": self.large["effort"],
             },
         }
         prepared_output = self.output(handle(prepared, self.environ))
@@ -766,7 +792,7 @@ class RuntimeTests(unittest.TestCase):
         state = StateStore(self.state_root).load(self.project)
         self.assertEqual(state.active_run.lead_identity, "lead-1")
         self.assertEqual(state.active_run.delegations[-1].role, "lead")
-        self.assertEqual(state.active_run.delegations[-1].requested_tier, "gpt-6-luna")
+        self.assertEqual(state.active_run.delegations[-1].requested_tier, self.large["model"])
         self.assertEqual(state.active_run.delegations[-1].objective, "Run it")
 
     def test_lead_spawn_without_route_is_denied(self):
@@ -838,8 +864,8 @@ class RuntimeTests(unittest.TestCase):
                 "tool_name": "spawn_agent",
                 "tool_input": {
                     "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
-                    "model": "gpt-6-sol",
-                    "reasoning_effort": "medium",
+                    "model": self.simple["model"],
+                    "reasoning_effort": self.simple["effort"],
                 },
             },
             self.environ,
@@ -927,8 +953,8 @@ class RuntimeTests(unittest.TestCase):
                 "tool_name": "spawn_agent",
                 "tool_input": {
                     "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
-                    "model": "gpt-6-sol",
-                    "reasoning_effort": "medium",
+                    "model": self.simple["model"],
+                    "reasoning_effort": self.simple["effort"],
                 },
             },
             self.environ,
@@ -1011,11 +1037,13 @@ class RuntimeTests(unittest.TestCase):
             self.project,
             ProjectState(active_run=RunState("run-1", "task", lead_identity="lead-1")),
         )
+        worker_type = claude_agent_type("worker", self.claude_large)
+        consultant_type = f"symphony:symphony-consultant-{CLAUDE_STRONGEST}-high"
         for role, agent_type, extra in (
-            ("worker", "symphony:symphony-worker-haiku-low", ""),
+            ("worker", worker_type, ""),
             (
                 "consultant",
-                "symphony:symphony-consultant-opus-high",
+                consultant_type,
                 '\nSYMPHONY_DECISION: {"size":"small","complexity":"mixed"}',
             ),
         ):
@@ -1035,7 +1063,7 @@ class RuntimeTests(unittest.TestCase):
             **self.payload("", "claude"),
             "hook_event_name": "SubagentStart",
             "agent_id": "consultant-1",
-            "agent_type": "symphony:symphony-consultant-opus-high",
+            "agent_type": consultant_type,
         }
         handle(consultant_started, self.environ)
         handle(consultant_started, self.environ)
@@ -1044,7 +1072,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload("", "claude"),
                 "hook_event_name": "SubagentStart",
                 "agent_id": "worker-1",
-                "agent_type": "symphony:symphony-worker-haiku-low",
+                "agent_type": worker_type,
             },
             self.environ,
         )
@@ -1060,10 +1088,9 @@ class RuntimeTests(unittest.TestCase):
             self.project,
             ProjectState(active_run=RunState("run-1", "task", lead_identity="lead-1")),
         )
-        for agent_type in (
-            "symphony:symphony-worker-haiku-low",
-            "symphony:symphony-worker-sonnet-high",
-        ):
+        low_type = claude_agent_type("worker", self.claude_large)
+        high_type = claude_agent_type("worker", self.claude_mixed)
+        for agent_type in (low_type, high_type):
             handle(
                 {
                     **self.payload("", "claude"),
@@ -1077,8 +1104,8 @@ class RuntimeTests(unittest.TestCase):
                 self.environ,
             )
         for identity, agent_type in (
-            ("worker-sonnet", "symphony:symphony-worker-sonnet-high"),
-            ("worker-haiku", "symphony:symphony-worker-haiku-low"),
+            ("worker-high", high_type),
+            ("worker-low", low_type),
         ):
             handle(
                 {
@@ -1094,8 +1121,8 @@ class RuntimeTests(unittest.TestCase):
             item.identity: (item.requested_tier, item.requested_effort)
             for item in StateStore(self.state_root).load(self.project).active_run.delegations
         }
-        self.assertEqual(delegations["worker-sonnet"], ("sonnet", "high"))
-        self.assertEqual(delegations["worker-haiku"], ("haiku", "low"))
+        self.assertEqual(delegations["worker-high"], (self.claude_mixed["model"], self.claude_mixed["effort"]))
+        self.assertEqual(delegations["worker-low"], (self.claude_large["model"], self.claude_large["effort"]))
 
     def test_claude_replacement_preparation_preserves_recovery_generation(self):
         marker = json.dumps(
@@ -1118,18 +1145,19 @@ class RuntimeTests(unittest.TestCase):
                 "risk": "normal",
                 "rationale": "bounded task",
                 "topology": "direct",
-                "route": {"lead_model": "sonnet", "lead_effort": "medium"},
+                "route": {"lead_model": self.claude_medium["model"], "lead_effort": self.claude_medium["effort"]},
                 "_invalid_consultants": ["consultant-1"],
             },
         )
         StateStore(self.state_root).save(self.project, ProjectState(active_run=run))
+        lead_type = claude_agent_type("lead", self.claude_medium)
         prepared = {
             **self.payload("", "claude"),
             "hook_event_name": "PreToolUse",
             "tool_name": "Agent",
             "tool_input": {
                 "prompt": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nRecover",
-                "subagent_type": "symphony:symphony-lead-sonnet-medium",
+                "subagent_type": lead_type,
             },
         }
         handle(prepared, self.environ)
@@ -1138,7 +1166,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload("", "claude"),
                 "hook_event_name": "SubagentStart",
                 "agent_id": "lead-2",
-                "agent_type": "symphony:symphony-lead-sonnet-medium",
+                "agent_type": lead_type,
             },
             self.environ,
         )
@@ -1157,7 +1185,7 @@ class RuntimeTests(unittest.TestCase):
             "tool_name": "Agent",
             "tool_input": {
                 "prompt": "SYMPHONY_ROLE: assessor\nAssess the task",
-                "model": "opus",
+                "model": CLAUDE_STRONGEST,
             },
         }
 
@@ -1175,8 +1203,8 @@ class RuntimeTests(unittest.TestCase):
             "tool_name": "Agent",
             "tool_input": {
                 "prompt": "SYMPHONY_ROLE: assessor\nAssess the task",
-                "subagent_type": "symphony:symphony-assessor-opus-high",
-                "model": "haiku",
+                "subagent_type": self.claude_assessor_type,
+                "model": "different-model",
             },
         }
 
@@ -1193,7 +1221,7 @@ class RuntimeTests(unittest.TestCase):
             "tool_name": "Agent",
             "tool_input": {
                 "prompt": "SYMPHONY_ROLE: assessor\nAssess the task",
-                "subagent_type": "symphony:symphony-assessor-opus-high",
+                "subagent_type": self.claude_assessor_type,
             },
         }
         self.assertEqual(handle(prepared, self.environ).stdout, "")
@@ -1202,13 +1230,13 @@ class RuntimeTests(unittest.TestCase):
             **self.payload("", "claude"),
             "hook_event_name": "SubagentStart",
             "agent_id": "assessor-1",
-            "agent_type": "symphony:symphony-assessor-opus-high",
+            "agent_type": self.claude_assessor_type,
         }
         handle(started, self.environ)
 
         delegation = StateStore(self.state_root).load(self.project).active_run.delegations[-1]
         self.assertEqual(delegation.role, "assessor")
-        self.assertEqual(delegation.requested_tier, "opus")
+        self.assertEqual(delegation.requested_tier, CLAUDE_STRONGEST)
         self.assertEqual(delegation.requested_effort, "high")
 
     def test_claude_assessment_feedback_is_delivered_to_parent_post_tool_use(self):
@@ -1219,7 +1247,7 @@ class RuntimeTests(unittest.TestCase):
             "tool_name": "Agent",
             "tool_input": {
                 "prompt": "SYMPHONY_ROLE: assessor\nAssess the task",
-                "subagent_type": "symphony:symphony-assessor-opus-high",
+                "subagent_type": self.claude_assessor_type,
             },
         }
         handle(prepared, self.environ)
@@ -1227,7 +1255,7 @@ class RuntimeTests(unittest.TestCase):
             **self.payload("", "claude"),
             "hook_event_name": "SubagentStart",
             "agent_id": "assessor-1",
-            "agent_type": "symphony:symphony-assessor-opus-high",
+            "agent_type": self.claude_assessor_type,
         }
         handle(started, self.environ)
         assessment = json.dumps(
@@ -1352,7 +1380,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload(""),
                 "hook_event_name": "SubagentStart",
                 "agent_id": "assessor-1",
-                "agent_type": "symphony_assessor_gpt_6_astra_high",
+                "agent_type": codex_agent_type("assessor", CODEX_STRONGEST, "high"),
             },
             self.environ,
         )
@@ -1384,7 +1412,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload(""),
                 "hook_event_name": "SubagentStart",
                 "agent_id": "worker-1",
-                "agent_type": "symphony_worker_gpt_6_sol_medium",
+                "agent_type": codex_agent_type("worker", self.simple["model"], self.simple["effort"]),
             },
             self.environ,
         )
@@ -1466,9 +1494,9 @@ class RuntimeTests(unittest.TestCase):
             **self.payload(""),
             "hook_event_name": "SubagentStart",
             "agent_id": "lead-1",
-            "agent_type": "symphony_lead_gpt_6_sol_medium",
-            "model": "gpt-6-sol",
-            "model_reasoning_effort": "medium",
+            "agent_type": codex_agent_type("lead", self.simple["model"], self.simple["effort"]),
+            "model": self.simple["model"],
+            "model_reasoning_effort": self.simple["effort"],
         }
         handle(lead, self.environ)
 
@@ -1477,7 +1505,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload(""),
                 "hook_event_name": "SubagentStart",
                 "agent_id": identity,
-                "agent_type": "symphony_consultant_gpt_6_astra_high",
+                "agent_type": codex_agent_type("consultant", CODEX_STRONGEST, "high"),
                 "task": "Pick the cache strategy",
             }
             handle(spawn, self.environ)
@@ -1511,7 +1539,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload(""),
                 "hook_event_name": "SubagentStart",
                 "agent_id": "lead-1",
-                "agent_type": "symphony_lead_gpt_6_sol_medium",
+                "agent_type": codex_agent_type("lead", self.simple["model"], self.simple["effort"]),
             },
             self.environ,
         )
@@ -1520,7 +1548,7 @@ class RuntimeTests(unittest.TestCase):
                 **self.payload(""),
                 "hook_event_name": "SubagentStop",
                 "agent_id": "lead-1",
-                "agent_type": "symphony_lead_gpt_6_sol_medium",
+                "agent_type": codex_agent_type("lead", self.simple["model"], self.simple["effort"]),
                 "status": "completed",
                 "last_assistant_message": f"the token is {secret}",
                 "transcript_path": "/tmp/transcript.jsonl",

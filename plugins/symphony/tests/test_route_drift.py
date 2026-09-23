@@ -13,11 +13,23 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from plugins.symphony.symphony.runtime import handle
+from plugins.symphony.symphony.routing import profiles_for, snapshot_for
+
+FULL_PROFILE = snapshot_for("codex", "full")
+BASE_PROFILE = snapshot_for("codex", "base")
+DRIFT_CELL = next(
+    cell for cell in FULL_PROFILE.matrix
+    if FULL_PROFILE.matrix[cell] != BASE_PROFILE.matrix[cell]
+)
+DRIFT_SIZE, DRIFT_COMPLEXITY = DRIFT_CELL.split("/")
+FULL_ROUTE = FULL_PROFILE.matrix[DRIFT_CELL]
+BASE_ROUTE = BASE_PROFILE.matrix[DRIFT_CELL]
+FULL_STRONGEST = profiles_for("codex")[0]["tiers"]["strongest"]
 
 MARKER = json.dumps(
     {
-        "size": "small",
-        "complexity": "simple",
+        "size": DRIFT_SIZE,
+        "complexity": DRIFT_COMPLEXITY,
         "risk": "normal",
         "rationale": "bounded task",
         "topology": "direct",
@@ -84,7 +96,7 @@ class RouteDriftTests(unittest.TestCase):
         so that consent is given first. This isolates what these tests are about.
         """
         self.start(profile, session)
-        self.spawn(profile, session, "assessor", "gpt-6-astra", "high")
+        self.spawn(profile, session, "assessor", FULL_STRONGEST, "high")
         if profile != "full":
             self.proceed(profile, session)
         result = self.spawn(profile, session, "lead", model, effort, MARKER)
@@ -93,46 +105,46 @@ class RouteDriftTests(unittest.TestCase):
         )
 
     def test_standing_assessment_that_weakened_waits_for_the_user(self):
-        self.accept_under("full", "session-1", "gpt-6-sol", "medium")
+        self.accept_under("full", "session-1", FULL_ROUTE["model"], FULL_ROUTE["effort"])
 
         # A later session on a weaker entitlement: the priced route is gone.
         self.start("base", "session-2")
-        output = self.output(self.spawn("base", "session-2", "lead", "gpt-5.5", "medium", MARKER))
+        output = self.output(self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER))
 
         self.assertEqual(output["decision"], "block")
         self.assertIn("no longer available", output["reason"])
-        self.assertIn("gpt-6-sol", output["reason"])
+        self.assertIn(FULL_ROUTE["model"], output["reason"])
         self.assertIn("proceed", output["reason"])
 
     def test_proceed_accepts_the_weaker_route_and_the_spawn_goes_through(self):
-        self.accept_under("full", "session-1", "gpt-6-sol", "medium")
+        self.accept_under("full", "session-1", FULL_ROUTE["model"], FULL_ROUTE["effort"])
         self.start("base", "session-2")
-        blocked = self.spawn("base", "session-2", "lead", "gpt-5.5", "medium", MARKER)
+        blocked = self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER)
         self.assertEqual(self.output(blocked)["decision"], "block")
 
         self.proceed("base", "session-2")
-        output = self.output(self.spawn("base", "session-2", "lead", "gpt-5.5", "medium", MARKER))
+        output = self.output(self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER))
 
         self.assertNotEqual(output.get("decision"), "block", output.get("reason"))
 
     def test_a_fresh_assessment_never_gates(self):
         """Nothing was priced before, so nothing was taken away."""
         self.start("base", "session-1")
-        self.spawn("base", "session-1", "assessor", "gpt-5.5", "high")
+        self.spawn("base", "session-1", "assessor", BASE_PROFILE.tiers["strongest"], "high")
         self.proceed("base", "session-1")
         output = self.output(
-            self.spawn("base", "session-1", "lead", "gpt-5.5", "medium", MARKER)
+            self.spawn("base", "session-1", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER)
         )
 
         self.assertNotEqual(output.get("decision"), "block", output.get("reason"))
 
     def test_an_entitlement_upgrade_discloses_instead_of_gating(self):
         """Moving to a better map is not a degradation and needs no consent."""
-        self.accept_under("base", "session-1", "gpt-5.5", "medium")
+        self.accept_under("base", "session-1", BASE_ROUTE["model"], BASE_ROUTE["effort"])
 
         self.start("full", "session-2")
         output = self.output(
-            self.spawn("full", "session-2", "lead", "gpt-6-sol", "medium", MARKER)
+            self.spawn("full", "session-2", "lead", FULL_ROUTE["model"], FULL_ROUTE["effort"], MARKER)
         )
 
         self.assertNotEqual(output.get("decision"), "block", output.get("reason"))
@@ -144,12 +156,12 @@ class RouteDriftTests(unittest.TestCase):
         left the map every lead spawn was refused and the run was stuck. The
         run must now be advanceable by spawning what the tier resolves to today.
         """
-        self.accept_under("full", "session-1", "gpt-6-sol", "medium")
+        self.accept_under("full", "session-1", FULL_ROUTE["model"], FULL_ROUTE["effort"])
         self.start("base", "session-2")
         self.proceed("base", "session-2")
 
-        stale = self.output(self.spawn("base", "session-2", "lead", "gpt-5.6-sol", "medium", MARKER))
-        current = self.output(self.spawn("base", "session-2", "lead", "gpt-5.5", "medium", MARKER))
+        stale = self.output(self.spawn("base", "session-2", "lead", "removed-model", "low", MARKER))
+        current = self.output(self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER))
 
         self.assertEqual(stale["decision"], "block")
         self.assertNotEqual(current.get("decision"), "block", current.get("reason"))

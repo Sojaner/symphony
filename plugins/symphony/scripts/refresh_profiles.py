@@ -6,7 +6,6 @@ artifact. This keeps that artifact honest: it reads each provider's own roster,
 rewrites the profiles, and refuses to ship a map naming a model the provider
 will not accept.
 
-    refresh_profiles.py --probe    # rewrite profiles.json from the local roster
     refresh_profiles.py --verify   # reject any model the provider rejects
 
 Codex is the only provider whose identifiers churn. Claude's tiers are aliases
@@ -16,12 +15,17 @@ that outlive model generations, so nothing here rewrites them.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import re
 import select
 import subprocess
 import sys
+import tempfile
+import urllib.parse
+import urllib.request
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +36,33 @@ PROFILES = ROOT / "profiles.json"
 CODEX_RANK = ("gpt-5.5", "gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra")
 CODEX_RETIRED = {"gpt-5.6-terra"}
 CODEX_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+sys.path.insert(0, str(ROOT))
+from symphony.routing import Assessment, MATRIX as ROUTING_MATRIX, route_for  # noqa: E402
+
+CELLS = tuple(f"{size}/{complexity}" for size, complexity in ROUTING_MATRIX)
+TIER_CELLS = {
+    "economy": "large/simple",
+    "balanced": "medium/simple",
+    "capable": "small/mixed",
+    "strongest": "small/complex",
+}
+
+
+def _model_rank(provider: str, model: str) -> int | None:
+    """Independent provider-family ordering; never trust an agent's ranking."""
+    if provider == "codex":
+        if model in CODEX_RANK:
+            return CODEX_RANK.index(model)
+        match = re.fullmatch(r"gpt-(\d+)(?:[.-].*)?", model)
+        if match and int(match.group(1)) > 6:
+            return len(CODEX_RANK) + int(match.group(1))
+        return None
+    lowered = model.lower()
+    for family, rank in (("haiku", 0), ("sonnet", 1), ("opus", 2)):
+        if family in lowered:
+            return rank
+    return None
 
 
 def codex_roster(home: Path) -> list[dict]:
@@ -122,68 +153,213 @@ def efforts_of(entry: dict) -> list[str]:
         for level in levels
         if isinstance(level, dict) and level.get("effort")
     ]
-    # The CLI roster has exposed preview-only values which the provider rejects
-    # for normal Codex calls. Ship only the published API vocabulary.
-    return [effort for effort in found if effort in CODEX_EFFORTS] or ["low", "medium", "high"]
+    # Preserve provider order while dropping preview-only values.
+    return [effort for effort in CODEX_EFFORTS if effort in found]
 
 
-def codex_profiles(roster: list[dict], current: list[dict]) -> list[dict]:
-    """Keep the curated tier assignments, substituting only what vanished.
-
-    Which model belongs at which tier is a cost-versus-capability judgement, so
-    this never reassigns a tier whose model the account can still see. It reacts
-    to one provider fact only: a model the profiles name is no longer offered.
-    Substitution walks down the rank first, because quietly promoting a tier
-    would raise what the user pays without anyone deciding to.
-    """
-    available = {entry["slug"]: entry for entry in roster}
-    ranked = [slug for slug in CODEX_RANK if slug in available and slug not in CODEX_RETIRED]
-    if not ranked:
-        raise SystemExit(
-            f"::error::Codex roster names none of the models Symphony knows: {sorted(available)}"
+def claude_roster() -> list[dict]:
+    """Read the model IDs this Anthropic API key can select."""
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise SystemExit("::error::ANTHROPIC_API_KEY is required to read the model roster")
+    url = "https://api.anthropic.com/v1/models?limit=100"
+    models = []
+    while url:
+        request = urllib.request.Request(url, headers={
+            "x-api-key": key, "anthropic-version": "2023-06-01",
+        })
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                page = json.load(response)
+        except (OSError, ValueError) as error:
+            raise SystemExit(f"::error::could not read Claude model roster: {error}")
+        models.extend(page.get("data", ()))
+        last_id = page.get("last_id")
+        url = (
+            "https://api.anthropic.com/v1/models?limit=100&after_id="
+            + urllib.parse.quote(str(last_id), safe="")
+            if page.get("has_more") and last_id else ""
         )
-
-    def substitute(preferred: str) -> str:
-        if preferred in available and preferred not in CODEX_RETIRED:
-            return preferred
-        if preferred not in CODEX_RANK:
-            return ranked[-1]
-        position = CODEX_RANK.index(preferred)
-        weaker = [slug for slug in ranked if CODEX_RANK.index(slug) < position]
-        return weaker[-1] if weaker else ranked[0]
-
-    profiles = []
-    for profile in current:
-        tiers = {tier: substitute(model) for tier, model in profile["tiers"].items()}
-        resolved = {
-            "id": profile["id"],
-            "tiers": tiers,
-            "efforts": {
-                model: efforts_of(available[model])
-                for model in dict.fromkeys(tiers.values())
-                if model in available
-            },
-        }
-        if profile.get("requires_all") is not None:
-            resolved["requires_all"] = sorted(set(tiers.values())) if profile["requires_all"] else []
-        if profile.get("requires_any") is not None:
-            resolved["requires_any"] = list(profile["requires_any"])
-        profiles.append(resolved)
-    return profiles
+    return [item for item in models if isinstance(item, dict) and item.get("id")]
 
 
-def probe(home: Path) -> bool:
+def _agent_prompt(provider: str, current: list[dict], roster: list[dict]) -> str:
+    return """Choose this provider's model/effort grid for Symphony. Optimize outcome quality against token and latency cost: use the cheapest adequate model and effort for routine cells, reserve stronger models and higher effort for work whose size/complexity benefits from them. The grid must be monotonic: complexity never lowers model capability or effort; increasing task size never raises model cost or effort. For the full entitlement profile, each cell must be at least as capable and effortful as its fallback profile.
+
+Do not change the profile IDs or entitlement gates. Use only model IDs in the supplied roster. For every selected model, list its supported effort levels in provider-supported order. Return exactly one JSON object and no markdown or extra text with this shape:
+{"model_order":["least costly model", "...", "most capable model"],"model_efforts":{"model-id":["low","medium"]},"profiles":[{"id":"full","matrix":{"small/simple":{"model":"model-id","effort":"medium"},...}}],"rationale":"brief basis for the tradeoffs"}
+
+Every profile must contain all nine matrix cells: small/simple, small/mixed, small/complex, medium/simple, medium/mixed, medium/complex, large/simple, large/mixed, large/complex. Every effort must be listed in that model's model_efforts entry. Return only this provider's decision; do not edit files or run commands.
+
+Provider: """ + provider + "\nCurrent profile IDs/gates: " + json.dumps([
+        {key: profile[key] for key in ("id", "requires_all", "requires_any") if key in profile}
+        for profile in current
+    ]) + "\nCurrent routing matrix: " + json.dumps(list(CELLS)) + "\nProvider model roster: " + json.dumps(roster)
+
+
+def _run_provider_agent(provider: str, current: list[dict], roster: list[dict]) -> dict:
+    prompt = _agent_prompt(provider, current, roster)
+    if provider == "codex":
+        available = {entry["slug"]: entry for entry in roster}
+        ranked = sorted(
+            (name for name in available if name not in CODEX_RETIRED and _model_rank(provider, name) is not None),
+            key=lambda name: _model_rank(provider, name),
+        )
+        if not ranked:
+            raise SystemExit("::error::no supported Codex model can run the refresh agent")
+        model = ranked[-1]
+        effort = next((item for item in reversed(CODEX_EFFORTS) if item in efforts_of(available[model])), None)
+        if not effort:
+            raise SystemExit(f"::error::no supported reasoning effort for Codex agent model {model}")
+        argv = ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
+                "--model", model, "-c", f'model_reasoning_effort="{effort}"', "-"]
+        completed = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=900)
+        print(f"Codex matrix agent: {model} at {effort} effort")
+    else:
+        argv = ["claude", "--bare", "--print", "--no-session-persistence", "--tools", "",
+                "--model", "opus", "--effort", "max", "--output-format", "text", prompt]
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=900)
+        print("Claude matrix agent: opus at max effort")
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        raise SystemExit(f"::error::{provider} matrix agent failed: {detail[-1][:300] if detail else completed.returncode}")
+    try:
+        result = json.loads(completed.stdout)
+    except (TypeError, ValueError) as error:
+        raise SystemExit(f"::error::{provider} matrix agent did not return plain JSON: {error}")
+    return validate_matrix(provider, result, current, roster)
+
+
+def validate_matrix(provider: str, result: dict, current: list[dict], roster: list[dict]) -> dict:
+    """Reject provider-agent output unless every route is complete and safe."""
+    models = ({entry["slug"]: set(efforts_of(entry)) for entry in roster}
+              if provider == "codex" else {entry["id"]: set(CLAUDE_EFFORTS) for entry in roster})
+    expected_ids = [profile["id"] for profile in current]
+    if not isinstance(result, dict) or not isinstance(result.get("profiles"), list):
+        raise SystemExit(f"::error::{provider} matrix output must contain a profile list")
+    if any(not isinstance(profile, dict) for profile in result["profiles"]):
+        raise SystemExit(f"::error::{provider} matrix profiles must be objects")
+    if [p.get("id") for p in result["profiles"]] != expected_ids:
+        raise SystemExit(f"::error::{provider} matrix changed profile ordering or IDs")
+    model_order = result.get("model_order")
+    if (not isinstance(model_order, list) or not model_order
+            or any(not isinstance(model, str) for model in model_order)
+            or len(set(model_order)) != len(model_order)):
+        raise SystemExit(f"::error::{provider} matrix has invalid model ordering")
+    if set(model_order) - set(models):
+        raise SystemExit(f"::error::{provider} matrix names models outside its roster: {set(model_order) - set(models)}")
+    rank = {model: _model_rank(provider, model) for model in models}
+    unknown = {model for model in model_order if rank[model] is None}
+    if unknown:
+        raise SystemExit(f"::error::{provider} matrix uses models without a verified capability order: {sorted(unknown)}")
+    declared_efforts = result.get("model_efforts")
+    if not isinstance(declared_efforts, dict):
+        raise SystemExit(f"::error::{provider} matrix omitted model effort support")
+    normalized_profiles = []
+    used_models = set()
+    for profile in result["profiles"]:
+        matrix = profile.get("matrix")
+        if not isinstance(matrix, dict) or set(matrix) != set(CELLS):
+            raise SystemExit(f"::error::{provider} profile {profile['id']} must define exactly nine matrix cells")
+        normalized = {}
+        for cell in CELLS:
+            choice = matrix[cell]
+            if not isinstance(choice, dict):
+                raise SystemExit(f"::error::{provider} {cell} choice must be an object")
+            model, effort = choice.get("model"), choice.get("effort")
+            if not isinstance(model, str) or not isinstance(effort, str):
+                raise SystemExit(f"::error::{provider} {cell} must name a string model and effort")
+            if model not in models or rank.get(model) is None:
+                raise SystemExit(f"::error::{provider} {cell} model is absent from its roster/order: {model!r}")
+            if effort not in models[model] or effort not in declared_efforts.get(model, ()):
+                raise SystemExit(f"::error::{provider} unsupported effort {effort!r} for {model}")
+            size, complexity = cell.split("/")
+            risk_floor = route_for(Assessment(size, complexity, risk="high")).lead_effort
+            if risk_floor not in declared_efforts.get(model, ()):
+                raise SystemExit(f"::error::{provider} {model} cannot preserve the high-risk {risk_floor} effort floor at {cell}")
+            used_models.add(model)
+            normalized[cell] = {"model": model, "effort": effort}
+        for size in ("small", "medium", "large"):
+            cells = [normalized[f"{size}/{complexity}"] for complexity in ("simple", "mixed", "complex")]
+            if [rank[item["model"]] for item in cells] != sorted(rank[item["model"]] for item in cells):
+                raise SystemExit(f"::error::{provider} model capability must not fall as complexity increases")
+            if [CODEX_EFFORTS.index(item["effort"]) for item in cells] != sorted(CODEX_EFFORTS.index(item["effort"]) for item in cells):
+                raise SystemExit(f"::error::{provider} effort must not fall as complexity increases")
+        for complexity in ("simple", "mixed", "complex"):
+            cells = [normalized[f"{size}/{complexity}"] for size in ("small", "medium", "large")]
+            if [rank[item["model"]] for item in cells] != sorted((rank[item["model"]] for item in cells), reverse=True):
+                raise SystemExit(f"::error::{provider} model cost must not rise as task size increases")
+            if [CODEX_EFFORTS.index(item["effort"]) for item in cells] != sorted((CODEX_EFFORTS.index(item["effort"]) for item in cells), reverse=True):
+                raise SystemExit(f"::error::{provider} effort must not rise as task size increases")
+        normalized_profiles.append({"id": profile["id"], "matrix": normalized})
+    if used_models != set(model_order) or set(declared_efforts) != used_models:
+        raise SystemExit(f"::error::{provider} matrix model order/efforts must cover exactly the selected models")
+    trusted_order = sorted(used_models, key=lambda model: (rank[model], model))
+    for model, levels in declared_efforts.items():
+        if (model not in models or not isinstance(levels, list) or not levels
+                or any(not isinstance(level, str) for level in levels)
+                or len(set(levels)) != len(levels) or not set(levels) <= models[model]):
+            raise SystemExit(f"::error::{provider} has invalid supported efforts for {model}")
+        if levels != [effort for effort in CODEX_EFFORTS if effort in levels]:
+            raise SystemExit(f"::error::{provider} effort support is not in provider order for {model}")
+        if provider == "codex" and levels != [effort for effort in CODEX_EFFORTS if effort in models[model]]:
+            raise SystemExit(f"::error::Codex effort support for {model} must match the complete provider roster")
+    if len(normalized_profiles) > 1:
+        full, fallback = normalized_profiles[0]["matrix"], normalized_profiles[-1]["matrix"]
+        shipped_fallback = current[-1].get("matrix", {})
+        improved = False
+        for cell in CELLS:
+            if rank[full[cell]["model"]] < rank[fallback[cell]["model"]]:
+                raise SystemExit(f"::error::{provider} full profile cannot use a weaker model than fallback at {cell}")
+            if CODEX_EFFORTS.index(full[cell]["effort"]) < CODEX_EFFORTS.index(fallback[cell]["effort"]):
+                raise SystemExit(f"::error::{provider} full profile cannot use lower effort than fallback at {cell}")
+            prior_floor = shipped_fallback.get(cell)
+            if prior_floor and rank[fallback[cell]["model"]] > _model_rank(provider, prior_floor["model"]):
+                raise SystemExit(f"::error::{provider} fallback cannot use a more gated model at {cell}")
+            improved |= rank[full[cell]["model"]] > rank[fallback[cell]["model"]] or full[cell]["effort"] != fallback[cell]["effort"]
+        if not improved:
+            raise SystemExit(f"::error::{provider} full profile must improve at least one cell over the fallback")
+    return {"profiles": normalized_profiles, "model_order": trusted_order, "model_efforts": declared_efforts,
+            "rationale": str(result.get("rationale", ""))[:600]}
+
+
+def agent_probe(home: Path) -> bool:
+    """Run both provider agents concurrently, then merge only validated JSON."""
     document = json.loads(PROFILES.read_text(encoding="utf-8"))
-    current = document["providers"]["codex"]["profiles"]
-    updated = codex_profiles(codex_roster(home), current)
-    if document["providers"]["codex"]["profiles"] == updated:
-        print("profiles already match the provider roster")
-        return False
-    document["providers"]["codex"]["profiles"] = updated
-    document["generated_at"] = os.environ.get("REFRESH_DATE") or _today()
-    PROFILES.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-    print("profiles updated from the provider roster")
-    return True
+    current = document["providers"]
+    codex_models = codex_roster(home)
+    claude_models = claude_roster()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {
+            "codex": pool.submit(_run_provider_agent, "codex", current["codex"]["profiles"], codex_models),
+            "claude": pool.submit(_run_provider_agent, "claude", current["claude"]["profiles"], claude_models),
+        }
+        decisions = {provider: future.result() for provider, future in futures.items()}
+    updated = json.loads(json.dumps(document))
+    for provider, decision in decisions.items():
+        profiles = {profile["id"]: profile for profile in decision["profiles"]}
+        for profile in updated["providers"][provider]["profiles"]:
+            matrix = profiles[profile["id"]]["matrix"]
+            profile["matrix"] = matrix
+            profile["tiers"] = {tier: matrix[cell]["model"] for tier, cell in TIER_CELLS.items()}
+            profile["efforts"] = decision["model_efforts"]
+            if profile.get("requires_all") is not None and profile["id"] == "full":
+                profile["requires_all"] = sorted({choice["model"] for choice in matrix.values()})
+        print(f"{provider} matrix rationale: {decision['rationale'] or '(not supplied)'}")
+    changed = document["providers"] != updated["providers"]
+    if changed:
+        updated["generated_at"] = os.environ.get("REFRESH_DATE") or _today()
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=PROFILES.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(json.dumps(updated, indent=2) + "\n")
+            temporary.replace(PROFILES)
+        finally:
+            if temporary and temporary.exists():
+                temporary.unlink()
+    print("provider matrices updated" if changed else "provider matrices already match")
+    return changed
 
 
 def _today() -> str:
@@ -193,19 +369,39 @@ def _today() -> str:
 
 
 def verify() -> int:
-    """Reject any model in the shipped map that its provider will not accept."""
+    """Reject any shipped model/effort selection the provider will not accept."""
     document = json.loads(PROFILES.read_text(encoding="utf-8"))
     failures: list[str] = []
     for provider, block in document["providers"].items():
-        models = sorted(
-            {model for profile in block["profiles"] for model in profile["tiers"].values()}
-        )
-        for model in models:
-            accepted, detail = _accepts(provider, model)
-            status = "ok" if accepted else "REJECTED"
-            print(f"{provider} {model}: {status} {detail}".rstrip())
-            if not accepted:
-                failures.append(f"{provider} {model}: {detail}")
+        models = {choice["model"] for profile in block["profiles"] for choice in profile.get("matrix", {}).values()}
+        declared = {model: efforts_by_model(block["profiles"], model) for model in models}
+        if provider == "codex":
+            roster = {entry["slug"]: efforts_of(entry) for entry in codex_roster(Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex"))}
+            supported = {model: roster.get(model, []) for model in models}
+            for model in models:
+                if supported[model] != declared[model]:
+                    failures.append(f"Codex {model}: declared effort support differs from provider roster")
+        else:
+            supported = {}
+            for model in sorted(models):
+                supported[model] = []
+                for effort in CLAUDE_EFFORTS:
+                    accepted, detail = _accepts(provider, model, effort)
+                    if accepted:
+                        supported[model].append(effort)
+                    print(f"{provider} {model} {effort}: {'ok' if accepted else 'unsupported'} {detail}".rstrip())
+                if supported[model] != declared[model]:
+                    failures.append(f"Claude {model}: declared effort support differs from provider checks")
+        for profile in block["profiles"]:
+            for cell, choice in profile.get("matrix", {}).items():
+                if choice["effort"] not in supported.get(choice["model"], []):
+                    failures.append(f"{provider} {cell}: selected effort is unsupported for {choice['model']}")
+        for model in sorted(models):
+            if provider == "codex":
+                accepted, detail = _accepts(provider, model)
+                print(f"{provider} {model}: {'ok' if accepted else 'REJECTED'} {detail}".rstrip())
+                if not accepted:
+                    failures.append(f"{provider} {model}: {detail}")
     if failures:
         for failure in failures:
             print(f"::error::shipped profile names a model the provider rejects: {failure}")
@@ -214,12 +410,23 @@ def verify() -> int:
     return 0
 
 
-def _accepts(provider: str, model: str) -> tuple[bool, str]:
-    """One minimal call whose only question is whether the name resolves."""
+def efforts_by_model(profiles: list[dict], model: str) -> list[str]:
+    return next((profile.get("efforts", {}).get(model, []) for profile in profiles if model in profile.get("efforts", {})), [])
+
+
+def _accepts(provider: str, model: str, effort: str = "") -> tuple[bool, str]:
+    """A minimal provider call verifies the model and selected effort."""
     if provider == "codex":
-        argv = ["codex", "exec", "--model", model, "--skip-git-repo-check", "reply with ok"]
+        argv = ["codex", "exec", "--ephemeral", "--model", model, "--skip-git-repo-check"]
+        if effort:
+            argv.extend(["-c", f'model_reasoning_effort="{effort}"'])
+        argv.append("reply with ok")
     else:
-        argv = ["claude", "--print", "--model", model, "--output-format", "text", "reply with ok"]
+        argv = ["claude", "--bare", "--print", "--no-session-persistence", "--tools", "",
+                "--model", model, "--output-format", "text"]
+        if effort:
+            argv.extend(["--effort", effort])
+        argv.append("reply with ok")
     try:
         completed = subprocess.run(argv, capture_output=True, text=True, timeout=180)
     except (OSError, subprocess.SubprocessError) as error:
@@ -232,7 +439,7 @@ def _accepts(provider: str, model: str) -> tuple[bool, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--probe", action="store_true", help="rewrite profiles from the roster")
+    parser.add_argument("--agent-probe", action="store_true", help="run provider matrix agents in parallel")
     parser.add_argument("--verify", action="store_true", help="check every shipped model resolves")
     parser.add_argument(
         "--codex-home",
@@ -240,11 +447,12 @@ def main() -> int:
         default=Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
     )
     args = parser.parse_args()
-    if args.probe:
-        changed = probe(args.codex_home)
+    if args.agent_probe:
+        changed = agent_probe(args.codex_home)
         output = os.environ.get("GITHUB_OUTPUT")
         if output:
-            Path(output).open("a").write(f"changed={'true' if changed else 'false'}\n")
+            with Path(output).open("a", encoding="utf-8") as stream:
+                stream.write(f"changed={'true' if changed else 'false'}\n")
     if args.verify:
         return verify()
     return 0

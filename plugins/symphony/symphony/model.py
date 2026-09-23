@@ -114,6 +114,7 @@ class CapabilitySnapshot:
     source: str
     provider_version: str | None
     refreshed_at: str
+    matrix: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

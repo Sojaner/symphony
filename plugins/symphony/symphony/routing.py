@@ -28,6 +28,9 @@ class Route:
     execution: str
     consultation: str
     independent_review: bool = False
+    size: str = ""
+    complexity: str = ""
+    risk: str = "normal"
 
 
 MATRIX = {
@@ -70,14 +73,16 @@ def snapshot_for(provider: str, profile_id: str | None = None) -> CapabilitySnap
     )
     tiers = dict(profile["tiers"])
     efforts = {model: tuple(levels) for model, levels in profile["efforts"].items()}
+    matrix = dict(profile.get("matrix", {}))
     return CapabilitySnapshot(
         provider=provider,
-        available_models=tuple(dict.fromkeys(tiers.values())),
+        available_models=tuple(dict.fromkeys([*tiers.values(), *(item["model"] for item in matrix.values())])),
         supported_efforts=efforts,
         tiers=tiers,
         source=f"profile:{profile['id']}",
         provider_version=None,
         refreshed_at=_profiles_generated_at(),
+        matrix=matrix,
     )
 
 
@@ -93,21 +98,31 @@ def route_for(assessment: Assessment) -> Route:
         raise ValueError(f"unsupported assessment: {assessment.size}/{assessment.complexity}") from error
     if assessment.risk == "high":
         effort = "medium" if route.lead_effort == "low" else route.lead_effort
-        return replace(route, lead_effort=effort, independent_review=True)
-    return route
+        route = replace(route, lead_effort=effort, independent_review=True)
+    return replace(route, size=assessment.size, complexity=assessment.complexity, risk=assessment.risk)
 
 
 def resolve_tier(route: Route, snapshot: CapabilitySnapshot) -> dict[str, object]:
-    """Resolve an abstract tier to the least capable declared matching model."""
-    requested = TIERS.index(route.lead_tier)
-    candidates = (
-        snapshot.tiers[tier]
-        for tier in TIERS[requested:]
-        if tier in snapshot.tiers and snapshot.tiers[tier] in snapshot.available_models
-    )
-    model = next(candidates, snapshot.available_models[-1] if snapshot.available_models else "")
+    """Resolve a provider's cell choice, retaining tier fallback for old profiles."""
+    selection = snapshot.matrix.get(f"{route.size}/{route.complexity}")
+    if selection:
+        model = str(selection["model"])
+        requested_effort = str(selection["effort"])
+    else:
+        requested = TIERS.index(route.lead_tier)
+        candidates = (
+            snapshot.tiers[tier]
+            for tier in TIERS[requested:]
+            if tier in snapshot.tiers and snapshot.tiers[tier] in snapshot.available_models
+        )
+        model = next(candidates, snapshot.available_models[-1] if snapshot.available_models else "")
+        requested_effort = route.lead_effort
+    if route.risk == "high" and EFFORTS.index(route.lead_effort) > EFFORTS.index(requested_effort):
+        requested_effort = route.lead_effort
     supported = snapshot.supported_efforts.get(model, ())
-    effort = _supported_effort(route.lead_effort, supported)
+    effort = _supported_effort(requested_effort, supported)
+    if route.risk == "high" and EFFORTS.index(effort) < EFFORTS.index(route.lead_effort):
+        effort = route.lead_effort
     return {
         "lead_tier": route.lead_tier,
         "lead_effort": effort,
@@ -117,8 +132,9 @@ def resolve_tier(route: Route, snapshot: CapabilitySnapshot) -> dict[str, object
         "lead_model": model,
         "degraded": (
             not model
-            or model != snapshot.tiers.get(route.lead_tier)
-            or effort != route.lead_effort
+            or model not in snapshot.available_models
+            or effort != requested_effort
+            or effort not in supported
         ),
     }
 

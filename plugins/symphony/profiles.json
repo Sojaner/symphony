@@ -2,7 +2,7 @@
   "schema": 1,
   "generated_at": "2026-09-22",
   "source": "OpenAI model documentation and Claude Code's provider-fetched model catalog",
-  "note": "Machine-maintained. The nine-cell size/complexity grid is product policy and lives in routing.py; only the tier-to-model resolution is edited here. Profiles are ordered best-first: the first whose requirements the account satisfies applies, and the last is the conservative floor used when nothing can be probed. Codex entitlement is a model roster, so requires_all must be a subset of it; Claude entitlement is a plan name, so requires_any must contain it.",
+  "note": "Machine-maintained provider choices for the fixed nine-cell size/complexity policy in routing.py. Each profile's matrix selects a model and effort per cell; tiers summarize those choices for agent packaging. Profiles are ordered best-first: the first whose requirements the account satisfies applies, and the last is the conservative floor when no entitlement is detected. Codex requires_all is checked against its model roster; Claude requires_any is checked against plan names.",
   "providers": {
     "codex": {
       "profiles": [
@@ -13,6 +13,17 @@
             "balanced": "gpt-6-luna",
             "capable": "gpt-6-sol",
             "strongest": "gpt-6-astra"
+          },
+          "matrix": {
+            "small/simple": {"model": "gpt-6-sol", "effort": "medium"},
+            "small/mixed": {"model": "gpt-6-sol", "effort": "high"},
+            "small/complex": {"model": "gpt-6-astra", "effort": "high"},
+            "medium/simple": {"model": "gpt-6-luna", "effort": "medium"},
+            "medium/mixed": {"model": "gpt-6-luna", "effort": "high"},
+            "medium/complex": {"model": "gpt-6-sol", "effort": "high"},
+            "large/simple": {"model": "gpt-6-luna", "effort": "low"},
+            "large/mixed": {"model": "gpt-6-luna", "effort": "medium"},
+            "large/complex": {"model": "gpt-6-luna", "effort": "medium"}
           },
           "efforts": {
             "gpt-6-luna": [
@@ -51,6 +62,17 @@
             "capable": "gpt-5.5",
             "strongest": "gpt-5.5"
           },
+          "matrix": {
+            "small/simple": {"model": "gpt-5.5", "effort": "medium"},
+            "small/mixed": {"model": "gpt-5.5", "effort": "high"},
+            "small/complex": {"model": "gpt-5.5", "effort": "high"},
+            "medium/simple": {"model": "gpt-5.5", "effort": "medium"},
+            "medium/mixed": {"model": "gpt-5.5", "effort": "high"},
+            "medium/complex": {"model": "gpt-5.5", "effort": "high"},
+            "large/simple": {"model": "gpt-5.5", "effort": "low"},
+            "large/mixed": {"model": "gpt-5.5", "effort": "medium"},
+            "large/complex": {"model": "gpt-5.5", "effort": "medium"}
+          },
           "efforts": {
             "gpt-5.5": [
               "low",
@@ -72,6 +94,17 @@
             "balanced": "sonnet",
             "capable": "opus",
             "strongest": "opus"
+          },
+          "matrix": {
+            "small/simple": {"model": "opus", "effort": "medium"},
+            "small/mixed": {"model": "opus", "effort": "high"},
+            "small/complex": {"model": "opus", "effort": "high"},
+            "medium/simple": {"model": "sonnet", "effort": "medium"},
+            "medium/mixed": {"model": "sonnet", "effort": "high"},
+            "medium/complex": {"model": "opus", "effort": "high"},
+            "large/simple": {"model": "sonnet", "effort": "low"},
+            "large/mixed": {"model": "sonnet", "effort": "medium"},
+            "large/complex": {"model": "sonnet", "effort": "medium"}
           },
           "efforts": {
             "sonnet": [
@@ -102,6 +135,17 @@
             "balanced": "sonnet",
             "capable": "sonnet",
             "strongest": "sonnet"
+          },
+          "matrix": {
+            "small/simple": {"model": "sonnet", "effort": "medium"},
+            "small/mixed": {"model": "sonnet", "effort": "high"},
+            "small/complex": {"model": "sonnet", "effort": "high"},
+            "medium/simple": {"model": "sonnet", "effort": "medium"},
+            "medium/mixed": {"model": "sonnet", "effort": "high"},
+            "medium/complex": {"model": "sonnet", "effort": "high"},
+            "large/simple": {"model": "sonnet", "effort": "low"},
+            "large/mixed": {"model": "sonnet", "effort": "medium"},
+            "large/complex": {"model": "sonnet", "effort": "medium"}
           },
           "efforts": {
             "sonnet": [

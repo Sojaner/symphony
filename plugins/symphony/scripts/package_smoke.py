@@ -124,15 +124,18 @@ ASSESSMENT_MARKER = (
 )
 
 
-def _role_model(provider: str, agent_role: str) -> tuple[str, str]:
+def _role_model(root: Path, provider: str, agent_role: str) -> tuple[str, str]:
     """The model and effort this role must run at, per the shipped matrix."""
-    effort = "high" if agent_role == "assessor" else "medium"
-    if provider == "codex":
-        return ("gpt-6-astra" if agent_role == "assessor" else "gpt-6-sol"), effort
-    return ("opus" if agent_role in {"assessor", "lead"} else "sonnet"), effort
+    profiles = json.loads((root / "profiles.json").read_text(encoding="utf-8"))["providers"][provider]["profiles"]
+    profile = profiles[0]
+    if agent_role == "assessor":
+        return profile["tiers"]["strongest"], "high"
+    choice = profile["matrix"]["small/simple"]
+    return choice["model"], choice["effort"]
 
 
 def _payload(
+    root: Path,
     provider: str,
     event: str,
     project: Path,
@@ -154,7 +157,7 @@ def _payload(
         payload["source"] = source
     if provider == "codex":
         payload.update({"turn_id": f"turn-{session}", "model": "fake-codex"})
-    model, effort = _role_model(provider, agent_role)
+    model, effort = _role_model(root, provider, agent_role)
     if event == "UserPromptSubmit":
         payload["prompt"] = (
             "$symphony:symphony exercise the package lifecycle"
@@ -221,7 +224,7 @@ def _run_event(
     completed = subprocess.run(
         argv,
         input=json.dumps(
-            _payload(provider, event, project, session, agent_role, stop_hook_active, source)
+            _payload(root, provider, event, project, session, agent_role, stop_hook_active, source)
         ),
         capture_output=True,
         text=True,
@@ -408,11 +411,11 @@ def _exercise(
             send("UserPromptSubmit")
             activation.append("guarded")
             return result
-        enable = _payload(provider, "UserPromptSubmit", project, "fake-session")
+        enable = _payload(root, provider, "UserPromptSubmit", project, "fake-session")
         enable["prompt"] = "SYMPHONY_CONTROL: enable"
         _send_raw(root, provider, "UserPromptSubmit", state_dir, enable)
         events.append("UserPromptSubmit")
-        unmarked = _payload(provider, "PreToolUse", project, "fake-session")
+        unmarked = _payload(root, provider, "PreToolUse", project, "fake-session")
         unmarked["tool_input"] = {"prompt": "do the work"}
         output = _send_raw(root, provider, "PreToolUse", state_dir, unmarked)
         events.append("PreToolUse")

@@ -14,6 +14,16 @@ from plugins.symphony.symphony.routing import (
 from plugins.symphony.symphony.runtime import handle
 from plugins.symphony.symphony.store import StateStore
 
+CODEX_FULL_SNAPSHOT = snapshot_for("codex", "full")
+CODEX_BASE_SNAPSHOT = snapshot_for("codex", "base")
+CODEX_DRIFT_CELL = next(
+    cell for cell in CODEX_FULL_SNAPSHOT.matrix
+    if CODEX_FULL_SNAPSHOT.matrix[cell] != CODEX_BASE_SNAPSHOT.matrix[cell]
+)
+CODEX_DRIFT_SIZE, CODEX_DRIFT_COMPLEXITY = CODEX_DRIFT_CELL.split("/")
+CODEX_FULL_ROUTE = CODEX_FULL_SNAPSHOT.matrix[CODEX_DRIFT_CELL]
+CODEX_BASE_ROUTE = CODEX_BASE_SNAPSHOT.matrix[CODEX_DRIFT_CELL]
+
 
 def roster(*slugs, hidden=()):
     models = [{"slug": slug, "visibility": "list"} for slug in slugs]
@@ -23,16 +33,8 @@ def roster(*slugs, hidden=()):
 
 class ProfileDataTests(unittest.TestCase):
     OFFICIAL_EFFORTS = {
-        "codex": {
-            "gpt-5.5": {"low", "medium", "high", "xhigh"},
-            "gpt-6-luna": {"low", "medium", "high", "xhigh", "max"},
-            "gpt-6-sol": {"low", "medium", "high", "xhigh", "max"},
-            "gpt-6-astra": {"low", "medium", "high", "xhigh", "max"},
-        },
-        "claude": {
-            "sonnet": {"low", "medium", "high", "xhigh", "max"},
-            "opus": {"low", "medium", "high", "xhigh", "max"},
-        },
+        "codex": {"none", "low", "medium", "high", "xhigh", "max"},
+        "claude": {"low", "medium", "high", "xhigh", "max"},
     }
 
     def test_every_profile_covers_all_four_tiers(self):
@@ -51,13 +53,18 @@ class ProfileDataTests(unittest.TestCase):
                     with self.subTest(provider=provider, profile=profile["id"], tier=tier):
                         self.assertIn(model, profile["efforts"])
                         self.assertTrue(profile["efforts"][model])
+                self.assertEqual(len(profile.get("matrix", {})), 9)
+                for cell, choice in profile.get("matrix", {}).items():
+                    with self.subTest(provider=provider, profile=profile["id"], cell=cell):
+                        self.assertIn(choice["model"], profile["efforts"])
+                        self.assertIn(choice["effort"], profile["efforts"][choice["model"]])
 
     def test_shipped_efforts_are_provider_supported(self):
         for provider in ("codex", "claude"):
             for profile in profiles_for(provider):
                 for model, efforts in profile["efforts"].items():
                     with self.subTest(provider=provider, profile=profile["id"], model=model):
-                        self.assertTrue(set(efforts) <= self.OFFICIAL_EFFORTS[provider][model])
+                        self.assertTrue(set(efforts) <= self.OFFICIAL_EFFORTS[provider])
 
     def test_the_last_profile_is_an_unconditional_floor(self):
         for provider in ("codex", "claude"):
@@ -70,7 +77,7 @@ class ProfileDataTests(unittest.TestCase):
         route = route_for(Assessment("small", "complex"))
         floor = profiles_for("codex")[-1]
         resolved = resolve_tier(route, snapshot_for("codex", None))
-        self.assertEqual(resolved["lead_model"], floor["tiers"]["strongest"])
+        self.assertEqual(resolved["lead_model"], floor["matrix"]["small/complex"]["model"])
 
 
 class EntitlementProbeTests(unittest.TestCase):
@@ -102,18 +109,19 @@ class EntitlementProbeTests(unittest.TestCase):
         return {"SYMPHONY_STATE_DIR": str(self.state_root), "CODEX_HOME": str(home)}
 
     def test_a_complete_roster_selects_the_full_profile(self):
-        environ = self.codex_home(
-            roster("gpt-6-astra", "gpt-6-sol", "gpt-6-luna")
-        )
+        required = profiles_for("codex")[0].get("requires_all", [])
+        environ = self.codex_home(roster(*required))
         self.assertEqual(self.heartbeat(environ).get("profile"), "full")
 
     def test_a_missing_model_falls_back_to_the_base_profile(self):
-        environ = self.codex_home(roster("gpt-6-sol", "gpt-6-luna"))
+        required = profiles_for("codex")[0].get("requires_all", [])
+        environ = self.codex_home(roster(*required[:-1]))
         self.assertEqual(self.heartbeat(environ).get("profile"), "base")
 
     def test_a_hidden_model_does_not_count_as_entitlement(self):
+        required = profiles_for("codex")[0].get("requires_all", [])
         environ = self.codex_home(
-            roster("gpt-6-sol", "gpt-6-luna", hidden=("gpt-6-astra",))
+            roster(*required[:-1], hidden=required[-1:])
         )
         self.assertEqual(self.heartbeat(environ).get("profile"), "base")
 
@@ -130,9 +138,8 @@ class EntitlementProbeTests(unittest.TestCase):
         self.assertEqual(self.heartbeat(environ).get("profile"), "full")
 
     def test_the_probe_runs_once_and_is_reused_within_a_session(self):
-        environ = self.codex_home(
-            roster("gpt-6-astra", "gpt-6-sol", "gpt-6-luna")
-        )
+        required = profiles_for("codex")[0].get("requires_all", [])
+        environ = self.codex_home(roster(*required))
         self.heartbeat(environ)
         # Remove the roster: a second heartbeat in the same session must not
         # re-probe, so the recorded answer survives.
@@ -245,11 +252,9 @@ class ClampGateTests(unittest.TestCase):
     def output(self, result):
         return json.loads(result.stdout) if result.stdout else {}
 
-    # Each profile's strongest tier, which a small/complex route selects.
-    STRONGEST = {"full": "gpt-6-astra", "base": "gpt-5.5"}
-
-    def open_and_spawn_lead(self, profile, size="small", complexity="complex"):
+    def open_and_spawn_lead(self, profile, size=CODEX_DRIFT_SIZE, complexity=CODEX_DRIFT_COMPLEXITY):
         environ = self.environ(profile)
+        snapshot = snapshot_for("codex", profile)
         self.send(environ, hook_event_name="SessionStart")
         self.send(
             environ,
@@ -257,7 +262,7 @@ class ClampGateTests(unittest.TestCase):
             tool_name="spawn_agent",
             tool_input={
                 "message": "SYMPHONY_ROLE: assessor\nShip it",
-                "model": "gpt-6-astra",
+                "model": snapshot.tiers["strongest"],
                 "reasoning_effort": "high",
             },
         )
@@ -270,8 +275,8 @@ class ClampGateTests(unittest.TestCase):
             tool_name="spawn_agent",
             tool_input={
                 "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
-                "model": self.STRONGEST[profile],
-                "reasoning_effort": "high",
+                "model": snapshot.matrix[CODEX_DRIFT_CELL]["model"],
+                "reasoning_effort": snapshot.matrix[CODEX_DRIFT_CELL]["effort"],
             },
         )
 
@@ -283,8 +288,8 @@ class ClampGateTests(unittest.TestCase):
         _, result = self.open_and_spawn_lead("base")
         output = self.output(result)
         self.assertEqual(output.get("decision"), "block")
-        self.assertIn("gpt-5.5", output["reason"])
-        self.assertIn("gpt-6-astra", output["reason"])
+        self.assertIn(CODEX_BASE_ROUTE["model"], output["reason"])
+        self.assertIn(CODEX_FULL_ROUTE["model"], output["reason"])
         self.assertIn("$symphony:symphony proceed", output["reason"])
 
     def test_accepting_the_clamp_unblocks_the_rest_of_the_session(self):
@@ -297,7 +302,7 @@ class ClampGateTests(unittest.TestCase):
         self.assertIn("accepted", self.output(accepted)["hookSpecificOutput"]["additionalContext"].lower())
 
         marker = json.dumps(
-            {"size": "small", "complexity": "complex", "risk": "normal", "rationale": "x", "topology": "direct"}
+            {"size": "small", "complexity": "simple", "risk": "normal", "rationale": "x", "topology": "direct"}
         )
         retried = self.send(
             environ,
@@ -305,8 +310,8 @@ class ClampGateTests(unittest.TestCase):
             tool_name="spawn_agent",
             tool_input={
                 "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nShip it",
-                "model": "gpt-5.5",
-                "reasoning_effort": "high",
+                "model": CODEX_BASE_ROUTE["model"],
+                "reasoning_effort": CODEX_BASE_ROUTE["effort"],
             },
         )
         self.assertNotIn("decision", self.output(retried))

@@ -111,7 +111,7 @@ class PackageContractTests(unittest.TestCase):
             self.assertIsNotNone(model, path.name)
             self.assertIsNotNone(effort, path.name)
             self.assertIn(f"-{model.group(1)}-{effort.group(1)}", path.stem)
-        assessor = (PLUGIN / "agents/symphony-assessor-opus-high.md").read_text(encoding="utf-8")
+        assessor = next((PLUGIN / "agents").glob("symphony-assessor-*-high.md")).read_text(encoding="utf-8")
         self.assertIn("SYMPHONY_ASSESSMENT:", assessor)
         for path in (PLUGIN / "agents").glob("symphony-consultant-*.md"):
             self.assertIn("SYMPHONY_DECISION:", path.read_text(encoding="utf-8"))

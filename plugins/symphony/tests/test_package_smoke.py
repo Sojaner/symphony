@@ -121,6 +121,16 @@ class PackageSmokeTests(unittest.TestCase):
                     """
                 ).replace("__HEARTBEAT__", repr(heartbeat))
             )
+        (plugin / "profiles.json").write_text(json.dumps({
+            "providers": {
+                provider: {"profiles": [{
+                    "id": "full",
+                    "tiers": {"strongest": f"{provider}-strong"},
+                    "matrix": {"small/simple": {"model": f"{provider}-lead", "effort": "medium"}},
+                }]}
+                for provider in ("codex", "claude")
+            }
+        }))
         return root
 
     def test_activation_materializes_and_executes_candidate_after_trust(self):

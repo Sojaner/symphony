@@ -67,14 +67,43 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(resolved["lead_effort"], "medium")
         self.assertTrue(resolved["degraded"])
 
+    def test_provider_cell_overrides_model_and_effort_but_keeps_high_risk_floor(self):
+        snapshot = CapabilitySnapshot(
+            provider="codex",
+            available_models=("cheap", "best"),
+            supported_efforts={"cheap": ("low", "medium"), "best": ("low", "medium", "high")},
+            tiers={"capable": "cheap", "strongest": "best"},
+            source="profile:full",
+            provider_version=None,
+            refreshed_at="2026-09-17T00:00:00+00:00",
+            matrix={"small/simple": {"model": "best", "effort": "low"}},
+        )
+        normal = resolve_tier(route_for(Assessment("small", "simple")), snapshot)
+        risky = resolve_tier(route_for(Assessment("small", "simple", risk="high")), snapshot)
+        self.assertEqual((normal["lead_model"], normal["lead_effort"]), ("best", "low"))
+        self.assertEqual(risky["lead_effort"], "medium")
+
+    def test_high_risk_does_not_silently_drop_below_its_floor(self):
+        snapshot = CapabilitySnapshot(
+            provider="codex", available_models=("cheap",),
+            supported_efforts={"cheap": ("low",)}, tiers={"economy": "cheap"},
+            source="profile:floor", provider_version=None, refreshed_at="",
+            matrix={"large/simple": {"model": "cheap", "effort": "low"}},
+        )
+        resolved = resolve_tier(route_for(Assessment("large", "simple", risk="high")), snapshot)
+        self.assertEqual(resolved["lead_effort"], "medium")
+        self.assertTrue(resolved["degraded"])
+
     def test_shipped_provider_fallbacks_resolve_capable_leads(self):
         route = route_for(Assessment("small", "simple"))
 
         codex = resolve_tier(route, snapshot_for("codex", "full"))
         claude = resolve_tier(route, snapshot_for("claude", "opus"))
+        codex_choice = snapshot_for("codex", "full").matrix["small/simple"]
+        claude_choice = snapshot_for("claude", "opus").matrix["small/simple"]
 
-        self.assertEqual((codex["lead_model"], codex["lead_effort"]), ("gpt-6-sol", "medium"))
-        self.assertEqual((claude["lead_model"], claude["lead_effort"]), ("opus", "medium"))
+        self.assertEqual((codex["lead_model"], codex["lead_effort"]), (codex_choice["model"], codex_choice["effort"]))
+        self.assertEqual((claude["lead_model"], claude["lead_effort"]), (claude_choice["model"], claude_choice["effort"]))
 
     def test_invalid_axes_are_rejected(self):
         with self.assertRaises(ValueError):

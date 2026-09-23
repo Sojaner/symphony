@@ -25,100 +25,25 @@ def roster(*slugs, efforts=("low", "medium", "high")):
     ]
 
 
-CURATED = [
-    {
-        "id": "full",
-        "tiers": {
-            "economy": "gpt-6-luna",
-            "balanced": "gpt-6-luna",
-            "capable": "gpt-6-sol",
-            "strongest": "gpt-6-astra",
-        },
-        "efforts": {},
-        "requires_all": ["gpt-6-astra", "gpt-6-luna", "gpt-6-sol"],
-    },
-    {
-        "id": "base",
-        "tiers": dict.fromkeys(
-            ("economy", "balanced", "capable", "strongest"), "gpt-5.5"
-        ),
-        "efforts": {},
-        "requires_all": [],
-    },
-]
-
-
-class SubstitutionTests(unittest.TestCase):
-    """Tier assignment is a cost judgement; only availability is a provider fact."""
-
+class RosterTests(unittest.TestCase):
     def setUp(self):
         self.refresh = load()
 
-    def tiers(self, available, profile=0):
-        return self.refresh.codex_profiles(roster(*available), CURATED)[profile]["tiers"]
-
-    def test_a_complete_roster_leaves_every_assignment_alone(self):
-        available = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
-        self.assertEqual(self.tiers(available), CURATED[0]["tiers"])
-
-    def test_terra_is_migrated_even_when_the_provider_still_lists_it(self):
-        legacy = [{**profile, "tiers": dict(profile["tiers"])} for profile in CURATED]
-        legacy[0]["tiers"]["balanced"] = "gpt-5.6-terra"
-        available = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
-        profiles = self.refresh.codex_profiles(roster(*available), legacy)
-        self.assertEqual(profiles[0]["tiers"]["balanced"], "gpt-6-luna")
-
-    def test_a_retired_model_is_replaced_by_the_next_one_down(self):
-        available = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol")
-        # gpt-6-astra is gone, so strongest drops to the best still offered.
-        self.assertEqual(self.tiers(available)["strongest"], "gpt-6-sol")
-        self.assertEqual(self.tiers(available)["economy"], "gpt-6-luna")
-
-    def test_substitution_never_silently_promotes_a_tier(self):
-        # gpt-6-luna is gone. economy must not jump up to Sol while a
-        # cheaper option still exists.
-        available = ("gpt-5.5", "gpt-5.6-terra", "gpt-6-sol", "gpt-6-astra")
-        self.assertEqual(self.tiers(available)["economy"], "gpt-5.5")
-
-    def test_the_cheapest_tier_falls_upward_only_when_nothing_is_cheaper(self):
-        available = ("gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
-        self.assertEqual(self.tiers(available)["economy"], "gpt-6-luna")
-
-    def test_efforts_come_from_the_roster_not_from_a_guess(self):
-        available = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
-        profiles = self.refresh.codex_profiles(
-            roster(*available, efforts=("low", "medium", "high", "xhigh", "max")), CURATED
-        )
-        self.assertEqual(
-            profiles[0]["efforts"]["gpt-6-astra"], ["low", "medium", "high", "xhigh", "max"]
-        )
-
-    def test_preview_or_unsupported_efforts_are_not_shipped(self):
-        profiles = self.refresh.codex_profiles(
-            roster("gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", efforts=("minimal", "ultra", "high")),
-            CURATED,
-        )
-        self.assertEqual(profiles[0]["efforts"]["gpt-6-luna"], ["high"])
-
-    def test_an_unrecognisable_roster_stops_rather_than_guessing(self):
-        with self.assertRaises(SystemExit):
-            self.refresh.codex_profiles(roster("some-unknown-model"), CURATED)
-
     def test_a_hidden_model_is_not_available(self):
-        entries = roster("gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol")
-        entries.append({"slug": "gpt-6-astra", "visibility": "hide"})
+        entries = roster("available")
+        entries.append({"slug": "hidden", "visibility": "hide"})
         with TemporaryDirectory() as directory:
             home = Path(directory)
             (home / "models_cache.json").write_text(json.dumps({"models": entries}))
             visible = {entry["slug"] for entry in self.refresh.codex_roster(home)}
-        self.assertNotIn("gpt-6-astra", visible)
+        self.assertEqual(visible, {"available"})
 
     def test_a_missing_roster_stops_rather_than_shipping_a_guess(self):
         with TemporaryDirectory() as directory:
-            with patch.object(self.refresh, "_app_server_roster", return_value=roster("gpt-6-astra")):
+            with patch.object(self.refresh, "_app_server_roster", return_value=roster("model")):
                 self.assertEqual(
                     self.refresh.codex_roster(Path(directory) / "absent"),
-                    roster("gpt-6-astra"),
+                    roster("model"),
                 )
 
     def test_a_missing_roster_and_failed_live_query_stops_instead_of_guessing(self):
@@ -129,22 +54,120 @@ class SubstitutionTests(unittest.TestCase):
 
 
 class ShippedProfileTests(unittest.TestCase):
-    def test_the_shipped_assignments_are_a_fixed_point_of_the_derivation(self):
-        """A refresh against a complete roster must change nothing."""
+    def test_shipped_matrices_cover_each_cell_and_back_the_tier_summary(self):
         refresh = load()
         document = json.loads(refresh.PROFILES.read_text())
-        current = document["providers"]["codex"]["profiles"]
-        full = ("gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
-        derived = refresh.codex_profiles(roster(*full), current)
-        self.assertEqual(
-            [profile["tiers"] for profile in derived],
-            [profile["tiers"] for profile in current],
+        for provider, block in document["providers"].items():
+            for profile in block["profiles"]:
+                self.assertEqual(set(profile["matrix"]), set(refresh.CELLS))
+                self.assertEqual(
+                    profile["tiers"],
+                    {tier: profile["matrix"][cell]["model"] for tier, cell in refresh.TIER_CELLS.items()},
+                )
+                for choice in profile["matrix"].values():
+                    self.assertIn(choice["effort"], profile["efforts"][choice["model"]])
+
+
+class SemanticMatrixTests(unittest.TestCase):
+    def setUp(self):
+        self.refresh = load()
+
+    def result(self):
+        order = ("gpt-5.5", "gpt-6-luna", "gpt-6-sol")
+        effort_by_cell = {
+            "small": ("medium", "high", "high"),
+            "medium": ("low", "medium", "high"),
+            "large": ("low", "low", "medium"),
+        }
+        ranks = {
+            "small": (1, 1, 2),
+            "medium": (1, 1, 2),
+            "large": (0, 0, 1),
+        }
+        matrix = {}
+        for size, models in ranks.items():
+            for complexity, model_rank in zip(("simple", "mixed", "complex"), models):
+                effort = effort_by_cell[size][("simple", "mixed", "complex").index(complexity)]
+                matrix[f"{size}/{complexity}"] = {"model": order[model_rank], "effort": effort}
+        fallback = {cell: {"model": "gpt-5.5", "effort": "low"} for cell in matrix}
+        return {
+            "model_order": list(order),
+            "model_efforts": {model: ["low", "medium", "high"] for model in order},
+            "profiles": [
+                {"id": "full", "matrix": matrix},
+                {"id": "base", "matrix": fallback},
+            ],
+            "rationale": "trade capability for cost by task cell",
+        }
+
+    def test_semantic_matrix_accepts_complete_monotonic_provider_data(self):
+        entries = roster("gpt-5.5", "gpt-6-luna", "gpt-6-sol", efforts=("low", "medium", "high"))
+        result = self.refresh.validate_matrix("codex", self.result(), [{"id": "full"}, {"id": "base"}], entries)
+        self.assertEqual(len(result["profiles"][0]["matrix"]), 9)
+
+    def test_semantic_matrix_rejects_a_missing_cell(self):
+        result = self.result()
+        del result["profiles"][0]["matrix"]["small/simple"]
+        with self.assertRaises(SystemExit):
+            self.refresh.validate_matrix("codex", result, [{"id": "full"}, {"id": "base"}], roster("gpt-5.5", "gpt-6-luna", "gpt-6-sol"))
+
+    def test_semantic_matrix_rejects_nonmonotonic_capability(self):
+        result = self.result()
+        result["profiles"][0]["matrix"]["small/complex"]["model"] = "gpt-5.5"
+        with self.assertRaises(SystemExit):
+            self.refresh.validate_matrix("codex", result, [{"id": "full"}, {"id": "base"}], roster("gpt-5.5", "gpt-6-luna", "gpt-6-sol"))
+
+    def test_semantic_matrix_rejects_incomplete_codex_effort_support(self):
+        result = self.result()
+        result["model_efforts"]["gpt-5.5"] = ["low"]
+        entries = roster("gpt-5.5", "gpt-6-luna", "gpt-6-sol", efforts=("low", "medium", "high"))
+        with self.assertRaises(SystemExit):
+            self.refresh.validate_matrix("codex", result, [{"id": "full"}, {"id": "base"}], entries)
+
+    def test_semantic_matrix_rejects_self_certified_model_order(self):
+        result = self.result()
+        result["profiles"][0]["matrix"] = {
+            cell: {"model": "gpt-5.5", "effort": "low"} for cell in self.refresh.CELLS
+        }
+        result["profiles"][1]["matrix"] = {
+            cell: {"model": "gpt-6-sol", "effort": "low"} for cell in self.refresh.CELLS
+        }
+        result["model_order"] = list(reversed(result["model_order"]))
+        with self.assertRaises(SystemExit):
+            self.refresh.validate_matrix(
+                "codex", result, [{"id": "full"}, {"id": "base"}],
+                roster("gpt-5.5", "gpt-6-luna", "gpt-6-sol"),
+            )
+
+    def test_agent_model_order_is_not_used_as_authoritative_ranking(self):
+        result = self.result()
+        result["model_order"] = list(reversed(result["model_order"]))
+        validated = self.refresh.validate_matrix(
+            "codex", result, [{"id": "full"}, {"id": "base"}],
+            roster("gpt-5.5", "gpt-6-luna", "gpt-6-sol"),
         )
-        self.assertEqual(
-            [sorted(profile.get("requires_all", [])) for profile in derived],
-            [sorted(profile.get("requires_all", [])) for profile in current],
-        )
-        self.assertNotIn("gpt-5.6-terra", {model for profile in current for model in profile["tiers"].values()})
+        self.assertEqual(validated["model_order"], ["gpt-5.5", "gpt-6-luna", "gpt-6-sol"])
+
+    def test_fallback_cannot_promote_beyond_its_shipped_entitlement_floor(self):
+        result = self.result()
+        result["profiles"][1]["matrix"] = {
+            cell: {"model": "gpt-6-sol", "effort": "low"} for cell in self.refresh.CELLS
+        }
+        result["model_order"] = ["gpt-5.5", "gpt-6-luna", "gpt-6-sol"]
+        current = [
+            {"id": "full", "matrix": {}},
+            {"id": "base", "matrix": {
+                cell: {"model": "gpt-5.5", "effort": "low"} for cell in self.refresh.CELLS
+            }},
+        ]
+        with self.assertRaises(SystemExit):
+            self.refresh.validate_matrix(
+                "codex", result, current, roster("gpt-5.5", "gpt-6-luna", "gpt-6-sol"),
+            )
+
+    def test_future_major_codex_model_has_verified_future_rank(self):
+        self.assertGreater(self.refresh._model_rank("codex", "gpt-7"), self.refresh._model_rank("codex", "gpt-6-astra"))
+        self.assertGreater(self.refresh._model_rank("codex", "gpt-7-fast"), self.refresh._model_rank("codex", "gpt-6-astra"))
 
 
 if __name__ == "__main__":
