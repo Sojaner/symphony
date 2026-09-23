@@ -252,9 +252,18 @@ def validate_matrix(provider: str, result: dict, current: list[dict], roster: li
     unknown = {model for model in model_order if rank[model] is None}
     if unknown:
         raise SystemExit(f"::error::{provider} matrix uses models without a verified capability order: {sorted(unknown)}")
-    declared_efforts = result.get("model_efforts")
+    declared_efforts = result.get("model_efforts", {})
     if not isinstance(declared_efforts, dict):
-        raise SystemExit(f"::error::{provider} matrix omitted model effort support")
+        raise SystemExit(f"::error::{provider} matrix effort support must be an object")
+    if provider == "codex":
+        # The roster is the authority for Codex effort support; the semantic
+        # agent must choose a route, not restate mutable provider metadata.
+        declared_efforts = {
+            model: [effort for effort in CODEX_EFFORTS if effort in models[model]]
+            for model in models
+        }
+    elif not declared_efforts:
+        raise SystemExit("::error::Claude matrix must include provider-checked effort support")
     normalized_profiles = []
     used_models = set()
     for profile in result["profiles"]:
@@ -292,6 +301,8 @@ def validate_matrix(provider: str, result: dict, current: list[dict], roster: li
             if [CODEX_EFFORTS.index(item["effort"]) for item in cells] != sorted((CODEX_EFFORTS.index(item["effort"]) for item in cells), reverse=True):
                 raise SystemExit(f"::error::{provider} effort must not rise as task size increases")
         normalized_profiles.append({"id": profile["id"], "matrix": normalized})
+    if provider == "codex":
+        declared_efforts = {model: declared_efforts[model] for model in used_models}
     if used_models != set(model_order) or set(declared_efforts) != used_models:
         raise SystemExit(f"::error::{provider} matrix model order/efforts must cover exactly the selected models")
     trusted_order = sorted(used_models, key=lambda model: (rank[model], model))
@@ -302,8 +313,6 @@ def validate_matrix(provider: str, result: dict, current: list[dict], roster: li
             raise SystemExit(f"::error::{provider} has invalid supported efforts for {model}")
         if levels != [effort for effort in CODEX_EFFORTS if effort in levels]:
             raise SystemExit(f"::error::{provider} effort support is not in provider order for {model}")
-        if provider == "codex" and levels != [effort for effort in CODEX_EFFORTS if effort in models[model]]:
-            raise SystemExit(f"::error::Codex effort support for {model} must match the complete provider roster")
     if len(normalized_profiles) > 1:
         full, fallback = normalized_profiles[0]["matrix"], normalized_profiles[-1]["matrix"]
         shipped_fallback = current[-1].get("matrix", {})

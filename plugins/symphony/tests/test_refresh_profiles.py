@@ -117,12 +117,25 @@ class SemanticMatrixTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.refresh.validate_matrix("codex", result, [{"id": "full"}, {"id": "base"}], roster("gpt-5.5", "gpt-6-luna", "gpt-6-sol"))
 
-    def test_semantic_matrix_rejects_incomplete_codex_effort_support(self):
+    def test_codex_effort_support_is_taken_from_roster_not_agent_output(self):
         result = self.result()
         result["model_efforts"]["gpt-5.5"] = ["low"]
         entries = roster("gpt-5.5", "gpt-6-luna", "gpt-6-sol", efforts=("low", "medium", "high"))
+        validated = self.refresh.validate_matrix(
+            "codex", result, [{"id": "full"}, {"id": "base"}], entries
+        )
+        self.assertEqual(
+            validated["model_efforts"]["gpt-5.5"], ["low", "medium", "high"]
+        )
+
+    def test_semantic_matrix_rejects_effort_absent_from_codex_roster(self):
+        result = self.result()
+        result["profiles"][0]["matrix"]["small/complex"]["effort"] = "max"
         with self.assertRaises(SystemExit):
-            self.refresh.validate_matrix("codex", result, [{"id": "full"}, {"id": "base"}], entries)
+            self.refresh.validate_matrix(
+                "codex", result, [{"id": "full"}, {"id": "base"}],
+                roster("gpt-5.5", "gpt-6-luna", "gpt-6-sol", efforts=("low", "medium", "high")),
+            )
 
     def test_semantic_matrix_rejects_self_certified_model_order(self):
         result = self.result()
