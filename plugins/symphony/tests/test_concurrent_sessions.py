@@ -21,10 +21,16 @@ from plugins.symphony.symphony.routing import profiles_for, snapshot_for
 
 FULL_SIMPLE = snapshot_for("codex", "full").matrix["small/simple"]
 BASE_SIMPLE = snapshot_for("codex", "base").matrix["small/simple"]
+FULL_MATRIX = snapshot_for("codex", "full").matrix
+BASE_MATRIX = snapshot_for("codex", "base").matrix
+DRIFT_CELL = next(cell for cell in FULL_MATRIX if FULL_MATRIX[cell] != BASE_MATRIX[cell])
+DRIFT_SIZE, DRIFT_COMPLEXITY = DRIFT_CELL.split("/")
+FULL_DRIFT = FULL_MATRIX[DRIFT_CELL]
+BASE_DRIFT = BASE_MATRIX[DRIFT_CELL]
 CODEX_STRONGEST = profiles_for("codex")[0]["tiers"]["strongest"]
 
 MARKER = json.dumps(
-    {"size": "small", "complexity": "simple", "risk": "normal",
+    {"size": DRIFT_SIZE, "complexity": DRIFT_COMPLEXITY, "risk": "normal",
      "rationale": "bounded", "topology": "direct"}
 )
 
@@ -298,14 +304,14 @@ class ConcurrentSessionTests(unittest.TestCase):
         """
         env = {**self.environ, "SYMPHONY_PROFILE": "base"}
         handle(self.payload("root-a", "SessionStart"), env)
-        self.spawn_in("root-a", env, "assessor", BASE_SIMPLE["model"], "high")
-        blocked = self.text(self.spawn_in("root-a", env, "lead", BASE_SIMPLE["model"], BASE_SIMPLE["effort"], MARKER))
+        self.spawn_in("root-a", env, "assessor", CODEX_STRONGEST, "high")
+        blocked = self.text(self.spawn_in("root-a", env, "lead", BASE_DRIFT["model"], BASE_DRIFT["effort"], MARKER))
         self.assertIn("proceed", blocked)
 
         handle({**self.payload("root-a"), "prompt": "$symphony:symphony proceed"}, env)
         handle(self.payload("stranger", "SessionStart"), env)
 
-        after = self.text(self.spawn_in("root-a", env, "lead", BASE_SIMPLE["model"], BASE_SIMPLE["effort"], MARKER))
+        after = self.text(self.spawn_in("root-a", env, "lead", BASE_DRIFT["model"], BASE_DRIFT["effort"], MARKER))
         self.assertNotIn(
             "proceed", after, "a stranger's heartbeat undid the clamp this session accepted"
         )

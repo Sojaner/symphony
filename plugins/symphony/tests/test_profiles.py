@@ -302,7 +302,8 @@ class ClampGateTests(unittest.TestCase):
         self.assertIn("accepted", self.output(accepted)["hookSpecificOutput"]["additionalContext"].lower())
 
         marker = json.dumps(
-            {"size": "small", "complexity": "simple", "risk": "normal", "rationale": "x", "topology": "direct"}
+            {"size": CODEX_DRIFT_SIZE, "complexity": CODEX_DRIFT_COMPLEXITY,
+             "risk": "normal", "rationale": "x", "topology": "direct"}
         )
         retried = self.send(
             environ,
