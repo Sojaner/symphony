@@ -493,6 +493,19 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
             ),
         )
         actions = opening + lead_actions
+        if current is None and state.active_run and state.active_run.lead_identity == str(identity):
+            provider = str(source.payload.get("provider") or "codex")
+            activation = state.activation.get(provider, {})
+            if isinstance(activation, Mapping) and activation.get("session_id") == source.payload.get("session_id"):
+                selected = _standing_route(state, provider)
+            else:
+                selected = "/".join(_required_lead_route(state.active_run.assessment))
+            model, _, effort = selected.partition("/")
+            assessment = dict(state.active_run.assessment)
+            assessment["_lead_expected_route"] = {
+                "identity": str(identity), "model": model, "effort": effort,
+            }
+            state = replace(state, active_run=replace(state.active_run, assessment=assessment))
     else:
         actions = opening
     update = {
@@ -590,7 +603,12 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
                 ),
             )
             return state, actions
-        required_model, required_effort = _required_lead_route(assessment)
+        expected = assessment.get("_lead_expected_route", {})
+        if isinstance(expected, Mapping) and expected.get("identity") == str(identity):
+            required_model = str(expected.get("model") or "")
+            required_effort = str(expected.get("effort") or "")
+        else:
+            required_model, required_effort = _required_lead_route(assessment)
         observed_lead = next(
             (
                 item
@@ -601,6 +619,7 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
         )
         if (
             successful
+            and state.active_run.lead_identity == str(identity)
             and (required_model or required_effort)
             and observed_lead
             and (
@@ -608,6 +627,13 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
                 or (required_effort and observed_lead.requested_effort != required_effort)
             )
         ):
+            observed = f"{observed_lead.requested_tier}/{observed_lead.requested_effort}"
+            mismatch = f"lead route mismatch: expected {required_model}/{required_effort}; observed {observed}"
+            updated_assessment = dict(state.active_run.assessment)
+            updated_assessment["_lead_route_mismatch"] = mismatch
+            state = replace(
+                state, active_run=replace(state.active_run, assessment=updated_assessment)
+            )
             state, recovery_actions = reduce(
                 state,
                 _derived(
@@ -623,11 +649,15 @@ def _observe_delegation(state: ProjectState, source: Event) -> tuple[ProjectStat
                 Action(
                     "inject_context",
                     {
-                        "text": f"Lead completion is waiting for the matrix-selected {required_model}/{required_effort}. Replace or retry the lead with the recorded route."
+                        "text": f"Lead completion rejected: {mismatch}. Replace or retry the lead with the recorded route."
                     },
                 ),
             )
             return state, actions
+        if successful and state.active_run.lead_identity == str(identity) and assessment.get("_lead_route_mismatch"):
+            updated_assessment = dict(assessment)
+            updated_assessment.pop("_lead_route_mismatch", None)
+            state = replace(state, active_run=replace(state.active_run, assessment=updated_assessment))
         invalid_consultants = state.active_run.assessment.get("_invalid_consultants", ())
         if successful and invalid_consultants:
             actions += (
@@ -799,7 +829,8 @@ def _prepare_delegation(
         if model != required_model or effort != required_effort:
             return state, (
                 _block_tool(
-                    f"Spawn the selected lead as {required_model} at {required_effort} effort, then retry."
+                    f"Lead route mismatch: expected {required_model}/{required_effort}; "
+                    f"observed {model}/{effort}. Spawn the selected lead with the expected route, then retry."
                 ),
             )
         if not (recorded.get("size") and recorded.get("complexity")):
@@ -1358,7 +1389,13 @@ def _render_actions(
         elif action.kind == "replace_lead":
             rendered.append(Action("inject_context", {"text": "The observed lead is unavailable. Spawn one safe replacement at the recorded owner generation."}))
         elif action.kind == "route_run":
-            rendered.append(Action("inject_context", {"text": "Symphony accepted the assessed route. Spawn only the selected lead and keep the root thin."}))
+            route = state.active_run.assessment.get("route", {}) if state.active_run else {}
+            model, effort = _required_lead_route(state.active_run.assessment) if state.active_run else ("", "")
+            profile = route.get("profile", "") if isinstance(route, Mapping) else ""
+            rendered.append(Action("inject_context", {"text":
+                f"Symphony accepted the assessed route. Selected {provider} lead"
+                f" ({profile} profile): {model}/{effort}. Spawn only this model and effort "
+                "with the accepted SYMPHONY_ROUTE marker; keep the root thin."}))
         elif action.kind == "reject_lead_replacement":
             lead = state.active_run.lead_identity if state.active_run else "the registered lead"
             rendered.append(Action("inject_context", {"text":

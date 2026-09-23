@@ -54,8 +54,17 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python3 plugins/symphony/scripts/refresh_profiles.py --agent-probe
 
-      - name: Regenerate the packaged agents
+      - name: Regenerate packaged agents and routing reference
         run: python3 plugins/symphony/scripts/generate_agents.py
+
+      - name: Detect generated route changes
+        id: generated
+        run: |
+          if [ -z "$(git status --porcelain -- plugins/symphony/agents plugins/symphony/skills/symphony/references/capability-routing.md)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Verify every shipped model against its provider
         env:
@@ -79,7 +88,7 @@ jobs:
       # A manual dispatch on a feature branch must not cut a release from
       # unmerged code, so publication is restricted to the default branch.
       - name: Release the refreshed map
-        if: steps.probe.outputs.changed == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: (steps.probe.outputs.changed == 'true' || steps.generated.outputs.changed == 'true') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

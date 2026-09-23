@@ -306,6 +306,9 @@ def _stop_block_reason(run: RunState) -> dict | None:
             "reason": "consultant results still require size/complexity classification: "
             + ", ".join(map(str, invalid_consultants))
         }
+    mismatch = run.assessment.get("_lead_route_mismatch")
+    if mismatch:
+        return {"reason": mismatch}
     if run.outcome is None:
         return {"reason": "lead_outcome_missing"}
     return None

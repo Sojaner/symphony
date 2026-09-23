@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 
 from plugins.symphony.symphony.runtime import handle
 from plugins.symphony.symphony.routing import profiles_for, snapshot_for
+from plugins.symphony.symphony.store import StateStore
 
 FULL_PROFILE = snapshot_for("codex", "full")
 BASE_PROFILE = snapshot_for("codex", "base")
@@ -165,6 +166,55 @@ class RouteDriftTests(unittest.TestCase):
 
         self.assertEqual(stale["decision"], "block")
         self.assertNotEqual(current.get("decision"), "block", current.get("reason"))
+
+    def test_re_resolved_lead_can_complete_after_accepted_entitlement_change(self):
+        self.accept_under("full", "session-1", FULL_ROUTE["model"], FULL_ROUTE["effort"])
+        original = {
+            **self.payload("session-1", "SubagentStart"),
+            "agent_id": "original-lead",
+            "agent_type": "symphony_lead_" + FULL_ROUTE["model"].replace("-", "_").replace(".", "_") + "_" + FULL_ROUTE["effort"],
+            "model": FULL_ROUTE["model"],
+            "model_reasoning_effort": FULL_ROUTE["effort"],
+        }
+        handle(original, self.env("full"))
+        handle({**original, "hook_event_name": "SubagentStop", "status": "failed"}, self.env("full"))
+        self.start("base", "session-2")
+        self.proceed("base", "session-2")
+        result = self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER)
+        self.assertNotEqual(self.output(result).get("decision"), "block")
+
+        lead = {
+            **self.payload("session-2", "SubagentStart"),
+            "agent_id": "lead-1",
+            "agent_type": "symphony_lead_" + BASE_ROUTE["model"].replace("-", "_").replace(".", "_") + "_" + BASE_ROUTE["effort"],
+            "model": BASE_ROUTE["model"],
+            "model_reasoning_effort": BASE_ROUTE["effort"],
+        }
+        handle(lead, self.env("base"))
+        handle({**lead, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": "Done"}, self.env("base"))
+        state = StateStore(self.state_root).load(self.project)
+        self.assertIsNone(state.active_run)
+        self.assertEqual(state.recent_runs[-1].status, "completed")
+
+    def test_stranger_profile_does_not_change_running_lead_completion_route(self):
+        self.accept_under("full", "session-1", FULL_ROUTE["model"], FULL_ROUTE["effort"])
+        lead = {
+            **self.payload("session-1", "SubagentStart"),
+            "agent_id": "lead-1",
+            "agent_type": "symphony_lead_" + FULL_ROUTE["model"].replace("-", "_").replace(".", "_") + "_" + FULL_ROUTE["effort"],
+            "model": FULL_ROUTE["model"],
+            "model_reasoning_effort": FULL_ROUTE["effort"],
+        }
+        handle(lead, self.env("full"))
+        self.start("base", "stranger")
+        self.assertEqual(StateStore(self.state_root).load(self.project).active_run.session_id, "session-1")
+
+        handle({**lead, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": "Done"}, self.env("full"))
+        state = StateStore(self.state_root).load(self.project)
+        self.assertIsNone(state.active_run)
+        self.assertEqual(state.recent_runs[-1].status, "completed")
 
 
 if __name__ == "__main__":

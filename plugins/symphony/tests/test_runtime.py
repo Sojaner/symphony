@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from plugins.symphony.symphony.model import Delegation, Event, ProjectState, RunState
 from plugins.symphony.symphony import runtime as runtime_module
 from plugins.symphony.symphony.runtime import compact_delegations, format_delegation, handle
-from plugins.symphony.symphony.routing import profiles_for, snapshot_for
+from plugins.symphony.symphony.routing import Assessment, MATRIX, profiles_for, resolve_tier, route_for, snapshot_for
 from plugins.symphony.symphony.store import StateStore
 
 CODEX_FULL = profiles_for("codex")[0]
@@ -399,6 +399,167 @@ class RuntimeTests(unittest.TestCase):
             StateStore(self.state_root).load(self.project).recent_runs[-1].outcome["status"],
             "completed",
         )
+
+    def test_avalon_assessment_guides_and_enforces_resolved_effort(self):
+        self.open_run("Implement the Avalon task")
+        assessor = {
+            **self.payload(""),
+            "hook_event_name": "SubagentStart",
+            "agent_id": "assessor-1",
+            "agent_type": codex_agent_type("assessor", CODEX_STRONGEST, "high"),
+            "model": CODEX_STRONGEST,
+            "model_reasoning_effort": "high",
+        }
+        handle(assessor, self.environ)
+        marker = json.dumps({
+            "size": "small", "complexity": "mixed", "risk": "normal",
+            "rationale": "bounded Avalon task", "topology": "direct",
+        })
+        handle({**assessor, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": f"SYMPHONY_ASSESSMENT: {marker}"}, self.environ)
+        expected = resolve_tier(route_for(Assessment("small", "mixed")), snapshot_for("codex", "full"))
+        guidance = self.flush()
+        self.assertIn("Selected codex lead (full profile)", guidance)
+        self.assertIn(f"{expected['lead_model']}/{expected['lead_effort']}", guidance)
+
+        def spawn(effort):
+            return self.output(handle({
+                **self.payload(""), "hook_event_name": "PreToolUse", "tool_name": "spawn_agent",
+                "tool_input": {
+                    "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nImplement the Avalon task",
+                    "model": expected["lead_model"], "reasoning_effort": effort,
+                },
+            }, self.environ))
+
+        wrong = "high" if expected["lead_effort"] != "high" else "medium"
+        rejected = spawn(wrong)
+        self.assertEqual(rejected["decision"], "block")
+        self.assertIn(f"{expected['lead_model']}/{expected['lead_effort']}", rejected["reason"])
+        self.assertIn(f"{expected['lead_model']}/{wrong}", rejected["reason"])
+        wrong_lead = {
+            **self.payload(""), "hook_event_name": "SubagentStart", "agent_id": "lead-wrong",
+            "agent_type": codex_agent_type("lead", expected["lead_model"], wrong),
+            "model": expected["lead_model"], "model_reasoning_effort": wrong,
+        }
+        handle(wrong_lead, self.environ)
+        handle({**wrong_lead, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": "Done at the wrong effort"}, self.environ)
+        blocked_stop = self.output(handle({**self.payload(""), "hook_event_name": "Stop"}, self.environ))
+        self.assertEqual(blocked_stop["decision"], "block")
+        self.assertIn(f"expected {expected['lead_model']}/{expected['lead_effort']}", blocked_stop["reason"])
+        self.assertIn(f"observed {expected['lead_model']}/{wrong}", blocked_stop["reason"])
+        self.assertNotEqual(spawn(expected["lead_effort"]).get("decision"), "block")
+
+        lead = {
+            **self.payload(""), "hook_event_name": "SubagentStart", "agent_id": "lead-1",
+            "agent_type": codex_agent_type("lead", expected["lead_model"], expected["lead_effort"]),
+            "model": expected["lead_model"], "model_reasoning_effort": expected["lead_effort"],
+        }
+        handle(lead, self.environ)
+        handle({**lead, "hook_event_name": "SubagentStop", "status": "completed",
+                "last_assistant_message": "Avalon task done"}, self.environ)
+        self.assertEqual(StateStore(self.state_root).load(self.project).recent_runs[-1].status, "completed")
+
+    def test_stale_lead_stop_cannot_block_completed_current_lead(self):
+        choice = route_choice("small", "mixed")
+        model, effort = choice["model"], choice["effort"]
+        run = RunState(
+            "run-1", "task", status="completing", lead_identity="current",
+            assessment={
+                "size": "small", "complexity": "mixed", "risk": "normal",
+                "route": {"lead_model": model, "lead_effort": effort},
+                "_lead_expected_route": {"identity": "current", "model": model, "effort": effort},
+            },
+            outcome={"status": "completed"},
+            delegations=(
+                Delegation("current", "lead", "task", "completed", model, effort),
+                Delegation("old", "lead", "task", "failed", model, "high"),
+                Delegation("worker", "worker", "task", "working", model, effort),
+            ),
+        )
+        StateStore(self.state_root).save(self.project, ProjectState(active_run=run))
+        stale = {**self.payload(""), "hook_event_name": "SubagentStop", "agent_id": "old",
+                 "status": "completed", "model": model, "model_reasoning_effort": "high"}
+        handle(stale, self.environ)
+        self.assertNotIn("_lead_route_mismatch", StateStore(self.state_root).load(self.project).active_run.assessment)
+        handle({**self.payload(""), "hook_event_name": "SubagentStop", "agent_id": "worker",
+                "status": "completed"}, self.environ)
+        stop = self.output(handle({**self.payload(""), "hook_event_name": "Stop"}, self.environ))
+        self.assertNotEqual(stop.get("decision"), "block")
+        self.assertEqual(StateStore(self.state_root).load(self.project).recent_runs[-1].status, "completed")
+
+    def test_every_profile_cell_and_risk_agrees_from_guidance_to_completion(self):
+        for provider in ("codex", "claude"):
+            for profile in profiles_for(provider):
+                profile_id = profile["id"]
+                for size, complexity in MATRIX:
+                    for risk in ("normal", "high"):
+                        with self.subTest(provider=provider, profile=profile_id,
+                                          size=size, complexity=complexity, risk=risk):
+                            self.project = self.root / f"{provider}-{profile_id}-{size}-{complexity}-{risk}"
+                            self.project.mkdir()
+                            self.environ["SYMPHONY_PROFILE"] = profile_id
+                            self.claude_environ["SYMPHONY_PROFILE"] = profile_id
+                            environ = self.claude_environ if provider == "claude" else self.environ
+                            route = route_for(Assessment(size, complexity, risk))
+                            expected = resolve_tier(route, snapshot_for(provider, profile_id))
+                            model, effort = expected["lead_model"], expected["lead_effort"]
+                            self.open_run("Execute the task", provider)
+                            assessor_model = profile["tiers"]["strongest"]
+                            assessor_type = (claude_agent_type("assessor", {"model": assessor_model, "effort": "high"})
+                                             if provider == "claude" else codex_agent_type("assessor", assessor_model, "high"))
+                            assessor = {
+                                **self.payload("", provider), "hook_event_name": "SubagentStart",
+                                "agent_id": "assessor-1", "agent_type": assessor_type,
+                                "provider": provider,
+                                "model": assessor_model, "model_reasoning_effort": "high",
+                            }
+                            handle(assessor, environ)
+                            marker = json.dumps({
+                                "size": size, "complexity": complexity, "risk": risk,
+                                "rationale": "test matrix route", "topology": route.execution,
+                            })
+                            handle({**assessor, "hook_event_name": "SubagentStop", "status": "completed",
+                                    "last_assistant_message": f"SYMPHONY_ASSESSMENT: {marker}"}, environ)
+                            state = StateStore(self.state_root).load(self.project)
+                            recorded = state.active_run.assessment["route"]
+                            self.assertEqual((recorded["lead_model"], recorded["lead_effort"]), (model, effort))
+                            guidance = self.flush(provider)
+                            self.assertIn(f"Selected {provider} lead ({profile_id} profile): {model}/{effort}", guidance)
+
+                            proceed = "/symphony:proceed" if provider == "claude" else "$symphony:symphony proceed"
+                            handle(self.payload(proceed, provider), environ)
+                            if provider == "claude":
+                                lead_type = claude_agent_type("lead", {"model": model, "effort": effort})
+                                tool_name = "Agent"
+                                tool_input = {
+                                    "prompt": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nExecute the task",
+                                    "subagent_type": lead_type,
+                                }
+                            else:
+                                lead_type = codex_agent_type("lead", model, effort)
+                                tool_name = "spawn_agent"
+                                tool_input = {
+                                    "message": f"SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: {marker}\nExecute the task",
+                                    "model": model, "reasoning_effort": effort,
+                                }
+                            prepared = self.output(handle({
+                                **self.payload("", provider), "hook_event_name": "PreToolUse",
+                                "tool_name": tool_name, "tool_input": tool_input,
+                            }, environ))
+                            self.assertNotEqual(prepared.get("decision"), "block", prepared.get("reason"))
+                            lead = {
+                                **self.payload("", provider), "hook_event_name": "SubagentStart",
+                                "agent_id": "lead-1", "agent_type": lead_type,
+                                "provider": provider,
+                                "model": model, "model_reasoning_effort": effort,
+                            }
+                            handle(lead, environ)
+                            handle({**lead, "hook_event_name": "SubagentStop", "status": "completed",
+                                    "last_assistant_message": "Completed"}, environ)
+                            completed = StateStore(self.state_root).load(self.project)
+                            self.assertIsNone(completed.active_run)
+                            self.assertEqual(completed.recent_runs[-1].status, "completed")
 
     def test_codex_native_lifecycle_accepts_assessment_and_lead_outcome(self):
         self.open_run("Return OK")
