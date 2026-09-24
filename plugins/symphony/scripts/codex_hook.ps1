@@ -1,3 +1,4 @@
+Set-Content -LiteralPath 'D:\a\_temp\symphony-relay-entry.txt' -Value 'entered'
 $ErrorActionPreference = 'Stop'
 $env:SYMPHONY_PROVIDER = 'codex'
 
