@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Default: boot the digest-pinned private GHCR snapshot. DOCKUR_FRESH=1 rebuilds
+# from Windows media; DOCKUR_SNAPSHOT_ARCHIVE uses a local saved disk instead.
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d /var/tmp/symphony-dockur.XXXXXX)
 name="symphony-dockur-$$"
+snapshot_container=
 cleanup() {
   docker rm -f "$name" >/dev/null 2>&1 || true
+  if [[ -n "$snapshot_container" ]]; then docker rm "$snapshot_container" >/dev/null 2>&1 || true; fi
   rm -rf -- "$work"
 }
 trap cleanup EXIT
@@ -20,8 +24,19 @@ mkdir -p "$work/oem" "$work/shared/plugins" "$work/storage"
 cp -a "$repo/plugins/symphony" "$work/shared/plugins/"
 cp "$repo/.github/scripts/dockur_install.bat" "$work/oem/install.bat"
 cp "$repo/.github/scripts/dockur_run.ps1" "$work/oem/"
-if [[ -n ${DOCKUR_SNAPSHOT_ARCHIVE:-} ]]; then
-  tar -I zstd -xf "$DOCKUR_SNAPSHOT_ARCHIVE" -C "$work/storage"
+snapshot_archive=${DOCKUR_SNAPSHOT_ARCHIVE:-}
+if [[ -z "$snapshot_archive" && ${DOCKUR_FRESH:-0} != 1 ]]; then
+  snapshot_image=ghcr.io/opennoor/symphony-windows-base@sha256:22345e50e345b8bb5b2813993cae1ec0bade2c3b32c325744084f2cc95cda065
+  docker pull "$snapshot_image"
+  snapshot_container=$(docker create "$snapshot_image" /not-executed)
+  snapshot_archive="$work/windows-storage.tar.zst"
+  docker cp "$snapshot_container:/windows-storage.tar.zst" "$snapshot_archive"
+  docker rm "$snapshot_container" >/dev/null
+  snapshot_container=
+fi
+if [[ -n "$snapshot_archive" ]]; then
+  tar -I zstd -xf "$snapshot_archive" -C "$work/storage"
+  [[ -f "$work/storage/windows.boot" ]] || { echo 'Snapshot lacks Dockur boot marker' >&2; exit 1; }
 else
   curl -fL --retry 3 --output "$work/oem/python-3.12.10-amd64.exe" \
     https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
