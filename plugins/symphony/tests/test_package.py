@@ -180,7 +180,8 @@ class PackageContractTests(unittest.TestCase):
                                                         "cwd": str(project)}), env)
                 timings.append(time.perf_counter() - started)
                 self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertLess(max(timings), 3, f"Interrupt hook exceeded 3s: {timings}")
+            limit = float(os.environ.get("SYMPHONY_WINDOWS_INTERRUPT_LIMIT", "3"))
+            self.assertLess(max(timings), limit, f"Interrupt hook exceeded {limit}s: {timings}")
             print(f"Windows Interrupt hook max {max(timings):.2f}s across {len(timings)} runs")
             activation = StateStore(state_root).load(project).activation["codex"]
             self.assertEqual(activation["session_id"], "windows-session")

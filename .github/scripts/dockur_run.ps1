@@ -19,6 +19,8 @@ try {
     $python = 'C:\OEM\Python312\python.exe'
     if (-not (Test-Path $python)) { throw 'Python executable missing after install' }
     $env:PYTHONDONTWRITEBYTECODE = '1'
+    # VM process startup is slow; the native Windows CI job retains the 3-second guard.
+    $env:SYMPHONY_WINDOWS_INTERRUPT_LIMIT = '120'
     $test = Start-Process -FilePath $python -WorkingDirectory 'C:\OEM' -Wait -PassThru `
         -ArgumentList '-m unittest plugins.symphony.tests.test_package.PackageContractTests.test_codex_windows_hooks_run_without_a_working_py_launcher -v' `
         -RedirectStandardOutput $stdout -RedirectStandardError $log
