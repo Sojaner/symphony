@@ -39,7 +39,8 @@ docker run -d --name "$name" --stop-timeout 120 \
 deadline=$((SECONDS + 7200))
 while (( SECONDS < deadline )); do
   if [[ -f "$work/shared/receipt.txt" ]]; then
-    cat "$work/shared/guest.log"
+    if [[ -f "$work/shared/guest.stdout.log" ]]; then cat "$work/shared/guest.stdout.log"; fi
+    if [[ -f "$work/shared/guest.log" ]]; then cat "$work/shared/guest.log"; fi
     result=$(tr -d '\r\n' < "$work/shared/receipt.txt")
     [[ "$result" == PASS ]] || { echo "Windows guest reported $result" >&2; exit 1; }
     echo 'Windows guest hook test PASS'
