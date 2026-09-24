@@ -22,7 +22,7 @@ while (($count = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
 }
 $capture.Close()
 Add-Content -LiteralPath 'D:\a\_temp\symphony-powershell-marker.txt' -Value "bytes=$bytes"
-$child.StandardInput.Close()
+$child.StandardInput.BaseStream.Close()
 $child.WaitForExit()
 [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))
 Set-Content -LiteralPath 'D:\a\_temp\symphony-powershell-exit.txt' -Value $child.ExitCode
