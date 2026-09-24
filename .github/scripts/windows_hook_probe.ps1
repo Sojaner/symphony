@@ -12,12 +12,15 @@ Set-Content -LiteralPath 'D:\a\_temp\symphony-powershell-marker.txt' -Value "roo
 $outTask = $child.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())
 $errTask = $child.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())
 $source = [Console]::OpenStandardInput()
+$capture = [System.IO.File]::Create('D:\a\_temp\symphony-hook-input.bin')
 $buffer = New-Object byte[] 8192
 $bytes = 0
 while (($count = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
     $child.StandardInput.BaseStream.Write($buffer, 0, $count)
+    $capture.Write($buffer, 0, $count)
     $bytes += $count
 }
+$capture.Close()
 Add-Content -LiteralPath 'D:\a\_temp\symphony-powershell-marker.txt' -Value "bytes=$bytes"
 $child.StandardInput.Close()
 $child.WaitForExit()

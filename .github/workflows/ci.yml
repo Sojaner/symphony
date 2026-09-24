@@ -58,6 +58,7 @@ jobs:
           }
           $faults = Join-Path $env:RUNNER_TEMP 'faults.log'
           if (Test-Path $faults) { Write-Host "faults $((Get-Content $faults -Raw).Replace($env:OPENAI_API_KEY, '<REDACTED>'))" }
+          python -c 'import json,os,pathlib; d=(pathlib.Path(os.environ["RUNNER_TEMP"])/"symphony-hook-input.bin").read_bytes(); print("input_bytes",len(d),"prefix_hex",d[:16].hex(),"nuls",d.count(bytes([0]))); json.loads(d); print("input_json_valid")'
           $hookError = Join-Path $env:TEMP 'symphony-hook-error.txt'
           if (Test-Path $hookError) {
             (Get-Content $hookError -Raw).Replace($env:OPENAI_API_KEY, '<REDACTED>') | Write-Host
