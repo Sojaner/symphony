@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $env:SYMPHONY_PROVIDER = 'codex'
 
 $script = Join-Path $env:PLUGIN_ROOT 'scripts/symphony_hook.py'
-$python = (Get-Command python.exe -CommandType Application -ErrorAction Stop).Source
+$python = (Get-Command python.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 Add-Content -LiteralPath 'D:\a\_temp\symphony-relay-entry.txt' -Value "python=$python"
 $start = New-Object System.Diagnostics.ProcessStartInfo
 $start.FileName = $python
