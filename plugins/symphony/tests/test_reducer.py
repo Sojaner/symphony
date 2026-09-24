@@ -334,13 +334,21 @@ class LifecycleReducerTests(unittest.TestCase):
         self.assertEqual(stop_actions, (Action("archive_run", {"run_id": "run-1"}),))
 
     def test_force_stop_archives_without_disabling_the_project(self):
-        original = running_state(delegations=[delegation("worker-1")])
+        original = running_state(delegations=[delegation("worker-1"), delegation("done", "completed")])
 
         state, actions = reduce(original, event("force_stop"))
 
         self.assertTrue(state.enabled)
         self.assertIsNone(state.active_run)
         self.assertEqual(state.recent_runs[-1].status, "force_stopped")
+        self.assertEqual(state.recent_runs[-1].unreconciled, ("worker-1",))
+        self.assertIsNone(state.recent_runs[-1].outcome)
+        late, late_actions = reduce(state, event(
+            "lead_completed", identity="lead-1", owner_generation=1,
+            outcome={"summary": "late completion"},
+        ))
+        self.assertEqual(late, state)
+        self.assertEqual(late_actions, ())
         self.assertEqual(
             actions,
             (

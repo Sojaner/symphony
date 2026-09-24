@@ -257,6 +257,21 @@ class ConcurrentSessionTests(unittest.TestCase):
         statuses = {a.get("status") for a in (run.get("agent_records") or {}).values()}
         self.assertNotIn("interrupted", statuses, "a live lead was declared dead")
 
+    def test_foreign_resume_or_empty_roster_cannot_reconcile_a_live_owner(self):
+        self.run_with_live_lead("root-a")
+        path = next(self.state_root.glob("*.json"))
+        original = path.read_text()
+        for evidence in ({"source": "resume"}, {"active_agent_ids": []}):
+            with self.subTest(evidence=evidence):
+                path.write_text(original)
+                handle(self.payload("other-b", "SessionStart", **evidence), self.environ)
+                run = self.state()["active_run"]
+                self.assertEqual("root-a", run["session_id"])
+                self.assertEqual("active", run["status"])
+                self.assertEqual("working", next(
+                    item["state"] for item in run["delegations"] if item["identity"] == "lead-1"
+                ))
+
     def test_a_concurrent_session_does_not_destroy_an_accepted_clamp(self):
         environ = {**self.environ, "SYMPHONY_PROFILE": "base"}
         handle(self.payload("root-a", "SessionStart"), environ)

@@ -430,6 +430,12 @@ def _exercise(
             raise SmokeFailure("the assessor spawn did not open a run")
         if provider == "codex":
             send("Interrupt", "before-interrupt")
+        # A different session is not proof that the owner ended. Recover only
+        # after its last observed heartbeat is outside the quiet window.
+        state_path = next(state_dir.glob("*.json"))
+        document = json.loads(state_path.read_text())
+        document["active_run"]["owner_seen_at"] = "2020-01-01T00:00:00+00:00"
+        state_path.write_text(json.dumps(document))
         send("SessionStart", "resumed-session", source="resume")
         documents = _state_documents(state_dir)
         if not any(_has_active_run(document) for document in documents):
@@ -450,6 +456,23 @@ def _exercise(
         _set_materialized_version(new_root, new_version)
         _validate_package(new_root, provider)
         old_root = root
+        stale_argv = _command_argv(
+            _event_command(_hook_config(old_root, provider), "SubagentStop"), old_root, provider
+        )
+        stale_payload = _payload(old_root, provider, "SubagentStop", project, "old-session")
+        before = _state_documents(state_dir)
+        shutil.rmtree(old_root)
+        stale_env = os.environ.copy()
+        stale_env.update({"HOME": str(home), "SYMPHONY_STATE_DIR": str(state_dir)})
+        stale = subprocess.run(
+            stale_argv,
+            input=json.dumps(stale_payload),
+            capture_output=True, text=True, env=stale_env, timeout=15, check=False,
+        )
+        if stale.returncode == 0 or str(old_root / "scripts" / "symphony_hook.py") not in stale.stderr:
+            raise SmokeFailure("removed old hook did not fail at its captured path")
+        if _state_documents(state_dir) != before:
+            raise SmokeFailure("failed old hook changed durable state")
         root = new_root
         send("UserPromptSubmit", "reloaded-session")
         documents = _state_documents(state_dir)
@@ -463,6 +486,7 @@ def _exercise(
             {
                 "heartbeat_versions": [source_version, new_version],
                 "loaded_roots": [str(old_root), str(new_root)],
+                "stale_hook_exit": stale.returncode,
                 "install_root": str(new_root),
             }
         )
