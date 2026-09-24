@@ -6,10 +6,16 @@ set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d /var/tmp/symphony-dockur.XXXXXX)
 name="symphony-dockur-$$"
-snapshot_container=
+snapshot_name="${name}-snapshot"
+deadline=$((SECONDS + 7200))
+bounded() {
+  local remaining=$((deadline - SECONDS))
+  if (( remaining < 1 )); then echo 'Dockur test exceeded two hours' >&2; return 124; fi
+  timeout --signal=TERM --kill-after=30 "${remaining}s" "$@"
+}
 cleanup() {
   docker rm -f "$name" >/dev/null 2>&1 || true
-  if [[ -n "$snapshot_container" ]]; then docker rm "$snapshot_container" >/dev/null 2>&1 || true; fi
+  docker rm -f "$snapshot_name" >/dev/null 2>&1 || true
   rm -rf -- "$work"
 }
 trap cleanup EXIT
@@ -36,18 +42,17 @@ if [[ -z "$snapshot_archive" && ${DOCKUR_FRESH:-0} != 1 ]]; then
     exit 1
   fi
   snapshot_image=ghcr.io/opennoor/symphony-windows-base@sha256:22345e50e345b8bb5b2813993cae1ec0bade2c3b32c325744084f2cc95cda065
-  docker pull "$snapshot_image"
-  snapshot_container=$(docker create "$snapshot_image" /not-executed)
+  bounded docker pull "$snapshot_image"
+  bounded docker create --name "$snapshot_name" "$snapshot_image" /not-executed >/dev/null
   snapshot_archive="$work/windows-storage.tar.zst"
-  docker cp "$snapshot_container:/windows-storage.tar.zst" "$snapshot_archive"
-  docker rm "$snapshot_container" >/dev/null
-  snapshot_container=
+  bounded docker cp "$snapshot_name:/windows-storage.tar.zst" "$snapshot_archive"
+  docker rm "$snapshot_name" >/dev/null
 fi
 if [[ -n "$snapshot_archive" ]]; then
-  tar -I zstd -xf "$snapshot_archive" -C "$work/storage"
+  bounded tar -I zstd -xf "$snapshot_archive" -C "$work/storage"
   [[ -f "$work/storage/windows.boot" ]] || { echo 'Snapshot lacks Dockur boot marker' >&2; exit 1; }
 else
-  curl -fL --retry 3 --output "$work/oem/python-3.12.10-amd64.exe" \
+  bounded curl -fL --retry 3 --output "$work/oem/python-3.12.10-amd64.exe" \
     https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
 fi
 
@@ -56,7 +61,7 @@ if [[ -e /dev/kvm ]]; then
   kvm=(--device /dev/kvm)
 fi
 echo "Starting Dockur Windows 10 LTSC ($([[ -e /dev/kvm ]] && echo KVM || echo software-emulated))"
-docker run -d --name "$name" --stop-timeout 120 \
+bounded docker run -d --name "$name" --stop-timeout 120 \
   --env VERSION=10l --env DISK_SIZE=40G --env DISK_FMT=qcow2 \
   --env CPU_CORES=4 --env RAM_SIZE=6G \
   "${kvm[@]}" --device /dev/net/tun --cap-add NET_ADMIN \
@@ -65,7 +70,6 @@ docker run -d --name "$name" --stop-timeout 120 \
   --volume "$work/oem:/oem:ro" \
   docker.io/dockurr/windows@sha256:0cff9eb0e7aee9953e55bc682852ca4fdca233145a58ae1ec94f0b0c01a2ed30 >/dev/null
 
-deadline=$((SECONDS + 7200))
 while (( SECONDS < deadline )); do
   if [[ -f "$work/shared/receipt.txt" ]]; then
     if [[ -f "$work/shared/guest.stdout.log" ]]; then cat "$work/shared/guest.stdout.log"; fi
