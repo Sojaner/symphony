@@ -26,6 +26,15 @@ cp "$repo/.github/scripts/dockur_install.bat" "$work/oem/install.bat"
 cp "$repo/.github/scripts/dockur_run.ps1" "$work/oem/"
 snapshot_archive=${DOCKUR_SNAPSHOT_ARCHIVE:-}
 if [[ -z "$snapshot_archive" && ${DOCKUR_FRESH:-0} != 1 ]]; then
+  # Startup uses these OEM files baked into the image, not the new /oem mount.
+  # A changed guest runner requires a new snapshot instead of a stale PASS.
+  if ! (cd "$repo" && printf '%s\n' \
+    '60f8f0040f6667c82f8905e8ff1e825cd38ea9a93f94ce05414c944141e0f329  .github/scripts/dockur_run.ps1' \
+    'bbc468ae81742c9e609700febd8cb58873d80a251de842d9e04f48fa411f732b  .github/scripts/dockur_install.bat' \
+    | sha256sum --check --status); then
+    echo 'Guest runner changed; rebuild and repin the Windows snapshot' >&2
+    exit 1
+  fi
   snapshot_image=ghcr.io/opennoor/symphony-windows-base@sha256:22345e50e345b8bb5b2813993cae1ec0bade2c3b32c325744084f2cc95cda065
   docker pull "$snapshot_image"
   snapshot_container=$(docker create "$snapshot_image" /not-executed)
