@@ -43,7 +43,7 @@ jobs:
           $installedCommand = (Get-Content $installedManifest -Raw | ConvertFrom-Json).hooks.SessionStart[0].hooks[0].commandWindows
           Write-Host "Installed SessionStart command: $installedCommand"
           Remove-Item (Join-Path $env:TEMP 'symphony-hook-debug.txt'),(Join-Path $env:TEMP 'symphony-hook-error.txt') -ErrorAction SilentlyContinue
-          codex exec --dangerously-bypass-hook-trust --sandbox workspace-write --skip-git-repo-check `
+          codex exec --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check `
             --output-last-message (Join-Path $env:RUNNER_TEMP 'codex-windows-help.txt') `
             -C $env:GITHUB_WORKSPACE '$symphony:symphony help'
           if ($LASTEXITCODE -ne 0) { throw 'Codex control failed' }
