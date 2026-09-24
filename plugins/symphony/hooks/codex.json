@@ -1,7 +1,7 @@
 {
   "description": "Symphony lifecycle observation and completion guard for Codex.",
   "hooks": {
-    "SessionStart": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& cd /d %PLUGIN_ROOT%\\scripts&& python -m symphony_hook", "timeout": 10}]}],
+    "SessionStart": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& echo root=%PLUGIN_ROOT%>%TEMP%\\symphony-hook-debug.txt&& echo shell=%COMSPEC%>>%TEMP%\\symphony-hook-debug.txt&& where python>>%TEMP%\\symphony-hook-debug.txt&& cd /d %PLUGIN_ROOT%\\scripts&& python -m symphony_hook 2>>%TEMP%\\symphony-hook-error.txt", "timeout": 10}]}],
     "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& cd /d %PLUGIN_ROOT%\\scripts&& python -m symphony_hook", "timeout": 10, "additionalContextLimit": 4096}]}],
     "SubagentStart": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& cd /d %PLUGIN_ROOT%\\scripts&& python -m symphony_hook", "timeout": 10, "additionalContextLimit": 2048}]}],
     "SubagentStop": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& cd /d %PLUGIN_ROOT%\\scripts&& python -m symphony_hook", "timeout": 10}]}],

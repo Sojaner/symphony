@@ -42,6 +42,12 @@ jobs:
             --output-last-message (Join-Path $env:RUNNER_TEMP 'codex-windows-help.txt') `
             -C $env:GITHUB_WORKSPACE '$symphony:symphony help'
           if ($LASTEXITCODE -ne 0) { throw 'Codex control failed' }
+          $diagnostic = Join-Path $env:TEMP 'symphony-hook-debug.txt'
+          if (Test-Path $diagnostic) { Get-Content $diagnostic }
+          $hookError = Join-Path $env:TEMP 'symphony-hook-error.txt'
+          if (Test-Path $hookError) {
+            (Get-Content $hookError -Raw).Replace($env:OPENAI_API_KEY, '<REDACTED>') | Write-Host
+          }
           python .github/scripts/assert_heartbeat.py codex
           if ($LASTEXITCODE -ne 0) { throw 'Codex heartbeat missing' }
 
