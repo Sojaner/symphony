@@ -30,7 +30,10 @@ Native syntax is `$symphony:symphony <task-or-control>`.
 - An install performed through the running Codex plugin flow may refresh hooks. Open `/hooks`, review/trust Symphony, and submit another prompt to create the heartbeat.
 - After an external `codex plugin add` or marketplace upgrade, start a new Codex session, review Symphony in `/hooks`, then submit a prompt or run `$symphony:symphony status`.
 - A changed hook definition can require renewed review because trust is bound to the exact hook hash.
+- On Windows, if `/hooks` shows a trusted hook but this project's heartbeat is absent, check `where.exe python` and `python --version` in the environment that launches Codex. Put a working Python on `PATH`, restart Codex, review the changed hook, and submit a prompt; an interpreter launch failure is a hook fault.
 - `--dangerously-bypass-hook-trust` is for already-vetted automation, never normal onboarding.
+
+PR #2 introduced `py -3`; its test only asserted manifest text, while CI ran on Linux. The 1.4.2 change quoted the script path but kept that launcher. WindowsApps `py.exe` can fail before Symphony writes any state. Before claiming Windows activation works, execute all six packaged `commandWindows` entries on Windows with an unusable `py`, a plugin path containing spaces, and a matching guarded heartbeat.
 
 ## Claude Code
 

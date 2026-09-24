@@ -84,7 +84,7 @@ class PackageContractTests(unittest.TestCase):
         for handler in handlers("hooks/codex.json"):
             command = handler["commandWindows"]
             self.assertIn("set SYMPHONY_PROVIDER=codex&&", command)
-            self.assertIn('py -3 "%PLUGIN_ROOT%\\scripts\\symphony_hook.py"', command)
+            self.assertIn('python "%PLUGIN_ROOT%\\scripts\\symphony_hook.py"', command)
             self.assertNotIn("${PLUGIN_ROOT}", command)
 
     @unittest.skipUnless(os.name == "nt", "runs the Windows shell command")
@@ -109,9 +109,15 @@ class PackageContractTests(unittest.TestCase):
                 "SYMPHONY_STATE_DIR": str(state_root),
                 "PYTHONDONTWRITEBYTECODE": "1",
             })
-            for event in load_json("hooks/codex.json")["hooks"]:
-                command = next(handler["commandWindows"] for group in
-                               load_json("hooks/codex.json")["hooks"][event]
+            python = subprocess.run(["cmd", "/d", "/s", "/c", "python --version"],
+                                    capture_output=True, text=True, env=env, check=False)
+            self.assertEqual(python.returncode, 0, python.stderr)
+            broken_py = subprocess.run(["cmd", "/d", "/s", "/c", "py -3 --version"],
+                                       capture_output=True, text=True, env=env, check=False)
+            self.assertNotEqual(broken_py.returncode, 0)
+            config = load_json("hooks/codex.json")
+            for event, groups in config["hooks"].items():
+                command = next(handler["commandWindows"] for group in groups
                                for handler in group["hooks"])
                 result = subprocess.run(
                     ["cmd", "/d", "/s", "/c", command],
