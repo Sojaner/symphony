@@ -2,6 +2,7 @@
 """Symphony hook entry point."""
 
 from pathlib import Path
+import io
 import sys
 
 
@@ -11,4 +12,6 @@ from symphony.runtime import main  # noqa: E402
 
 
 if __name__ == "__main__":
+    # Windows PowerShell's redirected child stdin prepends a UTF-8 BOM.
+    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8-sig")
     raise SystemExit(main())
