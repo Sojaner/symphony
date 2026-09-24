@@ -43,13 +43,15 @@ jobs:
           if (-not (Test-Path $installedManifest)) { throw "Installed Codex hooks missing: $installedManifest" }
           $installedCommand = (Get-Content $installedManifest -Raw | ConvertFrom-Json).hooks.SessionStart[0].hooks[0].commandWindows
           Write-Host "Installed SessionStart command: $installedCommand"
-          Remove-Item (Join-Path $env:TEMP 'symphony-hook-debug.txt'),(Join-Path $env:TEMP 'symphony-hook-error.txt') -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $env:TEMP 'symphony-hook-debug.txt'),(Join-Path $env:RUNNER_TEMP 'symphony-hook-debug.txt'),(Join-Path $env:TEMP 'symphony-hook-error.txt') -ErrorAction SilentlyContinue
           codex exec --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check `
             --output-last-message (Join-Path $env:RUNNER_TEMP 'codex-windows-help.txt') `
             -C $env:GITHUB_WORKSPACE '$symphony:symphony help'
           if ($LASTEXITCODE -ne 0) { throw 'Codex control failed' }
           $diagnostic = Join-Path $env:TEMP 'symphony-hook-debug.txt'
           if (Test-Path $diagnostic) { Get-Content $diagnostic } else { Write-Host 'Host command did not reach diagnostic echo' }
+          $runnerDiagnostic = Join-Path $env:RUNNER_TEMP 'symphony-hook-debug.txt'
+          if (Test-Path $runnerDiagnostic) { Get-Content $runnerDiagnostic } else { Write-Host 'Host command did not reach absolute runner-temp echo' }
           $hookError = Join-Path $env:TEMP 'symphony-hook-error.txt'
           if (Test-Path $hookError) {
             (Get-Content $hookError -Raw).Replace($env:OPENAI_API_KEY, '<REDACTED>') | Write-Host
