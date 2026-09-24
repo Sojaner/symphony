@@ -35,6 +35,8 @@ Native syntax is `$symphony:symphony <task-or-control>`.
 
 PR #2 introduced `py -3`; its test only asserted manifest text, while CI ran on Linux. The 1.4.2 change kept that launcher and quoted the script path, but [Codex wraps Windows hook commands in outer quotes](https://github.com/openai/codex/blob/main/codex-rs/hooks/src/engine/command_runner.rs), which can break embedded quotes ([upstream issue](https://github.com/openai/codex/issues/38168)). WindowsApps `py.exe` can also fail before Symphony writes any state. Before claiming Windows activation works, execute all six packaged `commandWindows` entries on Windows with an unusable `py`, a plugin path containing spaces, and a matching guarded heartbeat.
 
+The Windows command uses `cd /d` to enter the packaged scripts directory without embedded quotes; [Windows accepts spaces in this `cd` path](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cd). Codex supplies the project's `cwd` in every hook payload, so this process directory change does not change the state key.
+
 ## Claude Code
 
 Native controls are `/symphony:<control>`; one-shot work is `/symphony:start <task>`.

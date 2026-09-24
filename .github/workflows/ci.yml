@@ -17,6 +17,34 @@ jobs:
       - name: Execute every packaged Codex Windows hook with broken py
         run: python -m unittest plugins.symphony.tests.test_package.PackageContractTests.test_codex_windows_hooks_run_without_a_working_py_launcher -v
 
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Run real Windows Codex control smoke
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if (-not $env:OPENAI_API_KEY) {
+            if ($env:GITHUB_REF -eq 'refs/heads/main') { throw 'OPENAI_API_KEY is required for release verification' }
+            Write-Host '::notice::SKIP real Windows Codex smoke: credential unavailable'
+            exit 0
+          }
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP 'symphony-codex-home'
+          $env:SYMPHONY_STATE_DIR = Join-Path $env:RUNNER_TEMP 'symphony-codex-state'
+          New-Item -ItemType Directory -Force -Path $env:CODEX_HOME,$env:SYMPHONY_STATE_DIR | Out-Null
+          $env:OPENAI_API_KEY | codex login --with-api-key
+          if ($LASTEXITCODE -ne 0) { throw 'Codex login failed' }
+          codex plugin marketplace add $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw 'Codex marketplace add failed' }
+          codex plugin add symphony@symphony
+          if ($LASTEXITCODE -ne 0) { throw 'Codex plugin add failed' }
+          codex exec --dangerously-bypass-hook-trust --skip-git-repo-check `
+            --output-last-message (Join-Path $env:RUNNER_TEMP 'codex-windows-help.txt') `
+            -C $env:GITHUB_WORKSPACE '$symphony:symphony help'
+          if ($LASTEXITCODE -ne 0) { throw 'Codex control failed' }
+          python .github/scripts/assert_heartbeat.py codex
+          if ($LASTEXITCODE -ne 0) { throw 'Codex heartbeat missing' }
+
   verify:
     runs-on: ubuntu-latest
     permissions:
@@ -65,6 +93,10 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           if [ -z "$OPENAI_API_KEY" ]; then
+            if [ "$GITHUB_REF" = refs/heads/main ]; then
+              echo "::error::OPENAI_API_KEY is required for release verification"
+              exit 1
+            fi
             echo "::notice::SKIP real Codex smoke: credential unavailable"
             exit 0
           fi
@@ -91,6 +123,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           if [ -z "$ANTHROPIC_API_KEY" ]; then
+            if [ "$GITHUB_REF" = refs/heads/main ]; then
+              echo "::error::ANTHROPIC_API_KEY is required for release verification"
+              exit 1
+            fi
             echo "::notice::SKIP real Claude smoke: credential unavailable"
             exit 0
           fi
