@@ -80,13 +80,43 @@ class PackageContractTests(unittest.TestCase):
             self.assertEqual(activation["session_id"], "python310-smoke")
             self.assertEqual(activation["state"], "guarded")
 
-    def test_codex_windows_hooks_use_quote_free_module_command(self):
+    def test_hook_accepts_utf8_bom_from_windows_powershell_relay(self):
+        from plugins.symphony.symphony.store import StateStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            project.mkdir()
+            state_root = Path(directory) / "state"
+            payload = json.dumps({
+                "hook_event_name": "SessionStart",
+                "session_id": "bom-session",
+                "cwd": str(project),
+            }).encode("utf-8")
+            result = subprocess.run(
+                [sys.executable, str(PLUGIN / "scripts/symphony_hook.py")],
+                input=b"\xef\xbb\xbf" + payload,
+                capture_output=True,
+                env={**os.environ, "SYMPHONY_STATE_DIR": str(state_root),
+                     "SYMPHONY_PROVIDER": "codex"},
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn(b"Symphony hook fault", result.stderr)
+            activation = StateStore(state_root).load(project).activation["codex"]
+            self.assertEqual(activation["session_id"], "bom-session")
+            self.assertEqual(activation["state"], "guarded")
+
+    def test_codex_windows_hooks_use_the_packaged_launcher(self):
+        import base64
+
+        prefix = "cmd.exe /c powershell.exe -NoProfile -NonInteractive -EncodedCommand "
+        source = "& (Join-Path $env:PLUGIN_ROOT 'scripts/codex_hook.ps1')"
+        self.assertTrue((PLUGIN / "scripts/codex_hook.ps1").is_file())
         for handler in handlers("hooks/codex.json"):
             command = handler["commandWindows"]
-            self.assertIn("set SYMPHONY_PROVIDER=codex&&", command)
-            self.assertIn("cd /d %PLUGIN_ROOT%\\scripts&& python -m symphony_hook", command)
+            self.assertTrue(command.startswith(prefix))
+            self.assertEqual(base64.b64decode(command[len(prefix):]).decode("utf-16le"), source)
             self.assertNotIn('"', command)
-            self.assertNotIn("${PLUGIN_ROOT}", command)
 
     @unittest.skipUnless(os.name == "nt", "runs the Windows shell command")
     def test_codex_windows_hooks_run_without_a_working_py_launcher(self):
@@ -107,7 +137,9 @@ class PackageContractTests(unittest.TestCase):
             env = os.environ.copy()
             env.update({
                 "PATH": os.pathsep.join((str(launcher_dir), str(Path(sys.executable).parent),
-                                          str(Path(os.environ["SystemRoot"]) / "System32"))),
+                                          str(Path(os.environ["SystemRoot"]) / "System32"),
+                                          str(Path(os.environ["SystemRoot"]) / "System32" /
+                                              "WindowsPowerShell" / "v1.0"))),
                 "PLUGIN_ROOT": str(root),
                 "SYMPHONY_STATE_DIR": str(state_root),
                 "PYTHONDONTWRITEBYTECODE": "1",

@@ -15,7 +15,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Execute every packaged Codex Windows hook with broken py
-        continue-on-error: true # temporary SessionStart host probe
         run: python -m unittest plugins.symphony.tests.test_package.PackageContractTests.test_codex_windows_hooks_run_without_a_working_py_launcher -v
 
       - name: Install Codex CLI
@@ -39,38 +38,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Codex marketplace add failed' }
           codex plugin add symphony@symphony
           if ($LASTEXITCODE -ne 0) { throw 'Codex plugin add failed' }
-          $installedManifest = Join-Path $env:CODEX_HOME 'plugins/cache/symphony/symphony/1.4.2/hooks/codex.json'
+          $version = (Get-Content 'plugins/symphony/.codex-plugin/plugin.json' -Raw | ConvertFrom-Json).version
+          $env:SYMPHONY_EXPECTED_PLUGIN_ROOT = Join-Path $env:CODEX_HOME "plugins/cache/symphony/symphony/$version"
+          $installedManifest = Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'hooks/codex.json'
           if (-not (Test-Path $installedManifest)) { throw "Installed Codex hooks missing: $installedManifest" }
-          $installedCommand = (Get-Content $installedManifest -Raw | ConvertFrom-Json).hooks.SessionStart[0].hooks[0].commandWindows
-          Write-Host "Installed SessionStart command: $installedCommand"
-          Remove-Item (Join-Path $env:TEMP 'symphony-hook-debug.txt'),(Join-Path $env:RUNNER_TEMP 'symphony-hook-debug.txt'),(Join-Path $env:TEMP 'symphony-hook-error.txt') -ErrorAction SilentlyContinue
-          codex exec --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check `
+          if (-not (Test-Path (Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'scripts/codex_hook.ps1'))) { throw 'Installed Windows relay missing' }
+          codex exec --dangerously-bypass-hook-trust --skip-git-repo-check `
             --output-last-message (Join-Path $env:RUNNER_TEMP 'codex-windows-help.txt') `
             -C $env:GITHUB_WORKSPACE '$symphony:symphony help'
           if ($LASTEXITCODE -ne 0) { throw 'Codex control failed' }
-          $diagnostic = Join-Path $env:TEMP 'symphony-hook-debug.txt'
-          if (Test-Path $diagnostic) { Get-Content $diagnostic } else { Write-Host 'Host command did not reach diagnostic echo' }
-          $runnerDiagnostic = Join-Path $env:RUNNER_TEMP 'symphony-hook-debug.txt'
-          if (Test-Path $runnerDiagnostic) { Get-Content $runnerDiagnostic } else { Write-Host 'Host command did not reach absolute runner-temp echo' }
-          foreach ($name in 'symphony-plugin-root.txt','symphony-python-paths.txt','symphony-chain.txt','symphony-cd-chain.txt','symphony-powershell-marker.txt','symphony-powershell-exit.txt','symphony-powershell-error.txt','symphony-child-input.txt') {
-            $path = Join-Path $env:RUNNER_TEMP $name
-            if (Test-Path $path) { Write-Host "$name $((Get-Content $path -Raw).Replace($env:OPENAI_API_KEY, '<REDACTED>'))" } else { Write-Host "$name absent" }
-          }
-          $faults = Join-Path $env:RUNNER_TEMP 'faults.log'
-          if (Test-Path $faults) { Write-Host "faults $((Get-Content $faults -Raw).Replace($env:OPENAI_API_KEY, '<REDACTED>'))" }
-          python -c 'import json,os,pathlib; d=(pathlib.Path(os.environ["RUNNER_TEMP"])/"symphony-hook-input.bin").read_bytes(); print("input_bytes",len(d),"prefix_hex",d[:16].hex(),"nuls",d.count(bytes([0]))); json.loads(d); print("input_json_valid")'
-          $hookError = Join-Path $env:TEMP 'symphony-hook-error.txt'
-          if (Test-Path $hookError) {
-            (Get-Content $hookError -Raw).Replace($env:OPENAI_API_KEY, '<REDACTED>') | Write-Host
-          }
-          Get-ChildItem $env:CODEX_HOME -Recurse -File -Include '*.log' | ForEach-Object {
-            Select-String -Path $_.FullName -Pattern 'hook.*failed|hook.*error|commandWindows|symphony_hook' |
-              ForEach-Object { $_.Line.Replace($env:OPENAI_API_KEY, '<REDACTED>') | Write-Host }
-          }
-          Get-ChildItem (Join-Path $env:CODEX_HOME 'sessions') -Recurse -File -Filter '*.jsonl' | ForEach-Object {
-            Select-String -Path $_.FullName -Pattern 'HookCompleted|hook_completed|hook_result|hook_error' |
-              ForEach-Object { $_.Line.Replace($env:OPENAI_API_KEY, '<REDACTED>') | Write-Host }
-          }
           python .github/scripts/assert_heartbeat.py codex
           if ($LASTEXITCODE -ne 0) { throw 'Codex heartbeat missing' }
 

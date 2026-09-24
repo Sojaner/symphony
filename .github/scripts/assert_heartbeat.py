@@ -11,6 +11,9 @@ import os
 import pathlib
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+from plugins.symphony.symphony import HOOK_SCHEMA_VERSION
+
 
 def main() -> int:
     provider = sys.argv[1]
@@ -35,6 +38,16 @@ def main() -> int:
                 f"::error::{provider} heartbeat reports "
                 f"{activation.get('plugin_version')!r}, expected {expected!r}"
             )
+            return 1
+        if not activation.get("session_id"):
+            print(f"::error::{provider} heartbeat has no session ID")
+            return 1
+        if activation.get("hook_schema_version") != HOOK_SCHEMA_VERSION:
+            print(f"::error::{provider} heartbeat has an unexpected hook schema")
+            return 1
+        expected_root = os.environ.get("SYMPHONY_EXPECTED_PLUGIN_ROOT")
+        if expected_root and pathlib.Path(activation.get("plugin_root", "")).resolve() != pathlib.Path(expected_root).resolve():
+            print(f"::error::{provider} heartbeat did not come from the installed plugin root")
             return 1
         print(f"{provider}: installed hook executed and recorded a guarded heartbeat")
         return 0
