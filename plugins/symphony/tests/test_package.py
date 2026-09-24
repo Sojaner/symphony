@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -85,6 +86,43 @@ class PackageContractTests(unittest.TestCase):
             self.assertIn("set SYMPHONY_PROVIDER=codex&&", command)
             self.assertIn('py -3 "%PLUGIN_ROOT%\\scripts\\symphony_hook.py"', command)
             self.assertNotIn("${PLUGIN_ROOT}", command)
+
+    @unittest.skipUnless(os.name == "nt", "runs the Windows shell command")
+    def test_codex_windows_hooks_run_without_a_working_py_launcher(self):
+        from plugins.symphony.symphony.store import StateStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / "Symphony Plugin With Spaces"
+            shutil.copytree(PLUGIN, root)
+            project = home / "Current Project"
+            project.mkdir()
+            state_root = home / "state"
+            launcher_dir = home / "broken launcher"
+            launcher_dir.mkdir()
+            (launcher_dir / "py.exe").write_bytes(b"not a Windows executable")
+            env = os.environ.copy()
+            env.update({
+                "PATH": os.pathsep.join((str(launcher_dir), str(Path(sys.executable).parent),
+                                          str(Path(os.environ["SystemRoot"]) / "System32"))),
+                "PLUGIN_ROOT": str(root),
+                "SYMPHONY_STATE_DIR": str(state_root),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            })
+            for event in load_json("hooks/codex.json")["hooks"]:
+                command = next(handler["commandWindows"] for group in
+                               load_json("hooks/codex.json")["hooks"][event]
+                               for handler in group["hooks"])
+                result = subprocess.run(
+                    ["cmd", "/d", "/s", "/c", command],
+                    input=json.dumps({"hook_event_name": event, "session_id": "windows-session",
+                                      "cwd": str(project)}),
+                    capture_output=True, text=True, env=env, check=False,
+                )
+                self.assertEqual(result.returncode, 0, f"{event}: {result.stderr}")
+            activation = StateStore(state_root).load(project).activation["codex"]
+            self.assertEqual(activation["session_id"], "windows-session")
+            self.assertEqual(activation["state"], "guarded")
 
     def test_hook_manifests_contain_only_supported_events(self):
         self.assertEqual(

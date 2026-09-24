@@ -5,6 +5,18 @@ on:
   pull_request:
 
 jobs:
+  windows-hooks:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Execute every packaged Codex Windows hook with broken py
+        run: python -m unittest plugins.symphony.tests.test_package.PackageContractTests.test_codex_windows_hooks_run_without_a_working_py_launcher -v
+
   verify:
     runs-on: ubuntu-latest
     permissions:
@@ -95,7 +107,7 @@ jobs:
           python3 .github/scripts/assert_heartbeat.py claude
 
   release:
-    needs: verify
+    needs: [verify, windows-hooks]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
