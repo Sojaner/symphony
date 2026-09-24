@@ -16,12 +16,16 @@ if (( available_kib < 32 * 1024 * 1024 )); then
   exit 1
 fi
 
-mkdir -p "$work/oem/plugins" "$work/shared" "$work/storage"
-cp -a "$repo/plugins/symphony" "$work/oem/plugins/"
+mkdir -p "$work/oem" "$work/shared/plugins" "$work/storage"
+cp -a "$repo/plugins/symphony" "$work/shared/plugins/"
 cp "$repo/.github/scripts/dockur_install.bat" "$work/oem/install.bat"
 cp "$repo/.github/scripts/dockur_run.ps1" "$work/oem/"
-curl -fL --retry 3 --output "$work/oem/python-3.12.10-amd64.exe" \
-  https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
+if [[ -n ${DOCKUR_SNAPSHOT_ARCHIVE:-} ]]; then
+  tar -I zstd -xf "$DOCKUR_SNAPSHOT_ARCHIVE" -C "$work/storage"
+else
+  curl -fL --retry 3 --output "$work/oem/python-3.12.10-amd64.exe" \
+    https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
+fi
 
 kvm=(--env KVM=N)
 if [[ -e /dev/kvm ]]; then
@@ -45,6 +49,13 @@ while (( SECONDS < deadline )); do
     result=$(tr -d '\r\n' < "$work/shared/receipt.txt")
     [[ "$result" == PASS ]] || { echo "Windows guest reported $result" >&2; exit 1; }
     echo 'Windows guest hook test PASS'
+    if [[ -n ${DOCKUR_SNAPSHOT_OUT:-} ]]; then
+      [[ -f "$work/storage/windows.boot" ]] || { echo 'Windows install marker missing' >&2; exit 1; }
+      docker stop --timeout 120 "$name" >/dev/null
+      tar -C "$work/storage" --exclude='*.iso' --exclude='setup.img' \
+        -I 'zstd -T0 -3' -cf "$DOCKUR_SNAPSHOT_OUT" .
+      sha256sum "$DOCKUR_SNAPSHOT_OUT"
+    fi
     exit 0
   fi
   if [[ $(docker inspect -f '{{.State.Running}}' "$name") != true ]]; then

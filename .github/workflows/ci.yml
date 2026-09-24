@@ -5,6 +5,30 @@ on:
   pull_request:
 
 jobs:
+  bootstrap-windows-snapshot:
+    if: github.ref == 'refs/heads/verify-dockur-windows'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish and verify private Windows guest snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export DOCKUR_SNAPSHOT_OUT="$RUNNER_TEMP/windows-storage.tar.zst"
+          bash .github/scripts/dockur_windows_smoke.sh
+          DOCKUR_SNAPSHOT_ARCHIVE="$DOCKUR_SNAPSHOT_OUT" bash .github/scripts/dockur_windows_smoke.sh
+          mkdir "$RUNNER_TEMP/snapshot-context"
+          mv "$DOCKUR_SNAPSHOT_OUT" "$RUNNER_TEMP/snapshot-context/windows-storage.tar.zst"
+          docker build -f .github/scripts/Dockerfile.windows-snapshot \
+            -t ghcr.io/opennoor/symphony-windows-base:win10-ltsc-py312-v1 "$RUNNER_TEMP/snapshot-context"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push ghcr.io/opennoor/symphony-windows-base:win10-ltsc-py312-v1
+          test "$(gh api orgs/opennoor/packages/container/symphony-windows-base --jq .visibility)" = private
+
   dockur-windows:
     runs-on: ubuntu-latest
     timeout-minutes: 180
