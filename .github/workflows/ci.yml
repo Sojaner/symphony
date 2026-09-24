@@ -6,7 +6,7 @@ on:
 
 jobs:
   dockur-windows:
-    # Never give fork-controlled workflow code access to the private Windows image.
+    # Skip this job for fork PRs by default; this is not a package-access boundary.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 180
