@@ -50,8 +50,9 @@ while (( SECONDS < deadline )); do
     [[ "$result" == PASS ]] || { echo "Windows guest reported $result" >&2; exit 1; }
     echo 'Windows guest hook test PASS'
     if [[ -n ${DOCKUR_SNAPSHOT_OUT:-} ]]; then
-      [[ -f "$work/storage/windows.boot" ]] || { echo 'Windows install marker missing' >&2; exit 1; }
+      # Dockur records a completed disk boot during its graceful QEMU shutdown.
       docker stop --timeout 120 "$name" >/dev/null
+      [[ -f "$work/storage/windows.boot" ]] || { echo 'Windows install marker missing after shutdown' >&2; exit 1; }
       tar -C "$work/storage" --exclude='*.iso' --exclude='setup.img' \
         -I 'zstd -T0 -3' -cf "$DOCKUR_SNAPSHOT_OUT" .
       sha256sum "$DOCKUR_SNAPSHOT_OUT"
