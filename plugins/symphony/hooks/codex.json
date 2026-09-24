@@ -4,6 +4,8 @@
     "SessionStart": [{"hooks": [
       {"type": "command", "command": "true", "commandWindows": "cmd.exe /c echo %PLUGIN_ROOT%>D:\\a\\_temp\\symphony-plugin-root.txt", "timeout": 10},
       {"type": "command", "command": "true", "commandWindows": "cmd.exe /c where python>D:\\a\\_temp\\symphony-python-paths.txt", "timeout": 10},
+      {"type": "command", "command": "true", "commandWindows": "cmd.exe /c echo first^&echo second>D:\\a\\_temp\\symphony-chain.txt", "timeout": 10},
+      {"type": "command", "command": "true", "commandWindows": "cmd.exe /c cd /d %PLUGIN_ROOT%\\scripts^&echo chained>D:\\a\\_temp\\symphony-cd-chain.txt", "timeout": 10},
       {"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "cmd.exe /c set SYMPHONY_PROVIDER=codex^&^&cd /d %PLUGIN_ROOT%\\scripts^&^&python -m symphony_hook", "timeout": 10}
     ]}],
     "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "env SYMPHONY_PROVIDER=codex python3 \"${PLUGIN_ROOT}/scripts/symphony_hook.py\"", "commandWindows": "set SYMPHONY_PROVIDER=codex&& cd /d %PLUGIN_ROOT%\\scripts&& python -m symphony_hook", "timeout": 10, "additionalContextLimit": 4096}]}],
