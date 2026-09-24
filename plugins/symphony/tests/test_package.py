@@ -99,6 +99,7 @@ class PackageContractTests(unittest.TestCase):
             shutil.copytree(PLUGIN, root)
             project = home / "Current Project"
             project.mkdir()
+            (project / "symphony_hook.py").write_text("raise SystemExit(79)\n")
             state_root = home / "state"
             launcher_dir = home / "broken launcher"
             launcher_dir.mkdir()
@@ -121,7 +122,8 @@ class PackageContractTests(unittest.TestCase):
             # Codex wraps commandWindows in quotes when calling cmd.exe /C.
             def run_hook(command: str, payload: str, environment: dict[str, str]):
                 return subprocess.run(f'cmd.exe /C "{command}"', input=payload,
-                                      capture_output=True, text=True, env=environment, check=False)
+                                      capture_output=True, text=True, env=environment,
+                                      cwd=project, check=False)
 
             payload = json.dumps({"hook_event_name": "SessionStart", "session_id": "windows-session",
                                   "cwd": str(project)})
