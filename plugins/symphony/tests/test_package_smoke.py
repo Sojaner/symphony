@@ -189,14 +189,18 @@ class PackageSmokeTests(unittest.TestCase):
 
     def test_upgrade_reloads_new_materialized_version(self):
         """Catches reusing a removed versioned cache path after an upgrade."""
-        with tempfile.TemporaryDirectory() as candidate_dir, tempfile.TemporaryDirectory() as home_dir:
+        with tempfile.TemporaryDirectory() as candidate_dir:
             candidate = self.make_candidate(Path(candidate_dir))
-            result = run_smoke("claude", candidate, "upgrade", Path(home_dir))
+            for provider in ("codex", "claude"):
+                with self.subTest(provider=provider), tempfile.TemporaryDirectory() as home_dir:
+                    result = run_smoke(provider, candidate, "upgrade", Path(home_dir))
 
-            self.assertTrue(result["ok"])
-            self.assertEqual(["1.0.0", "1.0.1"], result["heartbeat_versions"])
-            self.assertNotEqual(*result["loaded_roots"])
-            self.assertTrue(result["loaded_roots"][1].endswith("/1.0.1"))
+                    self.assertTrue(result["ok"], result.get("error"))
+                    self.assertEqual(["1.0.0", "1.0.1"], result["heartbeat_versions"])
+                    self.assertNotEqual(*result["loaded_roots"])
+                    self.assertFalse(Path(result["loaded_roots"][0]).exists())
+                    self.assertTrue(result["loaded_roots"][1].endswith("/1.0.1"))
+                    self.assertNotEqual(0, result["stale_hook_exit"])
 
     def test_missing_hook_executable_is_a_fault(self):
         """Catches reporting trust-pending when the packaged command target is absent."""

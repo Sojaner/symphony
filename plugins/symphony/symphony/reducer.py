@@ -377,7 +377,7 @@ def _force_stop(state: ProjectState, event: Event):
     if active:
         actions.append(Action("stop_delegations", {"active": active}))
     actions.extend((Action("archive_run", {"run_id": run.run_id}), Action("permit_stop")))
-    return _archive(state, run, "force_stopped", event.observed_at), tuple(actions)
+    return _archive(state, replace(run, unreconciled=tuple(active)), "force_stopped", event.observed_at), tuple(actions)
 
 
 _Handler = Callable[[ProjectState, Event], tuple[ProjectState, tuple[Action, ...]]]

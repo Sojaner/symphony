@@ -286,24 +286,16 @@ def _reconcile_session(
     observed_run_id = payload.get("run_id")
     if observed_run_id is not None and str(observed_run_id) != run.run_id:
         return state, ()
+    if run.session_id and session_id != run.session_id and not _owner_is_quiet(run, source.observed_at):
+        # A foreign terminal's resume or roster says nothing about a live owner.
+        return state, (Action("run_owned_elsewhere", {"session_id": run.session_id}),)
     if isinstance(active_ids, list):
         # A malformed roster is incomplete evidence, not an empty roster.
         if any(not isinstance(item, str) or not item for item in active_ids):
             return state, ()
         observed = list(active_ids)
     elif run.session_id and session_id and session_id != run.session_id:
-        # Neither host reports a liveness list, and a second terminal in the
-        # same project is indistinguishable from a resumed one. Treating that
-        # as proof of death killed live leads, told the root to spawn a
-        # replacement, and handed the run to the stranger, after which the two
-        # sessions rewrote the owner back and forth forever. Adoption now waits
-        # for the owner to actually go quiet.
-        # A host that says it resumed is telling us the earlier process ended,
-        # which is exact. Codex sends no such field, so there the quiet window
-        # is all we have and the conservative branch is the default.
-        resumed = str(payload.get("source") or "").lower() in {"resume", "compact", "clear"}
-        if not resumed and not _owner_is_quiet(run, source.observed_at):
-            return state, (Action("run_owned_elsewhere", {"session_id": run.session_id}),)
+        # A quiet owner can be recovered even when the host has no roster.
         observed = []
     else:
         return state, ()
@@ -1487,7 +1479,7 @@ def _render_actions(
             rendered.append(Action("inject_context", {"text": "Symphony recorded the interruption for safe reconciliation on resume."}))
         elif action.kind == "stop_delegations":
             identities = ", ".join(map(str, action.payload.get("active", ())))
-            rendered.append(Action("inject_context", {"text": f"Stop these tracked Symphony agents, then let lifecycle hooks reconcile them: {identities}."}))
+            rendered.append(Action("inject_context", {"text": f"Stop these tracked Symphony agents and verify their host status: {identities}."}))
         elif action.kind == "replace_lead":
             rendered.append(Action("inject_context", {"text": "The observed lead is unavailable. Spawn one safe replacement at the recorded owner generation."}))
         elif action.kind == "route_run":
@@ -1701,19 +1693,19 @@ def _status(
                 f"This run is transactional: it governs this task only, and the next prompt is "
                 f"ungoverned. Run `{control}` to govern every prompt in this project."
             )
-    # An abandoned run is already archived, so surface it even without history.
-    abandoned = next(
+    # Archived unresolved work must remain visible without --all.
+    unresolved = next(
         (
             run
             for run in reversed(state.recent_runs)
-            if run.status == "abandoned" and run.unreconciled
+            if run.status in {"abandoned", "force_stopped"} and run.unreconciled
         ),
         None,
     )
-    if abandoned:
+    if unresolved:
         lines.append(
-            f"Abandoned run {abandoned.run_id}: never reconciled "
-            + ", ".join(abandoned.unreconciled)
+            f"{unresolved.status.replace('_', ' ').capitalize()} run {unresolved.run_id}: never reconciled "
+            + ", ".join(unresolved.unreconciled)
         )
     records = [item for run in runs if run for item in run.delegations]
     if include_history:

@@ -154,6 +154,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("guarded", self.context(result).lower())
         self.assertNotIn("unarmed", self.context(result).lower())
 
+    def test_status_names_agents_left_unreconciled_by_force_stop(self):
+        run = RunState(
+            "run-1", "task", session_id="codex-session",
+            delegations=(Delegation("lead-1", "lead", "work", "working", "", ""),),
+        )
+        StateStore(self.state_root).save(self.project, ProjectState(enabled=True, active_run=run))
+
+        handle(self.payload("$symphony:symphony stop --force"), self.environ)
+        state = StateStore(self.state_root).load(self.project)
+        status = self.context(handle(self.payload("$symphony:symphony status"), self.environ))
+
+        self.assertIsNone(state.active_run)
+        self.assertEqual(state.recent_runs[-1].status, "force_stopped")
+        self.assertEqual(state.recent_runs[-1].unreconciled, ("lead-1",))
+        self.assertIn("lead-1", status)
+        self.assertIn("never reconciled", status)
+
     def test_status_names_the_current_project_and_empty_run_scope(self):
         text = self.context(handle(self.payload("$symphony:symphony status"), self.environ))
         self.assertIn("Symphony (this project): disabled", text)
@@ -1702,13 +1719,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(state.recent_runs[-1].status, "abandoned")
         self.assertEqual(state.recent_runs[-1].unreconciled, ("assessor-1",))
 
-    def test_resumed_session_reconciles_delegations_the_host_cannot_list(self):
-        """A host that reports a resume is telling us the old process ended.
-
-        A session id it has never seen is not the same claim: that is also what
-        a second terminal in the same project looks like, and taking the run
-        over on that evidence killed live leads.
-        """
+    def test_quiet_owner_can_be_recovered_without_a_host_roster(self):
         self.open_run("Ship it")
         handle(
             {
@@ -1719,6 +1730,11 @@ class RuntimeTests(unittest.TestCase):
             },
             self.environ,
         )
+
+        path = next(self.state_root.glob("*.json"))
+        document = json.loads(path.read_text())
+        document["active_run"]["owner_seen_at"] = "2020-01-01T00:00:00+00:00"
+        path.write_text(json.dumps(document))
 
         resumed = {
             **self.payload(""),
