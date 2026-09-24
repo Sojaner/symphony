@@ -57,6 +57,10 @@ jobs:
             Select-String -Path $_.FullName -Pattern 'hook.*failed|hook.*error|commandWindows|symphony_hook' |
               ForEach-Object { $_.Line.Replace($env:OPENAI_API_KEY, '<REDACTED>') | Write-Host }
           }
+          Get-ChildItem (Join-Path $env:CODEX_HOME 'sessions') -Recurse -File -Filter '*.jsonl' | ForEach-Object {
+            Select-String -Path $_.FullName -Pattern 'HookCompleted|hook_completed|hook_result|hook_error' |
+              ForEach-Object { $_.Line.Replace($env:OPENAI_API_KEY, '<REDACTED>') | Write-Host }
+          }
           python .github/scripts/assert_heartbeat.py codex
           if ($LASTEXITCODE -ne 0) { throw 'Codex heartbeat missing' }
 
