@@ -107,6 +107,71 @@ class PackageContractTests(unittest.TestCase):
             self.assertEqual(activation["session_id"], "bom-session")
             self.assertEqual(activation["state"], "guarded")
 
+    def test_codex_activation_check_requires_matching_current_session_and_plugin(self):
+        from plugins.symphony.symphony.store import project_key
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            project.mkdir()
+            state_root = Path(directory) / "state"
+            environment = {**os.environ, "SYMPHONY_STATE_DIR": str(state_root),
+                           "SYMPHONY_PROVIDER": "codex", "CODEX_SESSION_ID": "root-session"}
+            checker = PLUGIN / "scripts/check_activation.py"
+
+            def check(env=environment):
+                return subprocess.run([sys.executable, str(checker)], cwd=project,
+                                      capture_output=True, text=True, env=env, check=False)
+
+            self.assertNotEqual(check().returncode, 0)
+            hook = subprocess.run(
+                [sys.executable, str(PLUGIN / "scripts/symphony_hook.py")],
+                input=json.dumps({"hook_event_name": "UserPromptSubmit",
+                                  "session_id": "root-session", "cwd": str(project), "prompt": "hello"}),
+                capture_output=True, text=True, env=environment, check=False,
+            )
+            self.assertEqual(hook.returncode, 0, hook.stderr)
+            current = check({**environment, "CODEX_THREAD_ID": "child-thread"})
+            self.assertEqual(current.returncode, 0, current.stdout)
+            self.assertIn("guarded", current.stdout)
+
+            other = subprocess.run(
+                [sys.executable, str(PLUGIN / "scripts/symphony_hook.py")],
+                input=json.dumps({"hook_event_name": "SessionStart",
+                                  "session_id": "other-session", "cwd": str(project)}),
+                capture_output=True, text=True, env=environment, check=False,
+            )
+            self.assertEqual(other.returncode, 0, other.stderr)
+            self.assertEqual(check().returncode, 0, "another session hid this session's heartbeat")
+
+            self.assertEqual(subprocess.run(
+                [sys.executable, str(PLUGIN / "scripts/symphony_hook.py")],
+                input=json.dumps({"hook_event_name": "SessionStart",
+                                  "session_id": "root-session", "cwd": str(project)}),
+                capture_output=True, text=True, env=environment, check=False,
+            ).returncode, 0)
+
+            path = state_root / f"{project_key(project)}.json"
+            original = path.read_text()
+            self.assertNotEqual(check({**environment, "CODEX_SESSION_ID": "unknown-session"}).returncode, 0)
+            document = json.loads(original)
+            foreign = next(event for event in document["event_history"]
+                           if event["kind"] == "session_heartbeat")
+            foreign["payload"].update({"provider": "claude", "session_id": "unknown-session"})
+            path.write_text(json.dumps(document))
+            self.assertNotEqual(check({**environment, "CODEX_SESSION_ID": "unknown-session"}).returncode, 0)
+            for key, value in (("plugin_version", "0.0.0"), ("plugin_root", "/other/plugin"),
+                               ("hook_schema_version", -1), ("observed_at", "")):
+                document = json.loads(original)
+                document["activation"]["codex"][key] = value
+                document["event_history"] = []
+                path.write_text(json.dumps(document))
+                with self.subTest(key=key):
+                    self.assertNotEqual(check().returncode, 0)
+            path.write_text(original)
+            self.assertNotEqual(check({key: value for key, value in environment.items()
+                                       if key != "CODEX_SESSION_ID"}).returncode, 0)
+            self.assertEqual(path.read_text(), original)
+
     def test_codex_windows_hooks_use_the_packaged_launcher(self):
         import base64
 
