@@ -1,4 +1,5 @@
 $env:SYMPHONY_PROVIDER = 'codex'
+$env:SYMPHONY_DIAGNOSTIC_INPUT = 'D:\a\_temp\symphony-child-input.txt'
 $script = Join-Path $env:PLUGIN_ROOT 'scripts/symphony_hook.py'
 $start = New-Object System.Diagnostics.ProcessStartInfo
 $start.FileName = 'python'

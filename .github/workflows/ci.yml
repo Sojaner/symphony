@@ -52,7 +52,7 @@ jobs:
           if (Test-Path $diagnostic) { Get-Content $diagnostic } else { Write-Host 'Host command did not reach diagnostic echo' }
           $runnerDiagnostic = Join-Path $env:RUNNER_TEMP 'symphony-hook-debug.txt'
           if (Test-Path $runnerDiagnostic) { Get-Content $runnerDiagnostic } else { Write-Host 'Host command did not reach absolute runner-temp echo' }
-          foreach ($name in 'symphony-plugin-root.txt','symphony-python-paths.txt','symphony-chain.txt','symphony-cd-chain.txt','symphony-powershell-marker.txt','symphony-powershell-exit.txt','symphony-powershell-error.txt') {
+          foreach ($name in 'symphony-plugin-root.txt','symphony-python-paths.txt','symphony-chain.txt','symphony-cd-chain.txt','symphony-powershell-marker.txt','symphony-powershell-exit.txt','symphony-powershell-error.txt','symphony-child-input.txt') {
             $path = Join-Path $env:RUNNER_TEMP $name
             if (Test-Path $path) { Write-Host "$name $((Get-Content $path -Raw).Replace($env:OPENAI_API_KEY, '<REDACTED>'))" } else { Write-Host "$name absent" }
           }
