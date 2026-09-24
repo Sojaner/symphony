@@ -1,6 +1,19 @@
 $env:SYMPHONY_PROVIDER = 'codex'
-$payload = [Console]::In.ReadToEnd()
-Set-Content -LiteralPath 'D:\a\_temp\symphony-powershell-marker.txt' -Value "root=$env:PLUGIN_ROOT payload_length=$($payload.Length) state=$env:SYMPHONY_STATE_DIR"
-$payload | python (Join-Path $env:PLUGIN_ROOT 'scripts/symphony_hook.py') 2> 'D:\a\_temp\symphony-powershell-error.txt'
-Set-Content -LiteralPath 'D:\a\_temp\symphony-powershell-exit.txt' -Value $LASTEXITCODE
-exit $LASTEXITCODE
+$script = Join-Path $env:PLUGIN_ROOT 'scripts/symphony_hook.py'
+$start = New-Object System.Diagnostics.ProcessStartInfo
+$start.FileName = 'python'
+$start.Arguments = '"' + $script + '"'
+$start.UseShellExecute = $false
+$start.RedirectStandardInput = $true
+$start.RedirectStandardOutput = $true
+$start.RedirectStandardError = $true
+$child = [System.Diagnostics.Process]::Start($start)
+Set-Content -LiteralPath 'D:\a\_temp\symphony-powershell-marker.txt' -Value "root=$env:PLUGIN_ROOT state=$env:SYMPHONY_STATE_DIR child=$($child.Id)"
+$outTask = $child.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())
+$errTask = $child.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())
+[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)
+$child.StandardInput.Close()
+$child.WaitForExit()
+[System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))
+Set-Content -LiteralPath 'D:\a\_temp\symphony-powershell-exit.txt' -Value $child.ExitCode
+exit $child.ExitCode
