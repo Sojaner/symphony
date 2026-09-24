@@ -136,7 +136,7 @@ class PackageContractTests(unittest.TestCase):
             self.assertEqual(activation["session_id"], "windows-session")
             self.assertEqual(activation["state"], "guarded")
             self.assertEqual(activation["plugin_version"], load_json(".codex-plugin/plugin.json")["version"])
-            self.assertEqual(activation["plugin_root"], str(root))
+            self.assertTrue(os.path.samefile(activation["plugin_root"], root))
             self.assertEqual(activation["hook_schema_version"], HOOK_SCHEMA_VERSION)
             self.assertTrue(activation["observed_at"])
 
