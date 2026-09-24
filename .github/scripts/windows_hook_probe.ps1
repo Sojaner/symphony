@@ -11,7 +11,14 @@ $child = [System.Diagnostics.Process]::Start($start)
 Set-Content -LiteralPath 'D:\a\_temp\symphony-powershell-marker.txt' -Value "root=$env:PLUGIN_ROOT state=$env:SYMPHONY_STATE_DIR child=$($child.Id)"
 $outTask = $child.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())
 $errTask = $child.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())
-[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)
+$source = [Console]::OpenStandardInput()
+$buffer = New-Object byte[] 8192
+$bytes = 0
+while (($count = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+    $child.StandardInput.BaseStream.Write($buffer, 0, $count)
+    $bytes += $count
+}
+Add-Content -LiteralPath 'D:\a\_temp\symphony-powershell-marker.txt' -Value "bytes=$bytes"
 $child.StandardInput.Close()
 $child.WaitForExit()
 [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))
