@@ -34,7 +34,8 @@ docker run -d --name "$name" --stop-timeout 120 \
   "${kvm[@]}" --device /dev/net/tun --cap-add NET_ADMIN \
   --volume "$work/storage:/storage" \
   --volume "$work/shared:/shared" \
-  --volume "$work/oem:/oem:ro" docker.io/dockurr/windows:latest >/dev/null
+  --volume "$work/oem:/oem:ro" \
+  docker.io/dockurr/windows@sha256:0cff9eb0e7aee9953e55bc682852ca4fdca233145a58ae1ec94f0b0c01a2ed30 >/dev/null
 
 deadline=$((SECONDS + 7200))
 while (( SECONDS < deadline )); do
