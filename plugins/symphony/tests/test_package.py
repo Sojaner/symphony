@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -134,9 +135,13 @@ class PackageContractTests(unittest.TestCase):
             launcher_dir = home / "broken launcher"
             launcher_dir.mkdir()
             (launcher_dir / "py.exe").write_bytes(b"not a Windows executable")
+            alias_dir = home / "WindowsApps-like alias"
+            alias_dir.mkdir()
+            (alias_dir / "python.exe").write_bytes(b"not a Windows executable")
             env = os.environ.copy()
             env.update({
                 "PATH": os.pathsep.join((str(launcher_dir), str(Path(sys.executable).parent),
+                                          str(alias_dir),
                                           str(Path(os.environ["SystemRoot"]) / "System32"),
                                           str(Path(os.environ["SystemRoot"]) / "System32" /
                                               "WindowsPowerShell" / "v1.0"))),
@@ -166,6 +171,17 @@ class PackageContractTests(unittest.TestCase):
                                             "cwd": str(project)})
                 result = run_hook(command, event_payload, env)
                 self.assertEqual(result.returncode, 0, f"{event}: {result.stderr}")
+            interrupt = config["hooks"]["Interrupt"][0]["hooks"][0]["commandWindows"]
+            timings = []
+            for _ in range(6):
+                started = time.perf_counter()
+                result = run_hook(interrupt, json.dumps({"hook_event_name": "Interrupt",
+                                                        "session_id": "windows-session",
+                                                        "cwd": str(project)}), env)
+                timings.append(time.perf_counter() - started)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertLess(max(timings), 3, f"Interrupt hook exceeded 3s: {timings}")
+            print(f"Windows Interrupt hook max {max(timings):.2f}s across {len(timings)} runs")
             activation = StateStore(state_root).load(project).activation["codex"]
             self.assertEqual(activation["session_id"], "windows-session")
             self.assertEqual(activation["state"], "guarded")

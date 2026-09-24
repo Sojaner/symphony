@@ -15,7 +15,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Execute every packaged Codex Windows hook with broken py
-        continue-on-error: true # temporary launcher-policy probe
         run: python -m unittest plugins.symphony.tests.test_package.PackageContractTests.test_codex_windows_hooks_run_without_a_working_py_launcher -v
 
       - name: Install Codex CLI
@@ -48,12 +47,6 @@ jobs:
             --output-last-message (Join-Path $env:RUNNER_TEMP 'codex-windows-help.txt') `
             -C $env:GITHUB_WORKSPACE '$symphony:symphony help'
           if ($LASTEXITCODE -ne 0) { throw 'Codex control failed' }
-          foreach ($name in 'symphony-launcher-entry.txt','symphony-relay-entry.txt') {
-            $path = Join-Path $env:RUNNER_TEMP $name
-            if (Test-Path $path) { Write-Host "$name $(Get-Content $path -Raw)" } else { Write-Host "$name absent" }
-          }
-          Get-ExecutionPolicy -List | Out-String | Write-Host
-          Get-Item (Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'scripts/codex_hook.ps1') -Stream Zone.Identifier -ErrorAction SilentlyContinue | Out-String | Write-Host
           python .github/scripts/assert_heartbeat.py codex
           if ($LASTEXITCODE -ne 0) { throw 'Codex heartbeat missing' }
 
