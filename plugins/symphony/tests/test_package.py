@@ -84,7 +84,7 @@ class PackageContractTests(unittest.TestCase):
         for handler in handlers("hooks/codex.json"):
             command = handler["commandWindows"]
             self.assertIn("set SYMPHONY_PROVIDER=codex&&", command)
-            self.assertIn("set PYTHONPATH=%PLUGIN_ROOT%\\scripts&& python -m symphony_hook", command)
+            self.assertIn("cd /d %PLUGIN_ROOT%\\scripts&& python -m symphony_hook", command)
             self.assertNotIn('"', command)
             self.assertNotIn("${PLUGIN_ROOT}", command)
 
