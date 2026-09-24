@@ -33,7 +33,7 @@ Native syntax is `$symphony:symphony <task-or-control>`.
 - On Windows, if `/hooks` shows a trusted hook but this project's heartbeat is absent, check `where.exe python` and `python --version` in the environment that launches Codex. Put a working Python on `PATH`, restart Codex, review the changed hook, and submit a prompt; an interpreter launch failure is a hook fault.
 - `--dangerously-bypass-hook-trust` is for already-vetted automation, never normal onboarding.
 
-PR #2 introduced `py -3`; its test only asserted manifest text, while CI ran on Linux. The 1.4.2 change quoted the script path but kept that launcher. WindowsApps `py.exe` can fail before Symphony writes any state. Before claiming Windows activation works, execute all six packaged `commandWindows` entries on Windows with an unusable `py`, a plugin path containing spaces, and a matching guarded heartbeat.
+PR #2 introduced `py -3`; its test only asserted manifest text, while CI ran on Linux. The 1.4.2 change kept that launcher and quoted the script path, but [Codex wraps Windows hook commands in outer quotes](https://github.com/openai/codex/blob/main/codex-rs/hooks/src/engine/command_runner.rs), which can break embedded quotes. WindowsApps `py.exe` can also fail before Symphony writes any state. Before claiming Windows activation works, execute all six packaged `commandWindows` entries on Windows with an unusable `py`, a plugin path containing spaces, and a matching guarded heartbeat.
 
 ## Claude Code
 

@@ -80,15 +80,17 @@ class PackageContractTests(unittest.TestCase):
             self.assertEqual(activation["session_id"], "python310-smoke")
             self.assertEqual(activation["state"], "guarded")
 
-    def test_codex_windows_hooks_quote_script_paths_with_spaces(self):
+    def test_codex_windows_hooks_use_quote_free_module_command(self):
         for handler in handlers("hooks/codex.json"):
             command = handler["commandWindows"]
             self.assertIn("set SYMPHONY_PROVIDER=codex&&", command)
-            self.assertIn('python "%PLUGIN_ROOT%\\scripts\\symphony_hook.py"', command)
+            self.assertIn("set PYTHONPATH=%PLUGIN_ROOT%\\scripts&& python -m symphony_hook", command)
+            self.assertNotIn('"', command)
             self.assertNotIn("${PLUGIN_ROOT}", command)
 
     @unittest.skipUnless(os.name == "nt", "runs the Windows shell command")
     def test_codex_windows_hooks_run_without_a_working_py_launcher(self):
+        from plugins.symphony.symphony import HOOK_SCHEMA_VERSION
         from plugins.symphony.symphony.store import StateStore
 
         with tempfile.TemporaryDirectory() as directory:
@@ -116,19 +118,35 @@ class PackageContractTests(unittest.TestCase):
                                        capture_output=True, text=True, env=env, check=False)
             self.assertNotEqual(broken_py.returncode, 0)
             config = load_json("hooks/codex.json")
+            # Codex wraps commandWindows in quotes when calling cmd.exe /C.
+            def run_hook(command: str, payload: str, environment: dict[str, str]):
+                return subprocess.run(f'cmd.exe /C "{command}"', input=payload,
+                                      capture_output=True, text=True, env=environment, check=False)
+
+            payload = json.dumps({"hook_event_name": "SessionStart", "session_id": "windows-session",
+                                  "cwd": str(project)})
             for event, groups in config["hooks"].items():
                 command = next(handler["commandWindows"] for group in groups
                                for handler in group["hooks"])
-                result = subprocess.run(
-                    ["cmd", "/d", "/s", "/c", command],
-                    input=json.dumps({"hook_event_name": event, "session_id": "windows-session",
-                                      "cwd": str(project)}),
-                    capture_output=True, text=True, env=env, check=False,
-                )
+                event_payload = json.dumps({"hook_event_name": event, "session_id": "windows-session",
+                                            "cwd": str(project)})
+                result = run_hook(command, event_payload, env)
                 self.assertEqual(result.returncode, 0, f"{event}: {result.stderr}")
             activation = StateStore(state_root).load(project).activation["codex"]
             self.assertEqual(activation["session_id"], "windows-session")
             self.assertEqual(activation["state"], "guarded")
+            self.assertEqual(activation["plugin_version"], load_json(".codex-plugin/plugin.json")["version"])
+            self.assertEqual(activation["plugin_root"], str(root))
+            self.assertEqual(activation["hook_schema_version"], HOOK_SCHEMA_VERSION)
+            self.assertTrue(activation["observed_at"])
+
+            (launcher_dir / "python.exe").write_bytes(b"not a Windows executable")
+            missing_state = home / "missing-python-state"
+            env["SYMPHONY_STATE_DIR"] = str(missing_state)
+            start = config["hooks"]["SessionStart"][0]["hooks"][0]["commandWindows"]
+            failed = run_hook(start, payload, env)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertFalse(missing_state.exists())
 
     def test_hook_manifests_contain_only_supported_events(self):
         self.assertEqual(
