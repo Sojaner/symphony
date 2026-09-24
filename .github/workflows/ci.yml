@@ -5,6 +5,16 @@ on:
   pull_request:
 
 jobs:
+  dockur-windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Windows hook test inside Dockur guest
+        run: bash .github/scripts/dockur_windows_smoke.sh
+
   windows-hooks:
     runs-on: windows-latest
     permissions:
@@ -148,7 +158,7 @@ jobs:
           python3 .github/scripts/assert_heartbeat.py claude
 
   release:
-    needs: [verify, windows-hooks]
+    needs: [verify, windows-hooks, dockur-windows]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
