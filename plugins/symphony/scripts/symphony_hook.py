@@ -19,5 +19,5 @@ if __name__ == "__main__":
             f"{len(payload_bytes)} {payload_bytes[:16].hex()} {payload_bytes[-16:].hex()}",
             encoding="ascii",
         )
-        sys.stdin = io.TextIOWrapper(io.BytesIO(payload_bytes), encoding="utf-8")
+        sys.stdin = io.TextIOWrapper(io.BytesIO(payload_bytes), encoding="utf-8-sig")
     raise SystemExit(main())
