@@ -67,10 +67,14 @@ def _heartbeat(state: ProjectState, event: Event):
             "profile": str(event.payload.get("profile") or ""),
             "claude_probe_attempted": bool(event.payload.get("claude_probe_attempted")),
         })
+    pending = list(previous.get("pending_sessions") or ()) if isinstance(previous, Mapping) else []
+    if session and event.payload.get("pending_task") and session not in pending:
+        pending.append(session)
     owners = {run.session_id for key, run in state.active_runs.items()
               if key.startswith(f"{provider}:")}
     if state.active_run:
         owners.add(state.active_run.session_id)
+    owners.update(pending)
     session_profiles = [item for item in session_profiles
                         if item.get("session_id") in owners or item in session_profiles[-4:]]
     facts = {
@@ -90,6 +94,7 @@ def _heartbeat(state: ProjectState, event: Event):
         # this one had accepted, and `proceed` silently stopped holding.
         "accepted": _preserved_consent(state.activation.get(provider)),
         "session_profiles": session_profiles,
+        "pending_sessions": pending,
     }
     activation[provider] = {key: value for key, value in facts.items() if value is not None}
     return replace(state, activation=activation), ()
@@ -117,6 +122,7 @@ def _route_accepted(state: ProjectState, event: Event):
         # session that ever touched it.
         owners = {run.session_id for key, run in state.active_runs.items()
                   if key.startswith(f"{provider}:")}
+        owners.update(record.get("pending_sessions") or ())
         record["accepted"] = {
             owner: value for owner, value in accepted.items()
             if owner in owners or owner in list(accepted)[-4:]

@@ -354,6 +354,25 @@ class EntitlementProbeTests(unittest.TestCase):
         self.assertFalse(activation.get("profile"))
         self.assertTrue(activation["claude_probe_attempted"])
 
+    def test_pending_claude_root_does_not_reprobe_after_other_starts(self):
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
+        with patch("plugins.symphony.symphony.runtime._claude_accepts", return_value=True) as probe:
+            for index in range(6):
+                payload = {"session_id": f"starting-{index}", "cwd": str(self.project),
+                           "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:start fix it"}
+                handle(payload, environ)
+            oldest = {"session_id": "starting-0", "cwd": str(self.project),
+                      "hook_event_name": "UserPromptSubmit", "prompt": "Continue the task"}
+            handle(oldest, environ)
+
+        self.assertEqual(probe.call_count, 12)
+        activation = StateStore(self.state_root).load(self.project).activation["claude"]
+        self.assertIn("starting-0", activation["pending_sessions"])
+        self.assertEqual(
+            next(item for item in activation["session_profiles"]
+                 if item["session_id"] == "starting-0")["profile"], "opus",
+        )
+
     def test_other_session_does_not_replace_active_owner_profile(self):
         environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
         owner = {"session_id": "owner", "cwd": str(self.project)}

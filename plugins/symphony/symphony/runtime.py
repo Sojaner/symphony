@@ -74,7 +74,11 @@ def handle(payload: dict, environ: Mapping[str, str] = os.environ) -> HookResult
         scoped = _scope_state(state, current_key, current_session, provider)
         next_scoped, actions = _transition(scoped, current_source, provider, current_payload, environ)
         rendered = _render_actions(actions, next_scoped, provider, source.kind)
-        return _merge_scope(state, scoped, next_scoped, current_key, provider, current_session), rendered
+        merged = _merge_scope(state, scoped, next_scoped, current_key, provider, current_session)
+        control = _parse_control(str(payload.get("prompt") or "")) if source.kind == "user_prompt" else None
+        if next_scoped.active_run or source.kind == "stop_requested" or (control and control[0] in {"disable", "stop"}):
+            merged = _release_pending_session(merged, provider, current_session)
+        return merged, rendered
 
     actions = store.update(project, transition)
     return render(provider, actions, str(payload.get("hook_event_name") or "UserPromptSubmit"))
@@ -163,6 +167,17 @@ def _merge_scope(
     )
 
 
+def _release_pending_session(state: ProjectState, provider: str, session: str) -> ProjectState:
+    activation = dict(state.activation)
+    record = dict(activation.get(provider) or {})
+    pending = list(record.get("pending_sessions") or ())
+    if session not in pending:
+        return state
+    record["pending_sessions"] = [item for item in pending if item != session]
+    activation[provider] = record
+    return replace(state, activation=activation)
+
+
 def _transition(
     state: ProjectState,
     source: Event,
@@ -177,6 +192,12 @@ def _transition(
     if source.kind in {"session_heartbeat", "user_prompt"}:
         probe_claude = _should_probe_claude(state, source, provider, environ)
         previous = _session_profile_record(state, "claude", str(payload.get("session_id") or ""))
+        prompt = str(payload.get("prompt") or "").strip()
+        control = _parse_control(prompt) if source.kind == "user_prompt" else None
+        pending_task = bool(source.kind == "user_prompt" and not state.active_run and (
+            (control is None and state.enabled and prompt)
+            or (control and control[0] in {"start", "enable"} and control[1])
+        ))
         heartbeat = Event(
             source.event_id + ":" + source.observed_at + ":heartbeat",
             "session_heartbeat",
@@ -198,6 +219,7 @@ def _transition(
                     previous.get("claude_probe_attempted", False)
                     if previous.get("plugin_version") == PLUGIN_VERSION else False
                 ),
+                "pending_task": pending_task,
             },
         )
         state, heartbeat_actions = reduce(state, heartbeat)

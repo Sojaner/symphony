@@ -244,6 +244,37 @@ class RuntimeTests(unittest.TestCase):
             self.assertNotEqual(self.output(stop).get("decision"), "block")
         self.assertEqual(len(store.load(self.project).active_runs), 2)
 
+    def test_pending_root_keeps_profile_past_other_sessions_and_history_bound(self):
+        store = StateStore(self.state_root)
+        handle(self.payload("$symphony:symphony enable"), self.environ)
+        for index in range(6):
+            session = f"starting-{index}"
+            base = {**self.payload(""), "session_id": session}
+            handle({**base, "hook_event_name": "SessionStart"}, self.environ)
+            handle({**base, "prompt": f"Task for {session}"}, self.environ)
+        for index in range(205):
+            visitor = {**self.payload(""), "session_id": f"visitor-{index}",
+                       "hook_event_name": "SessionStart"}
+            handle(visitor, self.environ)
+        before = store.load(self.project)
+        self.assertEqual(len(before.event_history), 200)
+        self.assertFalse(before.active_runs)
+
+        oldest = {**self.payload(""), "session_id": "starting-0", "hook_event_name": "PreToolUse",
+                  "tool_name": "spawn_agent", "tool_input": {
+                      "message": "SYMPHONY_ROLE: assessor\nTask for starting-0",
+                      "model": CODEX_STRONGEST, "reasoning_effort": "high",
+                  }}
+        result = self.output(handle(oldest, self.environ))
+        after = store.load(self.project)
+
+        self.assertNotEqual(result.get("decision"), "block", result.get("reason"))
+        self.assertEqual(after.activation["codex"]["profile"], "full")
+        self.assertIn("codex:starting-0", after.active_runs)
+        self.assertNotIn("starting-0", after.activation["codex"]["pending_sessions"])
+        handle({**self.payload("$symphony:symphony stop"), "session_id": "starting-1"}, self.environ)
+        self.assertNotIn("starting-1", store.load(self.project).activation["codex"]["pending_sessions"])
+
     def test_one_shot_start_does_not_enable_project(self):
         result = handle(self.payload("$symphony:symphony start Check the release"), self.environ)
         self.assertIn("assess", self.context(result).lower())
