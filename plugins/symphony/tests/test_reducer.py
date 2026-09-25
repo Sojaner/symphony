@@ -62,6 +62,35 @@ class LifecycleReducerTests(unittest.TestCase):
         self.assertEqual(actions, (Action("project_enabled"),))
         self.assertEqual(heartbeat_actions, ())
 
+    def test_active_owner_heartbeat_and_consent_survive_other_sessions(self):
+        runs = {
+            f"codex:owner-{index}": RunState(
+                f"run-{index}", f"Task {index}", session_id=f"owner-{index}", provider="codex"
+            )
+            for index in range(6)
+        }
+        state = ProjectState(active_runs=runs)
+        for index in range(12):
+            session = f"owner-{index}" if index < 6 else f"visitor-{index}"
+            state, _ = reduce(state, event(
+                "session_heartbeat", event_id=f"heartbeat-{index}", provider="codex",
+                session_id=session, plugin_version="1.4.7", plugin_root=f"/plugin/{session}",
+                hook_schema_version=2, profile=f"profile-{session}",
+            ))
+            state, _ = reduce(state, event(
+                "route_accepted", event_id=f"accepted-{index}", provider="codex",
+                session_id=session, profile=f"profile-{session}", route="balanced",
+            ))
+
+        activation = state.activation["codex"]
+        profiles = {item["session_id"]: item for item in activation["session_profiles"]}
+        for index in range(6):
+            session = f"owner-{index}"
+            self.assertEqual(profiles[session]["plugin_root"], f"/plugin/{session}")
+            self.assertEqual(profiles[session]["hook_schema_version"], 2)
+            self.assertEqual(profiles[session]["observed_at"], NOW)
+            self.assertEqual(activation["accepted"][session]["profile"], f"profile-{session}")
+
     def test_one_shot_managed_task_does_not_enable_project(self):
         state, actions = reduce(
             ProjectState(enabled=False),

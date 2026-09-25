@@ -67,9 +67,9 @@ Symphony assumes the session root runs at the economy tier: it exists to route w
 
 ## Persistent enablement
 
-`enable` governs future substantive prompts in the current project, including new sessions and resumes, until `disable` is used. Controls and deterministic trivial tasks do not trigger assessment. `bypass` runs one task outside Symphony without changing enablement or mutating an active run.
+`enable` governs future substantive prompts in the current project, including new sessions and resumes, until `disable` is used. In Codex, a prompt containing only `enable` also invokes this control. Independent root sessions in the same project keep separate runs and agents. Controls and deterministic trivial tasks do not trigger assessment. `bypass` runs one task outside Symphony without changing enablement or mutating an active run.
 
-`stop` ends the active run but keeps project enablement. `stop --force` records an explicit interruption when a safe stop cannot be completed. `disable` gracefully stops and archives active recovery context, then disables future automatic governance. Uninstalling removes plugin execution but does not rewrite the project or silently finish active work; disable first when possible.
+`stop` ends only the current root session's run and keeps project enablement. `stop --force` records an explicit interruption of that run when a safe stop cannot be completed. `disable` turns off future automatic governance project-wide and gracefully stops the current session's run; other sessions' live runs continue. Uninstalling removes plugin execution but does not rewrite the project or silently finish active work; disable first when possible.
 
 ## Guarded execution
 
@@ -79,7 +79,7 @@ When the heartbeat is absent, `status` reports pending verification and gives th
 
 Normal completion is blocked while host-observed tracked work remains active. A stop is blocked at most once per turn: when the host reports that the stop hook is already active, Symphony releases the session, records the run as abandoned with the identities it never reconciled, and shows that in `status`. A prompt that never spawned an assessor opens no run and can never hold a session open.
 
-User interruption and host-enforced overrides remain authoritative, so interrupted work is recovered from durable lifecycle state rather than described as uninterruptible. Neither host reports which agents are still alive, so recovery keys on the provider session: a heartbeat from a new session marks unreconciled delegations interrupted before new ownership is created.
+User interruption and host-enforced overrides remain authoritative, so interrupted work is recovered from durable lifecycle state rather than described as uninterruptible. Neither host reports which agents are still alive. A new root session never takes over another session's run or declares its agents finished; each session resumes its own durable run.
 
 ## Routing
 
@@ -103,7 +103,7 @@ The assessor is bounded, read-only, and separate from the lead. The lead route n
 
 ## Visibility
 
-`status` reports project enablement, activation state, guarded/degraded state, assessment cell, topology, lead identity, and up to five current delegation records. Each agent has one latest record, prioritized as failed, active/waiting, then recently completed.
+`status` reports project enablement, activation state, guarded/degraded state, and the current root session's assessment cell, topology, lead identity, and up to five delegation records. Each agent has one latest record, prioritized as failed, active/waiting, then recently completed.
 
 ```text
 Working: worker [capable/medium] — <identity> — <bounded objective>
@@ -111,7 +111,7 @@ Failed: consultant [strongest/high] — <identity> — <bounded decision>
 Completed: worker [balanced/medium] — <identity> — <bounded objective>
 ```
 
-`agents --all` includes the latest state for every delegation in the current run and the retained 20-run history. Token and duration fields are omitted when the provider does not expose them.
+`agents --all` includes the latest state for every delegation in all live project runs and the retained 20-run history. Token and duration fields are omitted when the provider does not expose them.
 
 ## Optional capabilities
 
@@ -134,6 +134,8 @@ codex plugin add symphony@symphony
 Codex updates loaded outside the current process require a new session and renewed `/hooks` review when the hook hash changes. Claude updates require reload or restart. In both providers, the next prompt confirms the loaded version through its heartbeat.
 
 Symphony 1.0 imports project enablement and user configuration only. Incompatible active-run state is archived and the next managed task receives a fresh assessment. Pre-1.0 state is located by hashing the repository's git toplevel, with the working directory as a fallback, so an import still succeeds from a subdirectory.
+
+Version 1.4.7 stores concurrent runs in a separate v2 state file. On first use it copies a readable v1 project state, including a live run, without changing the v1 file. Already-running 1.4.6 hooks may continue updating v1 while new hooks update v2; those two versions do not synchronize run completion. Let older sessions finish and reload the plugin before relying on migrated completion status. A new session cannot force-stop an older session's run.
 
 Symphony stores only lifecycle facts: identities, roles, requested tier and effort, classification, status and timestamps, plus a short objective label. Prompts, agent messages, spawn packets and transcript paths are never written to disk.
 

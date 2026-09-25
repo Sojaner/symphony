@@ -20,7 +20,7 @@ def main() -> int:
 
     root = Path(__file__).resolve().parents[1]
     state_dir = Path(os.environ.get("SYMPHONY_STATE_DIR", Path.home() / ".symphony" / "state"))
-    path = state_dir / f"{project_key(Path.cwd())}.json"
+    path = state_dir / f"{project_key(Path.cwd())}.v2.json"
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
         activation = document["activation"]["codex"]
@@ -39,7 +39,13 @@ def main() -> int:
         )
 
     # Another live session can replace the provider's latest activation slot.
-    # ponytail: history keeps 200 events; persist per-session heartbeats if collisions outlive it.
+    # Active owners retain a complete heartbeat in session_profiles even after
+    # the bounded event history has discarded their original hook event.
+    sessions = activation.get("session_profiles", ()) if isinstance(activation, dict) else ()
+    retained = (
+        record for record in sessions
+        if isinstance(record, dict) and matches(record)
+    )
     historical = (
         {**event["payload"], "observed_at": event.get("observed_at")}
         for event in document.get("event_history", ())
@@ -47,7 +53,8 @@ def main() -> int:
         and isinstance(event.get("payload"), dict)
         and event["payload"].get("provider") == "codex"
     )
-    if (isinstance(activation, dict) and activation.get("state") == "guarded" and matches(activation)) or any(map(matches, historical)):
+    if ((isinstance(activation, dict) and activation.get("state") == "guarded" and matches(activation))
+            or any(retained) or any(map(matches, historical))):
         print("guarded: matching current-session heartbeat")
         return 0
 

@@ -37,6 +37,9 @@ class AdapterContractTests(unittest.TestCase):
                                 "type": "session_meta",
                                 "payload": {
                                     "agent_path": "/root/symphony_assessor_gpt_6_astra_high",
+                                    "source": {"subagent": {"thread_spawn": {
+                                        "parent_thread_id": "root-session",
+                                    }}},
                                 },
                             }
                         ),
@@ -63,6 +66,7 @@ class AdapterContractTests(unittest.TestCase):
             )
 
         self.assertEqual(event.payload["task_name"], "symphony_assessor_gpt_6_astra_high")
+        self.assertEqual(event.payload["parent_thread_id"], "root-session")
         self.assertEqual(event.payload["model"], "gpt-6-astra")
         self.assertEqual(event.payload["model_reasoning_effort"], "high")
 

@@ -1,5 +1,6 @@
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -7,7 +8,7 @@ from plugins.symphony.symphony.model import Delegation, Event, ProjectState, Run
 from plugins.symphony.symphony import runtime as runtime_module
 from plugins.symphony.symphony.runtime import compact_delegations, format_delegation, handle
 from plugins.symphony.symphony.routing import Assessment, MATRIX, profiles_for, resolve_tier, route_for, snapshot_for
-from plugins.symphony.symphony.store import StateStore
+from plugins.symphony.symphony.store import StateStore, project_key
 
 CODEX_FULL = profiles_for("codex")[0]
 CLAUDE_FULL = profiles_for("claude")[0]
@@ -106,6 +107,14 @@ class RuntimeTests(unittest.TestCase):
             }
         return handle(hook, environ)
 
+    def seed_run(self, run: RunState, provider: str = "codex", enabled: bool = False):
+        session = run.session_id or f"{provider}-session"
+        run = replace(run, session_id=session, provider=provider)
+        StateStore(self.state_root).save(self.project, ProjectState(
+            enabled=enabled, active_run=run, active_runs={f"{provider}:{session}": run},
+        ))
+        return run
+
     def test_enable_persists_and_next_task_requests_bounded_assessment(self):
         enabled = handle(self.payload("$symphony:symphony enable"), self.environ)
         self.assertIn("enabled", self.context(enabled).lower())
@@ -121,6 +130,119 @@ class RuntimeTests(unittest.TestCase):
         state = StateStore(self.state_root).load(self.project)
         self.assertIsNotNone(state.active_run)
         self.assertEqual(state.active_run.task, "Implement the feature")
+
+    def test_second_session_enable_and_repeated_stops_leave_owner_run_intact(self):
+        owner = RunState(
+            "owner-run", "Owner task", session_id="owner-session", provider="codex", lead_identity="owner-lead",
+            delegations=(Delegation("owner-lead", "lead", "Owner task", "working", "", ""),),
+        )
+        store = StateStore(self.state_root)
+        self.seed_run(owner)
+        second = {**self.payload("enable"), "session_id": "second-session"}
+
+        enabled = handle(second, self.environ)
+        self.assertIn("enabled", self.context(enabled).lower())
+        for active in (False, True, True):
+            stop = handle({**second, "hook_event_name": "Stop", "stop_hook_active": active}, self.environ)
+            self.assertNotEqual(self.output(stop).get("decision"), "block")
+            self.assertEqual(store.load(self.project).active_run, owner)
+
+        disabled = handle({**second, "prompt": "$symphony:symphony disable"}, self.environ)
+        self.assertIn("disabled", self.context(disabled).lower())
+        state = store.load(self.project)
+        self.assertFalse(state.enabled)
+        self.assertEqual(state.active_runs["codex:owner-session"], owner)
+
+    def test_status_is_session_scoped_and_agents_all_lists_other_active_runs(self):
+        first = RunState("first-run", "First task", session_id="first-session", provider="codex")
+        second = RunState("second-run", "Second task", session_id="second-session", provider="codex")
+        StateStore(self.state_root).save(self.project, ProjectState(
+            enabled=True, active_run=first,
+            active_runs={"codex:first-session": first, "codex:second-session": second},
+        ))
+        third = {**self.payload("$symphony:symphony status"), "session_id": "third-session"}
+
+        status = self.context(handle(third, self.environ))
+        agents = self.context(handle({**third, "prompt": "$symphony:symphony agents --all"}, self.environ))
+
+        self.assertIn("Run (this session): none", status)
+        self.assertNotIn("first-run", status)
+        self.assertNotIn("second-run", status)
+        self.assertIn("first-run", agents)
+        self.assertIn("second-run", agents)
+
+    def test_known_lead_tool_and_child_events_stay_with_own_root(self):
+        first = RunState("first-run", "First task", status="active", session_id="first-session",
+                         provider="codex", lead_identity="lead-one")
+        second = RunState("second-run", "Second task", status="active", session_id="second-session",
+                          provider="codex", lead_identity="lead-two")
+        store = StateStore(self.state_root)
+        store.save(self.project, ProjectState(
+            enabled=True, active_run=first,
+            active_runs={"codex:first-session": first, "codex:second-session": second},
+        ))
+        child = {**self.payload(""), "session_id": "lead-one"}
+        prepared = handle({**child, "hook_event_name": "PreToolUse", "tool_name": "spawn_agent",
+                           "tool_input": {"message": "SYMPHONY_ROLE: worker\nImplement first task",
+                                          "model": self.simple["model"],
+                                          "reasoning_effort": self.simple["effort"]}}, self.environ)
+        self.assertNotEqual(self.output(prepared).get("decision"), "block")
+        started = {**child, "hook_event_name": "SubagentStart", "agent_id": "worker-one",
+                   "agent_type": codex_agent_type("worker", self.simple["model"], self.simple["effort"]),
+                   "parent_thread_id": "lead-one"}
+        handle(started, self.environ)
+        state = store.load(self.project)
+        self.assertEqual([item.identity for item in state.active_runs["codex:first-session"].delegations],
+                         ["worker-one"])
+        self.assertEqual(state.active_runs["codex:second-session"], second)
+
+        child_stop = handle({**child, "hook_event_name": "Stop", "stop_hook_active": True}, self.environ)
+        self.assertNotEqual(self.output(child_stop).get("decision"), "block")
+        self.assertEqual(store.load(self.project).active_runs["codex:first-session"].status, "active")
+
+    def test_foreign_stop_cannot_claim_migrated_owner_with_same_session_id(self):
+        legacy = self.state_root / f"{project_key(self.project)}.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({
+            "schema_version": 1, "enabled": True,
+            "activation": {"codex": {"session_id": "shared"}},
+            "active_run": {"run_id": "old-run", "task": "Codex task", "status": "active",
+                           "session_id": "shared", "lead_identity": "codex-lead"},
+        }))
+        store = StateStore(self.state_root)
+        imported = store.load(self.project).active_runs["codex:shared"]
+
+        for active in (False, True, True):
+            stop = {**self.payload("", "claude"), "session_id": "shared",
+                    "hook_event_name": "Stop", "stop_hook_active": active}
+            self.assertNotEqual(self.output(handle(stop, self.claude_environ)).get("decision"), "block")
+            self.assertEqual(store.load(self.project).active_runs["codex:shared"], imported)
+
+    def test_two_sessions_keep_assessors_and_stops_in_their_own_runs(self):
+        store = StateStore(self.state_root)
+        handle(self.payload("$symphony:symphony enable"), self.environ)
+        for session, agent in (("first-session", "first-assessor"), ("second-session", "second-assessor")):
+            base = {**self.payload(""), "session_id": session}
+            handle({**base, "hook_event_name": "SessionStart"}, self.environ)
+            handle({**base, "hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "tool_input": {
+                "message": f"SYMPHONY_ROLE: assessor\n{session} task",
+                "model": CODEX_STRONGEST, "reasoning_effort": "high",
+            }}, self.environ)
+            handle({**base, "hook_event_name": "SubagentStart", "agent_id": agent,
+                    "agent_type": codex_agent_type("assessor", CODEX_STRONGEST, "high")}, self.environ)
+
+        state = store.load(self.project)
+        self.assertEqual(len(state.active_runs), 2)
+        self.assertEqual({run.session_id for run in state.active_runs.values()}, {"first-session", "second-session"})
+        self.assertEqual(
+            {run.session_id: {item.identity for item in run.delegations} for run in state.active_runs.values()},
+            {"first-session": {"first-assessor"}, "second-session": {"second-assessor"}},
+        )
+        for active in (False, True):
+            stop = handle({**self.payload(""), "session_id": "third-session",
+                           "hook_event_name": "Stop", "stop_hook_active": active}, self.environ)
+            self.assertNotEqual(self.output(stop).get("decision"), "block")
+        self.assertEqual(len(store.load(self.project).active_runs), 2)
 
     def test_one_shot_start_does_not_enable_project(self):
         result = handle(self.payload("$symphony:symphony start Check the release"), self.environ)
@@ -159,7 +281,7 @@ class RuntimeTests(unittest.TestCase):
             "run-1", "task", session_id="codex-session",
             delegations=(Delegation("lead-1", "lead", "work", "working", "", ""),),
         )
-        StateStore(self.state_root).save(self.project, ProjectState(enabled=True, active_run=run))
+        self.seed_run(run, enabled=True)
 
         handle(self.payload("$symphony:symphony stop --force"), self.environ)
         state = StateStore(self.state_root).load(self.project)
@@ -174,7 +296,7 @@ class RuntimeTests(unittest.TestCase):
     def test_status_names_the_current_project_and_empty_run_scope(self):
         text = self.context(handle(self.payload("$symphony:symphony status"), self.environ))
         self.assertIn("Symphony (this project): disabled", text)
-        self.assertIn("Run (this project): none", text)
+        self.assertIn("Run (this session): none", text)
 
     def test_observed_role_requires_an_explicit_role_token(self):
         self.assertEqual(
@@ -255,7 +377,7 @@ class RuntimeTests(unittest.TestCase):
     def test_stop_blocks_when_host_observed_delegation_is_active(self):
         delegation = Delegation("w1", "worker", "work", "working", "balanced", "medium")
         run = RunState("run-1", "task", delegations=(delegation,))
-        StateStore(self.state_root).save(self.project, ProjectState(enabled=True, active_run=run))
+        self.seed_run(run, enabled=True)
         payload = self.payload("")
         payload["hook_event_name"] = "Stop"
 
@@ -511,7 +633,7 @@ class RuntimeTests(unittest.TestCase):
                 Delegation("worker", "worker", "task", "working", model, effort),
             ),
         )
-        StateStore(self.state_root).save(self.project, ProjectState(active_run=run))
+        self.seed_run(run)
         stale = {**self.payload(""), "hook_event_name": "SubagentStop", "agent_id": "old",
                  "status": "completed", "model": model, "model_reasoning_effort": "high"}
         handle(stale, self.environ)
@@ -852,7 +974,7 @@ class RuntimeTests(unittest.TestCase):
     def test_session_start_reconciles_only_when_host_reports_active_ids(self):
         delegation = Delegation("lead-1", "lead", "work", "working", "", "")
         run = RunState("run-1", "task", status="interrupted", lead_identity="lead-1", delegations=(delegation,))
-        StateStore(self.state_root).save(self.project, ProjectState(enabled=True, active_run=run))
+        self.seed_run(run, enabled=True)
 
         unknown = {**self.payload(""), "hook_event_name": "SessionStart"}
         unknown_result = handle(unknown, self.environ)
@@ -1012,17 +1134,13 @@ class RuntimeTests(unittest.TestCase):
         self.open_run("Ship it")
         store = StateStore(self.state_root)
         state = store.load(self.project)
+        run = replace(state.active_run, status="active", lead_identity="lead-1")
         store.save(
             self.project,
-            ProjectState(
-                enabled=state.enabled,
-                activation=state.activation,
-                active_run=RunState(
-                    state.active_run.run_id,
-                    state.active_run.task,
-                    status="active",
-                    lead_identity="lead-1",
-                ),
+            replace(
+                state,
+                active_run=run,
+                active_runs={**state.active_runs, "codex:codex-session": run},
             ),
         )
         hook = {
@@ -1353,10 +1471,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("replacement", self.flush().lower())
 
     def test_claude_pending_spawns_match_native_roles_out_of_order(self):
-        StateStore(self.state_root).save(
-            self.project,
-            ProjectState(active_run=RunState("run-1", "task", lead_identity="lead-1")),
-        )
+        self.seed_run(RunState("run-1", "task", lead_identity="lead-1"), "claude")
         worker_type = claude_agent_type("worker", self.claude_large)
         consultant_type = f"symphony:symphony-consultant-{CLAUDE_STRONGEST}-high"
         for role, agent_type, extra in (
@@ -1404,10 +1519,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(roles, {"consultant-1": "consultant", "worker-1": "worker"})
 
     def test_claude_same_role_pending_spawns_match_native_model_and_effort(self):
-        StateStore(self.state_root).save(
-            self.project,
-            ProjectState(active_run=RunState("run-1", "task", lead_identity="lead-1")),
-        )
+        self.seed_run(RunState("run-1", "task", lead_identity="lead-1"), "claude")
         low_type = claude_agent_type("worker", self.claude_large)
         high_type = claude_agent_type("worker", self.claude_mixed)
         for agent_type in (low_type, high_type):
@@ -1469,7 +1581,7 @@ class RuntimeTests(unittest.TestCase):
                 "_invalid_consultants": ["consultant-1"],
             },
         )
-        StateStore(self.state_root).save(self.project, ProjectState(active_run=run))
+        self.seed_run(run, "claude")
         lead_type = claude_agent_type("lead", self.claude_medium)
         prepared = {
             **self.payload("", "claude"),
@@ -1719,7 +1831,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(state.recent_runs[-1].status, "abandoned")
         self.assertEqual(state.recent_runs[-1].unreconciled, ("assessor-1",))
 
-    def test_quiet_owner_can_be_recovered_without_a_host_roster(self):
+    def test_quiet_owner_is_not_adopted_by_another_session(self):
         self.open_run("Ship it")
         handle(
             {
@@ -1733,7 +1845,7 @@ class RuntimeTests(unittest.TestCase):
 
         path = next(self.state_root.glob("*.json"))
         document = json.loads(path.read_text())
-        document["active_run"]["owner_seen_at"] = "2020-01-01T00:00:00+00:00"
+        document["active_runs"]["codex:codex-session"]["owner_seen_at"] = "2020-01-01T00:00:00+00:00"
         path.write_text(json.dumps(document))
 
         resumed = {
@@ -1745,8 +1857,9 @@ class RuntimeTests(unittest.TestCase):
         handle(resumed, self.environ)
 
         run = StateStore(self.state_root).load(self.project).active_run
-        self.assertEqual(run.status, "recovering")
-        self.assertEqual({item.state for item in run.delegations}, {"interrupted"})
+        self.assertEqual(run.session_id, "codex-session")
+        self.assertEqual(run.status, "assessing")
+        self.assertEqual({item.state for item in run.delegations}, {"working"})
 
     def test_version_reports_the_build_actually_running(self):
         """Installed and running differ until the host restarts, which is the

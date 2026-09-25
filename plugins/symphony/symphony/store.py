@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -21,9 +22,13 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - exercised on platforms without fcntl
     fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - exercised outside Windows
+    msvcrt = None
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _LOCAL_LOCKS: dict[str, threading.Lock] = {}
 _LOCAL_LOCKS_GUARD = threading.Lock()
 _UpdateResult = TypeVar("_UpdateResult")
@@ -126,6 +131,7 @@ def _run_from_dict(value: Any) -> RunState:
         started_at=_text(value.get("started_at", ""), "run.started_at"),
         updated_at=_text(value.get("updated_at", ""), "run.updated_at"),
         session_id=_text(value.get("session_id", ""), "run.session_id"),
+        provider=_text(value.get("provider", ""), "run.provider"),
         owner_seen_at=_text(value.get("owner_seen_at", ""), "run.owner_seen_at"),
         unreconciled=tuple(
             _text(item, "run.unreconciled item")
@@ -134,13 +140,42 @@ def _run_from_dict(value: Any) -> RunState:
     )
 
 
+def _legacy_run_key(run: RunState, activation: dict, history: tuple[Event, ...]) -> str:
+    if run.session_id and run.provider in {"codex", "claude"}:
+        return f"{run.provider}:{run.session_id}"
+    providers = {
+        provider for provider, record in activation.items()
+        if isinstance(record, dict) and (
+            record.get("session_id") == run.session_id
+            or any(isinstance(item, dict) and item.get("session_id") == run.session_id
+                   for item in record.get("session_profiles", ()))
+        )
+    }
+    providers.update(
+        str(event.payload.get("provider")) for event in history
+        if event.payload.get("session_id") == run.session_id
+        and event.payload.get("provider") in {"codex", "claude"}
+    )
+    if run.session_id and len(providers) == 1:
+        return f"{providers.pop()}:{run.session_id}"
+    # Ambiguous old state is retained but cannot be taken over by a different
+    # provider or by a foreign root that happens to arrive next.
+    return f"unbound:{run.session_id}"
+
+
 def _state_to_dict(state: ProjectState) -> dict[str, Any]:
+    active_runs = dict(state.active_runs)
+    if state.active_run and not active_runs:
+        key = _legacy_run_key(state.active_run, dict(state.activation), state.event_history)
+        active_runs[key] = replace(state.active_run, provider=key.split(":", 1)[0]
+                                   if not key.startswith("unbound:") else "")
     return {
         "schema_version": SCHEMA_VERSION,
         "enabled": state.enabled,
         "configuration": dict(state.configuration),
         "activation": dict(state.activation),
         "active_run": None if state.active_run is None else asdict(state.active_run),
+        "active_runs": {key: asdict(run) for key, run in active_runs.items()},
         "recent_runs": [asdict(item) for item in state.recent_runs[-20:]],
         "event_history": [asdict(item) for item in state.event_history],
         "needs_reassessment": state.needs_reassessment,
@@ -150,24 +185,44 @@ def _state_to_dict(state: ProjectState) -> dict[str, Any]:
 def _state_from_dict(value: Any) -> ProjectState:
     value = _object(value, "state")
     version = value.get("schema_version")
-    if version != SCHEMA_VERSION:
+    if version not in {1, SCHEMA_VERSION}:
         raise ValueError(f"unsupported schema version {version!r}")
     enabled = value.get("enabled", False)
     needs_reassessment = value.get("needs_reassessment", False)
     if not isinstance(enabled, bool) or not isinstance(needs_reassessment, bool):
         raise ValueError("state flags must be booleans")
     active_run = value.get("active_run")
+    parsed_run = None if active_run is None else _run_from_dict(active_run)
+    activation = _object(value.get("activation", {}), "state.activation")
+    history = tuple(
+        _event_from_dict(item) for item in _array(value.get("event_history", ()), "state.event_history")
+    )
+    active_runs = {
+        _text(key, "state.active_runs key"): _run_from_dict(run)
+        for key, run in _object(value.get("active_runs", {}), "state.active_runs").items()
+    }
+    if parsed_run and not active_runs:
+        key = _legacy_run_key(parsed_run, activation, history)
+        if not key.startswith("unbound:"):
+            parsed_run = replace(parsed_run, provider=key.split(":", 1)[0])
+        active_runs[key] = parsed_run
+    recent_runs = tuple(
+        _run_from_dict(item) for item in _array(value.get("recent_runs", ()), "state.recent_runs")[-20:]
+    )
+    recent_runs = tuple(
+        replace(run, provider=key.split(":", 1)[0])
+        if not run.provider and not (key := _legacy_run_key(run, activation, history)).startswith("unbound:")
+        else run
+        for run in recent_runs
+    )
     return ProjectState(
         enabled=enabled,
         configuration=_object(value.get("configuration", {}), "state.configuration"),
-        activation=_object(value.get("activation", {}), "state.activation"),
-        active_run=None if active_run is None else _run_from_dict(active_run),
-        recent_runs=tuple(
-            _run_from_dict(item) for item in _array(value.get("recent_runs", ()), "state.recent_runs")[-20:]
-        ),
-        event_history=tuple(
-            _event_from_dict(item) for item in _array(value.get("event_history", ()), "state.event_history")
-        ),
+        activation=activation,
+        active_run=parsed_run,
+        active_runs=active_runs,
+        recent_runs=recent_runs,
+        event_history=history,
         needs_reassessment=needs_reassessment,
     )
 
@@ -216,17 +271,31 @@ def _local_lock(path: Path) -> threading.Lock:
 @contextmanager
 def _locked(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if fcntl is None:  # pragma: no cover - exercised on platforms without fcntl
-        with _local_lock(path):
-            yield
-        return
-
-    with path.with_name(path.name + ".lock").open("a+b") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    with _local_lock(path), path.with_name(path.name + ".lock").open("a+b") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        elif msvcrt is not None:
+            if lock_file.seek(0, os.SEEK_END) == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"state lock timed out: {path}")
+                    time.sleep(0.02)
         try:
             yield
         finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            elif msvcrt is not None:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 class StateStore:
@@ -235,7 +304,7 @@ class StateStore:
         self.legacy_roots = tuple(Path(item) for item in legacy_roots)
 
     def _path(self, project: Path) -> Path:
-        return self.root / f"{project_key(project)}.json"
+        return self.root / f"{project_key(project)}.v2.json"
 
     def load(self, project: Path) -> ProjectState:
         path = self._path(project)
@@ -262,34 +331,37 @@ class StateStore:
 
     def _load_unlocked(self, project: Path, path: Path) -> ProjectState:
         if not path.exists():
+            previous = path.with_name(f"{project_key(project)}.json")
+            if previous.exists():
+                try:
+                    raw = _object(json.loads(previous.read_text(encoding="utf-8")), "state")
+                    if raw.get("schema_version") in {1, SCHEMA_VERSION}:
+                        imported = _state_from_dict(raw)
+                    elif raw.get("schema_version") in {None, 0}:
+                        imported = self._migrated_state(raw)
+                    else:
+                        raise ValueError("unsupported legacy state schema")
+                except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise ValueError(f"legacy state unreadable; original preserved at {previous}") from error
+                # The previous file belongs to old hooks. Never rewrite or
+                # remove it: they may still be running alongside this build.
+                self._write(path, imported)
+                return imported
             imported = self._import_legacy(project, path)
             return imported if imported is not None else ProjectState()
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            raw = _object(raw, "state")
-            if raw.get("schema_version") == SCHEMA_VERSION:
-                return _state_from_dict(raw)
-            return self._migrate(path, raw)
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            salvaged = self._salvage(path)
-            self._archive(path, "corrupt")
-            rebuilt = replace(salvaged, needs_reassessment=True)
-            self._write(path, rebuilt)
-            return rebuilt
-
-    @staticmethod
-    def _salvage(path: Path) -> ProjectState:
-        """Recover enablement and user configuration from a state file we cannot parse."""
-        try:
             raw = _object(json.loads(path.read_text(encoding="utf-8")), "state")
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            return ProjectState()
-        enabled = raw.get("enabled", False)
-        configuration = raw.get("configuration", {})
-        return ProjectState(
-            enabled=enabled if isinstance(enabled, bool) else False,
-            configuration=configuration if isinstance(configuration, dict) else {},
-        )
+            version = raw.get("schema_version")
+            if version in {1, SCHEMA_VERSION}:
+                loaded = _state_from_dict(raw)
+                if version == 1:
+                    self._write(path, loaded)
+                return loaded
+            if version in {None, 0}:
+                return self._migrate(path, raw)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"state unreadable; original preserved at {path}") from error
+        raise ValueError(f"unsupported state schema {version!r}; original preserved at {path}")
 
     def _import_legacy(self, project: Path, destination: Path) -> ProjectState | None:
         if not self.legacy_roots:

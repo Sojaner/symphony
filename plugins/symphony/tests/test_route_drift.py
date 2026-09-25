@@ -108,9 +108,9 @@ class RouteDriftTests(unittest.TestCase):
     def test_standing_assessment_that_weakened_waits_for_the_user(self):
         self.accept_under("full", "session-1", FULL_ROUTE["model"], FULL_ROUTE["effort"])
 
-        # A later session on a weaker entitlement: the priced route is gone.
-        self.start("base", "session-2")
-        output = self.output(self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER))
+        # The same root resumes with a weaker entitlement: the priced route is gone.
+        self.start("base", "session-1")
+        output = self.output(self.spawn("base", "session-1", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER))
 
         self.assertEqual(output["decision"], "block")
         self.assertIn("would now run", output["reason"])
@@ -119,12 +119,12 @@ class RouteDriftTests(unittest.TestCase):
 
     def test_proceed_accepts_the_weaker_route_and_the_spawn_goes_through(self):
         self.accept_under("full", "session-1", FULL_ROUTE["model"], FULL_ROUTE["effort"])
-        self.start("base", "session-2")
-        blocked = self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER)
+        self.start("base", "session-1")
+        blocked = self.spawn("base", "session-1", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER)
         self.assertEqual(self.output(blocked)["decision"], "block")
 
-        self.proceed("base", "session-2")
-        output = self.output(self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER))
+        self.proceed("base", "session-1")
+        output = self.output(self.spawn("base", "session-1", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER))
 
         self.assertNotEqual(output.get("decision"), "block", output.get("reason"))
 
@@ -143,9 +143,9 @@ class RouteDriftTests(unittest.TestCase):
         """Moving to a better map is not a degradation and needs no consent."""
         self.accept_under("base", "session-1", BASE_ROUTE["model"], BASE_ROUTE["effort"])
 
-        self.start("full", "session-2")
+        self.start("full", "session-1")
         output = self.output(
-            self.spawn("full", "session-2", "lead", FULL_ROUTE["model"], FULL_ROUTE["effort"], MARKER)
+            self.spawn("full", "session-1", "lead", FULL_ROUTE["model"], FULL_ROUTE["effort"], MARKER)
         )
 
         self.assertNotEqual(output.get("decision"), "block", output.get("reason"))
@@ -165,11 +165,11 @@ class RouteDriftTests(unittest.TestCase):
         run must now be advanceable by spawning what the tier resolves to today.
         """
         self.accept_under("full", "session-1", FULL_ROUTE["model"], FULL_ROUTE["effort"])
-        self.start("base", "session-2")
-        self.proceed("base", "session-2")
+        self.start("base", "session-1")
+        self.proceed("base", "session-1")
 
-        stale = self.output(self.spawn("base", "session-2", "lead", "removed-model", "low", MARKER))
-        current = self.output(self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER))
+        stale = self.output(self.spawn("base", "session-1", "lead", "removed-model", "low", MARKER))
+        current = self.output(self.spawn("base", "session-1", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER))
 
         self.assertEqual(stale["decision"], "block")
         self.assertNotEqual(current.get("decision"), "block", current.get("reason"))
@@ -185,15 +185,15 @@ class RouteDriftTests(unittest.TestCase):
         }
         handle(original, self.env("full"))
         handle({**original, "hook_event_name": "SubagentStop", "status": "failed"}, self.env("full"))
-        self.start("base", "session-2")
-        self.proceed("base", "session-2")
-        result = self.spawn("base", "session-2", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER)
+        self.start("base", "session-1")
+        self.proceed("base", "session-1")
+        result = self.spawn("base", "session-1", "lead", BASE_ROUTE["model"], BASE_ROUTE["effort"], MARKER)
         self.assertNotEqual(self.output(result).get("decision"), "block")
         # Another session's heartbeat must not erase the route this spawn passed.
         self.start("full", "stranger")
 
         lead = {
-            **self.payload("session-2", "SubagentStart"),
+            **self.payload("session-1", "SubagentStart"),
             "agent_id": "lead-1",
             "agent_type": "symphony_lead_" + BASE_ROUTE["model"].replace("-", "_").replace(".", "_") + "_" + BASE_ROUTE["effort"],
             "model": BASE_ROUTE["model"],
@@ -236,12 +236,12 @@ class RouteDriftTests(unittest.TestCase):
         handle({**original, "hook_event_name": "SubagentStop", "status": "failed"}, self.env("full"))
         for index in range(4):
             self.start("full", f"z{index}")
-        self.start("base", "a-current")
-        self.proceed("base", "a-current")
+        self.start("base", "session-1")
+        self.proceed("base", "session-1")
         self.start("full", "z5")
 
         replacement = {
-            **self.payload("a-current", "SubagentStart"), "agent_id": "replacement-lead",
+            **self.payload("session-1", "SubagentStart"), "agent_id": "replacement-lead",
             "agent_type": "symphony_lead_" + BASE_ROUTE["model"].replace("-", "_").replace(".", "_") + "_" + BASE_ROUTE["effort"],
             "model": BASE_ROUTE["model"], "model_reasoning_effort": BASE_ROUTE["effort"],
         }
@@ -261,10 +261,10 @@ class RouteDriftTests(unittest.TestCase):
         }
         handle(original, self.env("full"))
         handle({**original, "hook_event_name": "SubagentStop", "status": "failed"}, self.env("full"))
-        self.start("base", "session-2")
+        self.start("base", "session-1")
 
         replacement = {
-            **self.payload("session-2", "SubagentStart"), "agent_id": "replacement-lead",
+            **self.payload("session-1", "SubagentStart"), "agent_id": "replacement-lead",
             "agent_type": "symphony_lead_" + BASE_ROUTE["model"].replace("-", "_").replace(".", "_") + "_" + BASE_ROUTE["effort"],
             "model": BASE_ROUTE["model"], "model_reasoning_effort": BASE_ROUTE["effort"],
         }
@@ -274,7 +274,7 @@ class RouteDriftTests(unittest.TestCase):
         state = StateStore(self.state_root).load(self.project)
         self.assertEqual(state.active_run.status, "recovering")
         self.assertIsNone(state.active_run.outcome)
-        blocked = self.output(handle({**self.payload("session-2", "Stop")}, self.env("base")))
+        blocked = self.output(handle({**self.payload("session-1", "Stop")}, self.env("base")))
         self.assertIn("proceed", blocked["reason"])
 
 

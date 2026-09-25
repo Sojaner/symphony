@@ -1,7 +1,7 @@
 """Fast, offline hook runtime for Symphony's canonical lifecycle."""
 
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -63,11 +63,104 @@ def handle(payload: dict, environ: Mapping[str, str] = os.environ) -> HookResult
     source = event_from_payload(provider, payload)
 
     def transition(state: ProjectState) -> tuple[ProjectState, tuple[Action, ...]]:
-        next_state, actions = _transition(state, source, provider, payload, environ)
-        return next_state, _render_actions(actions, next_state, provider, source.kind)
+        # Select the owning run under the store lock so parallel hooks cannot
+        # observe a stale project roster.
+        current_scope = _run_scope(state, source, provider)
+        if current_scope is None:
+            return state, ()
+        current_key, current_session = current_scope
+        current_payload = {**payload, "session_id": current_session}
+        current_source = replace(source, payload={**source.payload, "session_id": current_session})
+        scoped = _scope_state(state, current_key, current_session, provider)
+        next_scoped, actions = _transition(scoped, current_source, provider, current_payload, environ)
+        rendered = _render_actions(actions, next_scoped, provider, source.kind)
+        return _merge_scope(state, scoped, next_scoped, current_key, provider, current_session), rendered
 
     actions = store.update(project, transition)
     return render(provider, actions, str(payload.get("hook_event_name") or "UserPromptSubmit"))
+
+
+def _run_scope(state: ProjectState, source: Event, provider: str) -> tuple[str, str] | None:
+    """Find the owning root without ever borrowing another session's run."""
+    session = str(source.payload.get("session_id") or "")
+    parent = str(source.payload.get("parent_thread_id") or "")
+    agent = str(source.payload.get("agent_id") or source.payload.get("subagent_id") or "")
+    if source.kind in {"subagent_started", "subagent_stopped"}:
+        if parent:
+            matches = [
+                (key, run.session_id or parent) for key, run in state.active_runs.items()
+                if key.startswith(f"{provider}:")
+                and parent in {run.session_id, run.lead_identity,
+                               *(item.identity for item in run.delegations)}
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            if matches:
+                return None
+            if source.kind == "subagent_started":
+                return f"{provider}:{parent}", parent
+            return None
+        if agent:
+            matches = [
+                (key, run.session_id or session) for key, run in state.active_runs.items()
+                if key.startswith(f"{provider}:")
+                and any(item.identity == agent for item in run.delegations)
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            if matches:
+                return None
+    if source.kind in {"pre_tool_use", "post_tool_use"} and session:
+        matches = [
+            (key, run.session_id) for key, run in state.active_runs.items()
+            if key.startswith(f"{provider}:")
+            and session in {run.lead_identity, *(item.identity for item in run.delegations)}
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            return None
+    if not session:
+        return None
+    key = f"{provider}:{session}"
+    if key in state.active_runs:
+        return key, session
+    if source.kind in {"subagent_started", "subagent_stopped"}:
+        # A child with no known parent/run cannot claim an arbitrary project
+        # run. An assessor may open a new run under its reported session.
+        if source.kind == "subagent_started" and _observed_role(source.payload) == "assessor":
+            return key, session
+        return None
+    return key, session
+
+
+def _scope_state(state: ProjectState, key: str, session: str, provider: str) -> ProjectState:
+    run = state.active_runs.get(key)
+    if run and not run.provider:
+        run = replace(run, provider=provider, session_id=session)
+    return replace(state, active_run=run)
+
+
+def _merge_scope(
+    original: ProjectState, before: ProjectState, after: ProjectState,
+    key: str, provider: str, session: str,
+) -> ProjectState:
+    runs = dict(original.active_runs)
+    if before.active_run:
+        runs.pop(key, None)
+    run = None
+    if after.active_run:
+        run = replace(after.active_run, session_id=session, provider=provider)
+        runs[f"{provider}:{session}"] = run
+    history = original.recent_runs
+    if before.active_run and not after.active_run and after.recent_runs:
+        history = (*history, after.recent_runs[-1])[-20:]
+    # Keep the old scalar view useful for readers of a single-run state. It is
+    # never used to select the run for a hook.
+    latest = run or next(reversed(tuple(runs.values())), None)
+    return replace(
+        after, active_run=latest, active_runs=runs, recent_runs=history,
+    )
 
 
 def _transition(
@@ -126,8 +219,7 @@ def _transition(
     elif source.kind == "session_heartbeat":
         state, resume_actions = _reconcile_session(state, source, payload)
         actions += resume_actions
-        refused = any(item.kind == "run_owned_elsewhere" for item in resume_actions)
-        if state.active_run and not refused:
+        if state.active_run:
             actions += (Action("inject_context", {"text": _recovery_guidance(state)}),)
     elif source.kind == "pre_tool_use":
         state, delegation_actions = _prepare_delegation(state, source, provider)
@@ -200,8 +292,6 @@ def _session_profile_record(state: ProjectState, provider: str, session_id: str)
 
 def _activate_session_profile(state: ProjectState, provider: str, session_id: str) -> ProjectState:
     """Restore this session's route before hooks that do not emit a heartbeat."""
-    if provider != "claude":
-        return state
     current = state.activation.get(provider, {})
     if not session_id or current.get("session_id") == session_id:
         return state
@@ -344,10 +434,6 @@ def _claude_accepts(model: str) -> bool:
         return False
 
 
-# ponytail: wall clock, because neither host reports whether another session is
-# alive. Replace it the day one of them does.
-_OWNER_QUIET_AFTER = timedelta(hours=2)
-
 # Bookkeeping the host has no use for. Everything else must render.
 INTERNAL_ACTIONS = frozenset(
     {"archive_run", "permit_completion", "spawn_assessor", "permit_stop", "run_abandoned"}
@@ -357,19 +443,6 @@ INTERNAL_ACTIONS = frozenset(
 def _control_name(name: str, provider: str) -> str:
     """How a user types a Symphony control on this host."""
     return f"/symphony:{name}" if provider == "claude" else f"$symphony:symphony {name}"
-
-
-def _owner_is_quiet(run, now: str) -> bool:
-    """Has the session owning this run stopped reporting long enough to adopt?"""
-    last = run.owner_seen_at or run.updated_at or run.started_at
-    if not last or not now:
-        return True
-    try:
-        return datetime.fromisoformat(now) - datetime.fromisoformat(last) >= _OWNER_QUIET_AFTER
-    except (TypeError, ValueError):
-        # A malformed or timezone-naive stamp from an older state file must not
-        # take the hook down; treating it as quiet keeps recovery reachable.
-        return True
 
 
 def _reconcile_session(
@@ -387,31 +460,18 @@ def _reconcile_session(
     observed_run_id = payload.get("run_id")
     if observed_run_id is not None and str(observed_run_id) != run.run_id:
         return state, ()
-    if run.session_id and session_id != run.session_id and not _owner_is_quiet(run, source.observed_at):
-        # A foreign terminal's resume or roster says nothing about a live owner.
-        return state, (Action("run_owned_elsewhere", {"session_id": run.session_id}),)
+    if run.session_id and session_id != run.session_id:
+        return state, ()
     if isinstance(active_ids, list):
         # A malformed roster is incomplete evidence, not an empty roster.
         if any(not isinstance(item, str) or not item for item in active_ids):
             return state, ()
         observed = list(active_ids)
-    elif run.session_id and session_id and session_id != run.session_id:
-        # A quiet owner can be recovered even when the host has no roster.
-        observed = []
     else:
         return state, ()
     state, actions = reduce(
         state, _derived(state, source, "resume_reconciled", {"active_ids": observed}, "resume")
     )
-    if state.active_run and session_id:
-        # Stamp the new owner too: leaving the dead one's timestamp in place let
-        # the very next session adopt the run all over again.
-        state = replace(
-            state,
-            active_run=replace(
-                state.active_run, session_id=session_id, owner_seen_at=source.observed_at
-            ),
-        )
     return state, actions
 
 
@@ -501,6 +561,8 @@ def _task_guidance(state: ProjectState, task: str, provider: str) -> str:
 
 
 def _parse_control(prompt: str) -> tuple[str, str] | None:
+    if prompt.strip() == "enable":
+        return "enable", ""
     if prompt.startswith("/symphony:"):
         first_line = prompt.splitlines()[0]
         command, _, argument = first_line.partition(" ")
@@ -1611,11 +1673,6 @@ def _render_actions(
             rendered.append(Action("inject_context", {"text":
                 "Symphony refused this completion because the lead returned no outcome. Report the outcome, "
                 "then complete."}))
-        elif action.kind == "run_owned_elsewhere":
-            rendered.append(Action("inject_context", {"text":
-                f"Symphony run is owned by session {action.payload.get('session_id')}, which is still "
-                "reporting, so this session will not take it over. If that session is really gone, release "
-                f"the run with `{_control_name('stop', provider)} --force` before starting work here."}))
         elif action.kind not in INTERNAL_ACTIONS:
             # A decision the reducer made must never die on the way out. Seven
             # of them did, which is how two leads ran at once with nobody told.
@@ -1770,7 +1827,7 @@ def _status(
     if provider == "claude" and activation.get("claude_probe_attempted"):
         lines.append(f"Claude model check: {activation.get('profile') or 'unverified (Sonnet fallback)'}")
     if not state.active_run:
-        lines.append(f"Run ({scope}): none")
+        lines.append("Run (this session): none")
     if session_id and activation_session and activation_session != session_id:
         lines.append(
             f"Historical heartbeat from session {activation_session}; current session "
@@ -1808,6 +1865,7 @@ def _status(
             run
             for run in reversed(state.recent_runs)
             if run.status in {"abandoned", "force_stopped"} and run.unreconciled
+            and (include_history or (run.session_id == session_id and run.provider == provider))
         ),
         None,
     )
@@ -1819,6 +1877,14 @@ def _status(
     records = [item for run in runs if run for item in run.delegations]
     if include_history:
         visible = records
+        others = [run for key, run in state.active_runs.items()
+                  if run is not state.active_run
+                  and key != f"{provider}:{session_id}"]
+        if others:
+            lines.append("Other active sessions:")
+            for run in others:
+                lines.append(f"- run {run.run_id} ({run.provider or 'unbound'}/{run.session_id}, {run.status})")
+                lines.extend(format_delegation(item) for item in run.delegations)
         if state.recent_runs:
             lines.append("Historical runs:")
             lines.extend(

@@ -99,6 +99,7 @@ class RunState:
     started_at: str = ""
     updated_at: str = ""
     session_id: str = ""
+    provider: str = ""
     # When the session that owns this run last reported. A different
     # session is not proof the owner died, so takeover needs evidence.
     owner_seen_at: str = ""
@@ -123,6 +124,9 @@ class ProjectState:
     configuration: Mapping[str, Any] = field(default_factory=dict)
     activation: Mapping[str, Any] = field(default_factory=dict)
     active_run: RunState | None = None
+    # Canonical live runs, keyed by provider and owning root session. active_run
+    # remains a compatibility view for older callers and state files.
+    active_runs: Mapping[str, RunState] = field(default_factory=dict)
     recent_runs: tuple[RunState, ...] = ()
     event_history: tuple[Event, ...] = ()
     needs_reassessment: bool = False

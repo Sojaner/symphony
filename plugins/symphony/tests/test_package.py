@@ -150,7 +150,7 @@ class PackageContractTests(unittest.TestCase):
                 capture_output=True, text=True, env=environment, check=False,
             ).returncode, 0)
 
-            path = state_root / f"{project_key(project)}.json"
+            path = state_root / f"{project_key(project)}.v2.json"
             original = path.read_text()
             self.assertNotEqual(check({**environment, "CODEX_SESSION_ID": "unknown-session"}).returncode, 0)
             document = json.loads(original)
@@ -163,10 +163,36 @@ class PackageContractTests(unittest.TestCase):
                                ("hook_schema_version", -1), ("observed_at", "")):
                 document = json.loads(original)
                 document["activation"]["codex"][key] = value
+                document["activation"]["codex"]["session_profiles"] = []
                 document["event_history"] = []
                 path.write_text(json.dumps(document))
                 with self.subTest(key=key):
                     self.assertNotEqual(check().returncode, 0)
+
+            document = json.loads(original)
+            heartbeat = document["activation"]["codex"]
+            document["activation"]["codex"] = {
+                **heartbeat,
+                "session_id": "other-session",
+                "session_profiles": [{
+                    key: heartbeat[key]
+                    for key in ("session_id", "plugin_version", "plugin_root",
+                                "hook_schema_version", "observed_at")
+                }],
+            }
+            # The current owner's heartbeat may be older than the 200-event
+            # durable history window while other sessions keep using the repo.
+            document["event_history"] = [
+                {"event_id": f"later-{index}", "kind": "user_prompt",
+                 "observed_at": "2026-09-25T00:00:00+00:00", "payload": {}}
+                for index in range(201)
+            ]
+            path.write_text(json.dumps(document))
+            self.assertEqual(check().returncode, 0,
+                             "a retained active-session heartbeat must outlive event history")
+            document["activation"]["codex"]["session_profiles"][0]["plugin_root"] = "/other/plugin"
+            path.write_text(json.dumps(document))
+            self.assertNotEqual(check().returncode, 0)
             path.write_text(original)
             self.assertNotEqual(check({key: value for key, value in environment.items()
                                        if key != "CODEX_SESSION_ID"}).returncode, 0)

@@ -299,17 +299,16 @@ class ConcurrentSessionTests(unittest.TestCase):
         accepted = self.state()["activation"]["codex"].get("accepted") or {}
         self.assertEqual("base", accepted.get("old-s", {}).get("profile"))
 
-    def test_a_naive_timestamp_from_an_older_state_file_does_not_crash(self):
-        """Subtracting a naive stamp from an aware one raises TypeError."""
+    def test_a_naive_timestamp_does_not_transfer_another_sessions_run(self):
         self.run_with_live_lead("root-a")
         path = next(self.state_root.glob("*.json"))
         document = json.loads(path.read_text())
-        document["active_run"]["owner_seen_at"] = "2020-01-01T00:00:00"
+        document["active_runs"]["codex:root-a"]["owner_seen_at"] = "2020-01-01T00:00:00"
         path.write_text(json.dumps(document))
 
         handle(self.payload("later-c", "SessionStart"), self.environ)
 
-        self.assertEqual("later-c", self.state()["active_run"]["session_id"])
+        self.assertEqual("root-a", self.state()["active_run"]["session_id"])
 
     def test_consent_still_holds_at_the_gate_after_a_stranger_heartbeats(self):
         """The gate runs on a spawn, which fires no heartbeat of its own.
@@ -331,44 +330,40 @@ class ConcurrentSessionTests(unittest.TestCase):
             "proceed", after, "a stranger's heartbeat undid the clamp this session accepted"
         )
 
-    def test_adopting_a_stale_run_stamps_the_new_owner(self):
-        """Otherwise the next session adopts it all over again."""
+    def test_stale_run_remains_with_its_original_session(self):
         self.run_with_live_lead("root-a")
         path = next(self.state_root.glob("*.json"))
         document = json.loads(path.read_text())
-        document["active_run"]["owner_seen_at"] = "2020-01-01T00:00:00+00:00"
+        document["active_runs"]["codex:root-a"]["owner_seen_at"] = "2020-01-01T00:00:00+00:00"
         path.write_text(json.dumps(document))
 
         handle(self.payload("later-c", "SessionStart"), self.environ)
-        self.assertEqual("later-c", self.state()["active_run"]["session_id"])
+        self.assertEqual("root-a", self.state()["active_run"]["session_id"])
 
         spoken = self.text(handle(self.payload("fourth-d", "SessionStart"), self.environ))
-        self.assertEqual(
-            "later-c", self.state()["active_run"]["session_id"],
-            "the run was adopted twice in a row",
-        )
-        self.assertIn("owned by session", spoken)
+        self.assertEqual("root-a", self.state()["active_run"]["session_id"])
+        self.assertNotIn("root-a", spoken)
 
-    def test_a_refused_session_is_not_also_told_to_reconcile(self):
+    def test_a_second_session_is_not_told_to_reconcile_a_foreign_run(self):
         self.run_with_live_lead("root-a")
         spoken = self.text(handle(self.payload("other-b", "SessionStart"), self.environ))
 
-        self.assertIn("will not take it over", spoken)
+        self.assertNotIn("root-a", spoken)
         self.assertNotIn("Reconcile observed agents", spoken)
-        self.assertIn("--force", spoken)
+        self.assertNotIn("--force", spoken)
 
-    # ---- but real recovery must still work --------------------------------
-    def test_a_run_whose_owner_has_gone_quiet_is_still_adopted(self):
+    # A timeout is not proof that another root may claim or cancel a run.
+    def test_a_quiet_run_is_not_adopted_by_a_foreign_root(self):
         self.run_with_live_lead("root-a")
         path = next(self.state_root.glob("*.json"))
         document = json.loads(path.read_text())
-        document["active_run"]["owner_seen_at"] = "2020-01-01T00:00:00+00:00"
+        document["active_runs"]["codex:root-a"]["owner_seen_at"] = "2020-01-01T00:00:00+00:00"
         path.write_text(json.dumps(document))
 
         handle(self.payload("later-c", "SessionStart"), self.environ)
 
         run = self.state()["active_run"]
-        self.assertEqual("later-c", run["session_id"], "a genuinely stale run was not recovered")
+        self.assertEqual("root-a", run["session_id"])
 
 
 if __name__ == "__main__":

@@ -49,6 +49,9 @@ def _heartbeat(state: ProjectState, event: Event):
         session_profiles.append({
             "session_id": prior_session,
             "plugin_version": previous.get("plugin_version"),
+            "plugin_root": previous.get("plugin_root"),
+            "hook_schema_version": previous.get("hook_schema_version"),
+            "observed_at": previous.get("observed_at"),
             "profile": str(previous.get("profile") or ""),
             "claude_probe_attempted": bool(previous.get("claude_probe_attempted")),
         })
@@ -58,16 +61,18 @@ def _heartbeat(state: ProjectState, event: Event):
         session_profiles.append({
             "session_id": session,
             "plugin_version": event.payload.get("plugin_version"),
+            "plugin_root": event.payload.get("plugin_root"),
+            "hook_schema_version": event.payload.get("hook_schema_version"),
+            "observed_at": event.observed_at,
             "profile": str(event.payload.get("profile") or ""),
             "claude_probe_attempted": bool(event.payload.get("claude_probe_attempted")),
         })
-    recent = session_profiles[-4:]
+    owners = {run.session_id for key, run in state.active_runs.items()
+              if key.startswith(f"{provider}:")}
     if state.active_run:
-        owner = next((item for item in session_profiles
-                      if item.get("session_id") == state.active_run.session_id), None)
-        if owner and owner not in recent:
-            recent.insert(0, owner)
-    session_profiles = recent
+        owners.add(state.active_run.session_id)
+    session_profiles = [item for item in session_profiles
+                        if item.get("session_id") in owners or item in session_profiles[-4:]]
     facts = {
         "state": "guarded",
         "session_id": event.payload.get("session_id"),
@@ -110,7 +115,12 @@ def _route_accepted(state: ProjectState, event: Event):
         }
         # Bounded: a project does not need the consent history of every
         # session that ever touched it.
-        record["accepted"] = dict(list(accepted.items())[-4:])
+        owners = {run.session_id for key, run in state.active_runs.items()
+                  if key.startswith(f"{provider}:")}
+        record["accepted"] = {
+            owner: value for owner, value in accepted.items()
+            if owner in owners or owner in list(accepted)[-4:]
+        }
     activation[provider] = record
     return replace(state, activation=activation), (Action("route_acceptance_recorded"),)
 

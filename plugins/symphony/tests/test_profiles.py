@@ -116,6 +116,16 @@ class EntitlementProbeTests(unittest.TestCase):
         (home / "models_cache.json").write_text(json.dumps(payload))
         return {"SYMPHONY_STATE_DIR": str(self.state_root), "CODEX_HOME": str(home)}
 
+    def seed_claude_owner(self, assessment=None):
+        run = RunState(
+            run_id="run-1", task="fix it", session_id="owner", provider="claude",
+            owner_seen_at=datetime.now(timezone.utc).isoformat(),
+            assessment=assessment or {},
+        )
+        StateStore(self.state_root).update(self.project, lambda state: (
+            replace(state, active_run=run, active_runs={**state.active_runs, "claude:owner": run}), ()
+        ))
+
     def test_a_complete_roster_selects_the_full_profile(self):
         required = profiles_for("codex")[0].get("requires_all", [])
         environ = self.codex_home(roster(*required))
@@ -351,12 +361,7 @@ class EntitlementProbeTests(unittest.TestCase):
             handle({**owner, "hook_event_name": "UserPromptSubmit",
                     "prompt": "/symphony:start fix it"}, environ)
             store = StateStore(self.state_root)
-            store.update(self.project, lambda state: (
-                replace(state, active_run=RunState(
-                    run_id="run-1", task="fix it", session_id="owner",
-                    owner_seen_at=datetime.now(timezone.utc).isoformat(),
-                )), ()
-            ))
+            self.seed_claude_owner()
             handle({"session_id": "other", "cwd": str(self.project),
                     "hook_event_name": "SessionStart"}, environ)
             handle({**owner, "hook_event_name": "UserPromptSubmit",
@@ -368,12 +373,7 @@ class EntitlementProbeTests(unittest.TestCase):
 
     def test_one_shot_owner_reprobe_persists_boolean_attempt(self):
         store = StateStore(self.state_root)
-        store.update(self.project, lambda state: (
-            replace(state, active_run=RunState(
-                run_id="run-1", task="fix it", session_id="owner",
-                owner_seen_at=datetime.now(timezone.utc).isoformat(),
-            )), ()
-        ))
+        self.seed_claude_owner()
         environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
         with patch("plugins.symphony.symphony.runtime._claude_accepts", return_value=True) as probe:
             handle({"session_id": "owner", "cwd": str(self.project),
@@ -390,13 +390,7 @@ class EntitlementProbeTests(unittest.TestCase):
             handle({**owner, "hook_event_name": "UserPromptSubmit",
                     "prompt": "/symphony:start fix it"}, environ)
         store = StateStore(self.state_root)
-        store.update(self.project, lambda state: (
-            replace(state, active_run=RunState(
-                run_id="run-1", task="fix it", session_id="owner",
-                owner_seen_at=datetime.now(timezone.utc).isoformat(),
-                assessment={"size": "small", "complexity": "complex", "risk": "normal"},
-            )), ()
-        ))
+        self.seed_claude_owner({"size": "small", "complexity": "complex", "risk": "normal"})
         for index in range(6):
             handle({"session_id": f"other-{index}", "cwd": str(self.project),
                     "hook_event_name": "SessionStart"}, environ)

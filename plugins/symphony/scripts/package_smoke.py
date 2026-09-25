@@ -301,7 +301,10 @@ def _contains(value: Any, expected: str) -> bool:
 
 
 def _has_active_run(value: Any) -> bool:
-    return isinstance(value, dict) and value.get("active_run") is not None
+    if not isinstance(value, dict):
+        return False
+    runs = value.get("active_runs")
+    return bool(runs) if isinstance(runs, dict) else value.get("active_run") is not None
 
 
 def _has_guarded_heartbeat(
@@ -439,17 +442,30 @@ def _exercise(
             raise SmokeFailure("the assessor spawn did not open a run")
         if provider == "codex":
             send("Interrupt", "before-interrupt")
-        # A different session is not proof that the owner ended. Recover only
-        # after its last observed heartbeat is outside the quiet window.
-        state_path = next(state_dir.glob("*.json"))
+        # A different root session must not take over this run, even when the
+        # original owner's heartbeat is stale. Resume the original session.
+        state_path = next(state_dir.glob("*.v2.json"), None)
+        if state_path is None:
+            state_path = next(state_dir.glob("*.json"))
         document = json.loads(state_path.read_text())
-        document["active_run"]["owner_seen_at"] = "2020-01-01T00:00:00+00:00"
+        owner_key = f"{provider}:before-interrupt"
+        runs = document.get("active_runs")
+        owner = runs[owner_key] if isinstance(runs, dict) else document["active_run"]
+        owner["owner_seen_at"] = "2020-01-01T00:00:00+00:00"
+        owner_before = dict(owner)
         state_path.write_text(json.dumps(document))
         send("SessionStart", "resumed-session", source="resume")
+        if isinstance(runs, dict):
+            if owner_before != json.loads(state_path.read_text())["active_runs"][owner_key]:
+                raise SmokeFailure("another session took over the interrupted run")
+            send("SessionStart", "before-interrupt", source="resume")
         documents = _state_documents(state_dir)
         if not any(_has_active_run(document) for document in documents):
             raise SmokeFailure("resume lost the interrupted active run")
-        if not any(_contains(document, "interrupted") for document in documents):
+        # Codex's explicit Interrupt records the loss. Claude sends no
+        # Interrupt or active-agent roster here, so resume alone cannot prove
+        # that the delegated work ended.
+        if provider == "codex" and not any(_contains(document, "interrupted") for document in documents):
             raise SmokeFailure("resume did not reconcile the delegation the host can no longer run")
         activation.append("guarded")
     elif scenario == "upgrade":

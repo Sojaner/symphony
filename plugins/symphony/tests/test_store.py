@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import threading
 import unittest
 from pathlib import Path
@@ -23,6 +25,9 @@ class StateStoreTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def state_path(self) -> Path:
+        return self.data / f"{project_key(self.project)}.v2.json"
+
+    def legacy_path(self) -> Path:
         return self.data / f"{project_key(self.project)}.json"
 
     def test_round_trips_the_complete_domain_model_as_json(self):
@@ -46,12 +51,15 @@ class StateStoreTests(unittest.TestCase):
             delegations=(delegation,),
             started_at="2026-09-17T10:00:00+00:00",
             updated_at="2026-09-17T10:01:00+00:00",
+            session_id="session-1",
+            provider="codex",
         )
         state = ProjectState(
             enabled=True,
             configuration={"default_provider": "codex"},
             activation={"codex": {"state": "guarded", "session_id": "session-1"}},
             active_run=run,
+            active_runs={"codex:session-1": run},
             recent_runs=(run,),
             event_history=(event,),
         )
@@ -59,7 +67,7 @@ class StateStoreTests(unittest.TestCase):
         self.store.save(self.project, state)
 
         self.assertEqual(self.store.load(self.project), state)
-        self.assertEqual(json.loads(self.state_path().read_text())["schema_version"], 1)
+        self.assertEqual(json.loads(self.state_path().read_text())["schema_version"], 2)
 
     def test_project_key_uses_the_canonical_project_path(self):
         alias = self.project / ".." / self.project.name
@@ -98,21 +106,79 @@ class StateStoreTests(unittest.TestCase):
             [f"run-{number}" for number in range(5, 25)],
         )
 
-    def test_corrupt_state_is_preserved_and_rebuilt(self):
+    def test_corrupt_state_is_preserved_without_dropping_live_work(self):
         path = self.state_path()
         path.parent.mkdir(parents=True)
         path.write_text("not-json", encoding="utf-8")
 
+        with self.assertRaisesRegex(ValueError, "original preserved"):
+            self.store.load(self.project)
+        self.assertEqual(path.read_text(encoding="utf-8"), "not-json")
+
+    def test_future_schema_is_preserved_without_replacement(self):
+        path = self.state_path()
+        path.parent.mkdir(parents=True)
+        content = json.dumps({"schema_version": 3, "active_runs": {"unknown": {"live": True}}})
+        path.write_text(content)
+        with self.assertRaisesRegex(ValueError, "unsupported state schema"):
+            self.store.load(self.project)
+        self.assertEqual(path.read_text(), content)
+
+    def test_schema_one_upgrade_preserves_the_active_run(self):
+        path = self.legacy_path()
+        path.parent.mkdir(parents=True)
+        run = RunState("old-run", "unfinished", session_id="old-session")
+        from dataclasses import asdict
+        path.write_text(json.dumps({
+            "schema_version": 1, "enabled": True, "configuration": {"policy": "keep"},
+            "activation": {"codex": {"session_id": "old-session"}}, "active_run": asdict(run), "recent_runs": [],
+            "event_history": [], "needs_reassessment": False,
+        }))
+
         state = self.store.load(self.project)
 
-        self.assertTrue(state.needs_reassessment)
-        archives = list(path.parent.glob(path.name + ".corrupt-*"))
-        self.assertEqual(len(archives), 1)
-        self.assertEqual(archives[0].read_text(encoding="utf-8"), "not-json")
-        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 1)
+        identified = RunState("old-run", "unfinished", session_id="old-session", provider="codex")
+        self.assertEqual(state.active_run, identified)
+        self.assertEqual(state.active_runs, {"codex:old-session": identified})
+        self.assertTrue(state.enabled)
+        self.assertEqual(state.configuration, {"policy": "keep"})
+        self.assertEqual(json.loads(path.read_text())["schema_version"], 1)
+        self.assertEqual(json.loads(self.state_path().read_text())["schema_version"], 2)
+
+    def test_old_writer_cannot_overwrite_the_imported_v2_run(self):
+        path = self.legacy_path()
+        path.parent.mkdir(parents=True)
+        original = {
+            "schema_version": 1, "enabled": True,
+            "activation": {"codex": {"session_id": "owner"}},
+            "active_run": {"run_id": "owner-run", "task": "Keep owner", "session_id": "owner"},
+        }
+        path.write_text(json.dumps(original))
+        self.assertEqual(self.store.load(self.project).active_runs["codex:owner"].run_id, "owner-run")
+
+        # Simulate a still-running 1.4.6 hook replacing its own file after import.
+        path.write_text(json.dumps({**original, "active_run": None}))
+        self.store.update(self.project, lambda state: (state, None))
+
+        self.assertEqual(self.store.load(self.project).active_runs["codex:owner"].run_id, "owner-run")
+        self.assertIsNone(json.loads(path.read_text())["active_run"])
+
+    def test_ambiguous_v1_owner_is_retained_without_claiming_a_provider(self):
+        path = self.legacy_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({
+            "schema_version": 1, "enabled": True, "activation": {},
+            "active_run": {"run_id": "old-run", "task": "Unfinished", "session_id": "shared"},
+        }))
+
+        state = self.store.load(self.project)
+
+        self.assertEqual(set(state.active_runs), {"unbound:shared"})
+        self.assertEqual(state.active_runs["unbound:shared"].provider, "")
+        self.assertEqual(json.loads(path.read_text())["schema_version"], 1)
 
     def test_pre_1_0_migration_imports_only_enablement_and_configuration(self):
-        path = self.state_path()
+        path = self.legacy_path()
         path.parent.mkdir(parents=True)
         path.write_text(
             json.dumps(
@@ -138,7 +204,8 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(state.recent_runs, ())
         self.assertEqual(state.event_history, ())
         self.assertTrue(state.needs_reassessment)
-        self.assertEqual(len(list(path.parent.glob(path.name + ".pre-1.0-*"))), 1)
+        self.assertTrue(path.exists(), "old hooks still own the unsuffixed state file")
+        self.assertTrue(self.state_path().exists())
 
     def test_update_serializes_parallel_read_modify_write(self):
         workers = 12
@@ -158,6 +225,32 @@ class StateStoreTests(unittest.TestCase):
             thread.join()
 
         self.assertEqual(self.store.load(self.project).configuration["count"], workers)
+
+    def test_updates_from_separate_processes_preserve_both_runs(self):
+        script = """
+import sys, time
+from dataclasses import replace
+from pathlib import Path
+from plugins.symphony.symphony.model import RunState
+from plugins.symphony.symphony.store import StateStore
+store = StateStore(Path(sys.argv[1]))
+project, session = Path(sys.argv[2]), sys.argv[3]
+def add(state):
+    runs = dict(state.active_runs)
+    time.sleep(0.15)
+    runs['codex:' + session] = RunState(session, session, session_id=session)
+    return replace(state, active_runs=runs), None
+store.update(project, add)
+"""
+        processes = [subprocess.Popen(
+            [sys.executable, "-c", script, str(self.data), str(self.project), session],
+            cwd=Path(__file__).resolve().parents[3],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        ) for session in ("one", "two")]
+        for process in processes:
+            _, stderr = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 0, stderr)
+        self.assertEqual(set(self.store.load(self.project).active_runs), {"codex:one", "codex:two"})
 
     def test_persistence_redacts_secret_values_and_credential_text(self):
         state = ProjectState(

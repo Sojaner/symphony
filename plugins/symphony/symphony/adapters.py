@@ -84,6 +84,9 @@ def _codex_subagent_metadata(payload: dict[str, Any]) -> dict[str, str]:
                     agent_path = record_payload.get("agent_path") or spawn.get("agent_path")
                     if agent_path:
                         found["task_name"] = str(agent_path).rsplit("/", 1)[-1]
+                    parent_thread_id = spawn.get("parent_thread_id")
+                    if parent_thread_id:
+                        found["parent_thread_id"] = str(parent_thread_id)
                 elif record.get("type") == "turn_context":
                     if record_payload.get("model"):
                         found["model"] = str(record_payload["model"])
