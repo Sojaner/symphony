@@ -130,13 +130,17 @@ jobs:
           $env:CLAUDE_CODE_GIT_BASH_PATH = Join-Path $env:ProgramFiles 'Git/bin/bash.exe'
           New-Item -ItemType Directory -Force -Path $env:CLAUDE_CONFIG_DIR,$env:SYMPHONY_STATE_DIR | Out-Null
           if (-not (Test-Path $env:CLAUDE_CODE_GIT_BASH_PATH)) { throw 'Git Bash missing' }
+          if ($env:CLAUDE_PLUGIN_ROOT) { throw 'Unexpected inherited Claude plugin root' }
           claude.cmd plugin marketplace add $env:GITHUB_WORKSPACE
           if ($LASTEXITCODE -ne 0) { throw 'Claude marketplace add failed' }
           claude.cmd plugin install -y symphony@symphony
           if ($LASTEXITCODE -ne 0) { throw 'Claude plugin install failed' }
           $version = (Get-Content 'plugins/symphony/.claude-plugin/plugin.json' -Raw | ConvertFrom-Json).version
-          $env:SYMPHONY_EXPECTED_PLUGIN_ROOT = Join-Path $env:CLAUDE_CONFIG_DIR "plugins/cache/symphony/symphony/$version"
-          if (-not (Test-Path (Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'hooks/hooks.json'))) { throw 'Installed Claude hooks missing' }
+          $cacheRoot = Join-Path $env:CLAUDE_CONFIG_DIR "plugins/cache/symphony/symphony/$version"
+          if (-not (Test-Path (Join-Path $cacheRoot 'hooks/hooks.json'))) { throw 'Installed Claude hooks missing' }
+          # Claude executes local-marketplace hooks from the source tree even
+          # though plugin install also creates a versioned cache copy.
+          $env:SYMPHONY_EXPECTED_PLUGIN_ROOT = Join-Path $env:GITHUB_WORKSPACE 'plugins/symphony'
           $helpOutput = Join-Path $env:RUNNER_TEMP 'claude-windows-help.txt'
           $debugLog = Join-Path $env:RUNNER_TEMP 'claude-windows-hooks-debug.txt'
           claude.cmd --debug-file $debugLog --print --model haiku --max-budget-usd 0.50 --output-format text '/symphony:help' | Out-File $helpOutput
