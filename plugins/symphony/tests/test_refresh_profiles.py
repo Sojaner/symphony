@@ -450,9 +450,18 @@ class PolicyCheckTests(unittest.TestCase):
     def test_offline_check_rejects_profile_local_effort_support_drift(self):
         document = json.loads(self.refresh.PROFILES.read_text())
         opus = document["providers"]["claude"]["profiles"][1]
-        opus["efforts"]["claude-opus-5-5"].remove("high")
-        for cell in ("medium/complex", "large/complex"):
-            opus["matrix"][cell]["effort"] = "xhigh"
+        # Keep every route valid under its local declaration while making
+        # this profile disagree with the other profiles' support snapshot.
+        model = "claude-opus-5-5"
+        levels = opus["efforts"][model]
+        selected = {choice["effort"] for choice in opus["matrix"].values()
+                    if choice["model"] == model}
+        unused = next((level for level in reversed(levels)
+                       if level not in selected and level != "high"), None)
+        if unused:
+            levels.remove(unused)
+        else:
+            levels.insert(0, "none")
         self.assertTrue(all(choice["effort"] in opus["efforts"][choice["model"]]
                             for choice in opus["matrix"].values()))
         with TemporaryDirectory() as directory:

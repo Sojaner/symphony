@@ -280,9 +280,12 @@ class PackageContractTests(unittest.TestCase):
             python = subprocess.run(["cmd", "/d", "/s", "/c", "python --version"],
                                     capture_output=True, text=True, env=env, check=False)
             self.assertEqual(python.returncode, 0, python.stderr)
-            broken_py = subprocess.run(["cmd", "/d", "/s", "/c", "py -3 --version"],
-                                       capture_output=True, text=True, env=env, check=False)
-            self.assertNotEqual(broken_py.returncode, 0)
+            if not os.environ.get("SYMPHONY_REQUIRE_STANDARD_USER"):
+                # A corrupt .exe can trigger an invisible Windows error dialog
+                # on a credentialed, non-interactive test desktop.
+                broken_py = subprocess.run(["cmd", "/d", "/s", "/c", "py -3 --version"],
+                                           capture_output=True, text=True, env=env, check=False)
+                self.assertNotEqual(broken_py.returncode, 0)
             config = load_json("hooks/codex.json")
             # Codex wraps commandWindows in quotes when calling cmd.exe /C.
             def run_hook(command: str, payload: str, environment: dict[str, str]):

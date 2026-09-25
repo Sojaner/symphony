@@ -44,12 +44,30 @@ def _heartbeat(state: ProjectState, event: Event):
     activation = dict(state.activation)
     previous = state.activation.get(provider, {})
     session_profiles = list(previous.get("session_profiles") or ()) if isinstance(previous, Mapping) else []
+    prior_session = str(previous.get("session_id") or "") if isinstance(previous, Mapping) else ""
+    if prior_session and not any(item.get("session_id") == prior_session for item in session_profiles):
+        session_profiles.append({
+            "session_id": prior_session,
+            "plugin_version": previous.get("plugin_version"),
+            "profile": str(previous.get("profile") or ""),
+            "claude_probe_attempted": bool(previous.get("claude_probe_attempted")),
+        })
     session = str(event.payload.get("session_id") or "")
     if session:
         session_profiles = [item for item in session_profiles if item.get("session_id") != session]
-        session_profiles.append({"session_id": session, "profile": str(event.payload.get("profile") or "")})
-    if not state.active_run:
-        session_profiles = session_profiles[-4:]
+        session_profiles.append({
+            "session_id": session,
+            "plugin_version": event.payload.get("plugin_version"),
+            "profile": str(event.payload.get("profile") or ""),
+            "claude_probe_attempted": bool(event.payload.get("claude_probe_attempted")),
+        })
+    recent = session_profiles[-4:]
+    if state.active_run:
+        owner = next((item for item in session_profiles
+                      if item.get("session_id") == state.active_run.session_id), None)
+        if owner and owner not in recent:
+            recent.insert(0, owner)
+    session_profiles = recent
     facts = {
         "state": "guarded",
         "session_id": event.payload.get("session_id"),
@@ -62,7 +80,6 @@ def _heartbeat(state: ProjectState, event: Event):
         # Which shipped entitlement profile this session routes through.
         "profile": event.payload.get("profile"),
         "claude_probe_attempted": event.payload.get("claude_probe_attempted"),
-        "claude_active_model": event.payload.get("claude_active_model"),
         # Consent, keyed by session and preserved rather than replaced. One
         # slot per provider meant a second terminal's heartbeat destroyed what
         # this one had accepted, and `proceed` silently stopped holding.

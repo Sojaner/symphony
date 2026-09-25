@@ -47,6 +47,8 @@ HIGH_EFFORTS = {"high", "xhigh", "max"}
 
 
 def handle(payload: dict, environ: Mapping[str, str] = os.environ) -> HookResult:
+    if environ.get("SYMPHONY_CLAUDE_PROBE"):
+        return HookResult()
     provider = str(environ.get("SYMPHONY_PROVIDER") or detect_provider(payload))
     project = Path(payload.get("cwd") or os.getcwd()).resolve()
     legacy_roots = tuple(
@@ -76,17 +78,12 @@ def _transition(
     environ: Mapping[str, str],
 ) -> tuple[ProjectState, tuple[Action, ...]]:
     actions: tuple[Action, ...] = ()
+    if source.kind not in {"session_heartbeat", "user_prompt"}:
+        state = _activate_session_profile(state, provider, str(payload.get("session_id") or ""))
 
     if source.kind in {"session_heartbeat", "user_prompt"}:
         probe_claude = _should_probe_claude(state, source, provider, environ)
-        previous = state.activation.get("claude", {})
-        same_claude_session = provider == "claude" and previous.get("session_id") == payload.get("session_id")
-        active_claude_model = ""
-        if provider == "claude":
-            if source.kind == "session_heartbeat" and payload.get("model"):
-                active_claude_model = str(payload["model"])
-            elif same_claude_session:
-                active_claude_model = str(previous.get("claude_active_model") or "")
+        previous = _session_profile_record(state, "claude", str(payload.get("session_id") or ""))
         heartbeat = Event(
             source.event_id + ":" + source.observed_at + ":heartbeat",
             "session_heartbeat",
@@ -102,12 +99,12 @@ def _transition(
                 "last_fault": _drain_fault(environ),
                 "profile": _entitlement_profile(
                     state, provider, str(payload.get("session_id") or ""), environ,
-                    probe_claude=probe_claude, active_claude_model=active_claude_model,
+                    probe_claude=probe_claude,
                 ),
                 "claude_probe_attempted": probe_claude or (
-                    previous.get("claude_probe_attempted", False) if same_claude_session else False
+                    previous.get("claude_probe_attempted", False)
+                    if previous.get("plugin_version") == PLUGIN_VERSION else False
                 ),
-                "claude_active_model": active_claude_model if provider == "claude" else None,
             },
         )
         state, heartbeat_actions = reduce(state, heartbeat)
@@ -191,27 +188,68 @@ def _carried_acceptance(
     return ""
 
 
+def _session_profile_record(state: ProjectState, provider: str, session_id: str) -> Mapping:
+    recorded = state.activation.get(provider, {})
+    if not session_id or not isinstance(recorded, Mapping):
+        return {}
+    if recorded.get("session_id") == session_id:
+        return recorded
+    return next((item for item in reversed(recorded.get("session_profiles", ()))
+                 if isinstance(item, Mapping) and item.get("session_id") == session_id), {})
+
+
+def _activate_session_profile(state: ProjectState, provider: str, session_id: str) -> ProjectState:
+    """Restore this session's route before hooks that do not emit a heartbeat."""
+    if provider != "claude":
+        return state
+    current = state.activation.get(provider, {})
+    if not session_id or current.get("session_id") == session_id:
+        return state
+    record = _session_profile_record(state, provider, session_id)
+    valid = record.get("plugin_version") == PLUGIN_VERSION
+    accepted = dict(current.get("accepted") or {})
+    previous_session = str(current.get("session_id") or "")
+    if previous_session and previous_session not in accepted and current.get("accepted_profile"):
+        accepted[previous_session] = {
+            "profile": str(current.get("accepted_profile") or ""),
+            "route": str(current.get("accepted_route") or ""),
+        }
+    activation = dict(state.activation)
+    activation[provider] = {
+        **current,
+        "session_id": session_id,
+        "plugin_version": PLUGIN_VERSION,
+        "profile": record.get("profile", "") if valid else "",
+        "claude_probe_attempted": bool(record.get("claude_probe_attempted")) if valid else False,
+        "accepted": accepted,
+        "accepted_profile": "",
+        "accepted_route": "",
+    }
+    return replace(state, activation=activation)
+
+
 def _should_probe_claude(
     state: ProjectState, source: Event, provider: str, environ: Mapping[str, str]
 ) -> bool:
-    if (provider != "claude" or source.kind != "user_prompt" or state.active_run
+    session_id = str(source.payload.get("session_id") or "")
+    if (provider != "claude" or source.kind != "user_prompt"
+            or (state.active_run and state.active_run.session_id != session_id)
             or environ.get("SYMPHONY_CLAUDE_PROBE")):
         return False
     if environ.get("SYMPHONY_PROFILE") or environ.get("SYMPHONY_CLAUDE_AVAILABLE_MODELS"):
         return False
-    recorded = state.activation.get("claude", {})
-    if (recorded.get("session_id") == source.payload.get("session_id")
-            and recorded.get("claude_probe_attempted")):
+    recorded = _session_profile_record(state, "claude", session_id)
+    if recorded.get("plugin_version") == PLUGIN_VERSION and recorded.get("claude_probe_attempted"):
         return False
     control = _parse_control(str(source.payload.get("prompt") or "").strip())
-    return (control is None and state.enabled) or bool(
+    return (control is None and (state.enabled or state.active_run is not None)) or bool(
         control and control[0] in {"start", "enable"} and control[1]
     )
 
 
 def _entitlement_profile(
     state: ProjectState, provider: str, session_id: str, environ: Mapping[str, str],
-    *, probe_claude: bool = False, active_claude_model: str = "",
+    *, probe_claude: bool = False,
 ) -> str:
     """Which shipped profile this account can run, probed once per session/version.
 
@@ -229,13 +267,11 @@ def _entitlement_profile(
         # An explicit pin skips probing entirely: useful when a host's private
         # caches are unreadable, and what keeps tests off the developer's box.
         return pinned
-    recorded = state.activation.get(provider, {})
-    if (isinstance(recorded, Mapping) and recorded.get("plugin_version") == PLUGIN_VERSION
+    recorded = _session_profile_record(state, provider, session_id)
+    if (recorded.get("plugin_version") == PLUGIN_VERSION
             and recorded.get("profile")):
-        if not session_id or recorded.get("session_id") == session_id:
-            return str(recorded["profile"])
-    entitled = _entitlement(provider, environ, probe_claude=probe_claude,
-                            active_claude_model=active_claude_model)
+        return str(recorded["profile"])
+    entitled = _entitlement(provider, environ, probe_claude=probe_claude)
     if entitled is None:
         return ""
     for profile in profiles:
@@ -252,12 +288,11 @@ def _entitlement_profile(
     return NO_PROFILE
 
 
-def _entitlement(provider: str, environ: Mapping[str, str], *, probe_claude: bool = False,
-                 active_claude_model: str = "") -> set[str] | None:
+def _entitlement(provider: str, environ: Mapping[str, str], *, probe_claude: bool = False) -> set[str] | None:
     """What the account grants, read without touching any credential file."""
     if provider == "codex":
         return _codex_entitlement(environ)
-    return _claude_entitlement(environ, probe=probe_claude, active_model=active_claude_model)
+    return _claude_entitlement(environ, probe=probe_claude)
 
 
 def _codex_entitlement(environ: Mapping[str, str]) -> set[str] | None:
@@ -273,15 +308,14 @@ def _codex_entitlement(environ: Mapping[str, str]) -> set[str] | None:
     }
 
 
-def _claude_entitlement(environ: Mapping[str, str], *, probe: bool = False,
-                        active_model: str = "") -> set[str] | None:
+def _claude_entitlement(environ: Mapping[str, str], *, probe: bool = False) -> set[str] | None:
     # CI's API key and the user's Claude Code login can have different access.
     models = environ.get("SYMPHONY_CLAUDE_AVAILABLE_MODELS", "")
     explicit = {model.strip() for model in models.split(",") if model.strip()}
     if explicit or not probe:
         return explicit or None
     targets = ("claude-sonnet-5", "claude-opus-5-5")
-    available = {active_model} if active_model in targets else set()
+    available = set()
     for model in targets:
         if model not in available and _claude_accepts(model):
             available.add(model)
@@ -296,7 +330,8 @@ def _claude_accepts(model: str) -> bool:
             return False
         completed = subprocess.run(
             [executable, "--settings", '{"disableAllHooks":true}', "--print", "--no-session-persistence",
-             "--tools", "", "--system-prompt", "Reply ok.", "--model", model,
+             "--tools", "", "--disallowedTools", "mcp__*",
+             "--system-prompt", "Reply ok.", "--model", model,
              "--max-budget-usd", "0.25", "--output-format", "json", "Reply ok."],
             capture_output=True, text=True, timeout=15,
             env={**os.environ, "SYMPHONY_CLAUDE_PROBE": "1"},

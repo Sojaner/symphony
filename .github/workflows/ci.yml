@@ -37,6 +37,7 @@ jobs:
         run: python -m unittest plugins.symphony.tests.test_package.PackageContractTests.test_codex_windows_hooks_run_without_a_working_py_launcher plugins.symphony.tests.test_package.PackageContractTests.test_claude_hooks_select_available_python_with_a_quoted_plugin_path -v
 
       - name: Execute Windows hooks as a standard user
+        timeout-minutes: 5
         run: |
           $user = 'symphony-ci'
           $secure = ConvertTo-SecureString ([guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force
@@ -55,9 +56,14 @@ jobs:
             $stdout = Join-Path $testRoot 'stdout.log'
             $stderr = Join-Path $testRoot 'stderr.log'
             $test = Start-Process -FilePath $python -WorkingDirectory $env:GITHUB_WORKSPACE `
-              -Credential $credential -LoadUserProfile -Wait -PassThru `
+              -Credential $credential -LoadUserProfile -PassThru `
               -ArgumentList '-m unittest plugins.symphony.tests.test_package.PackageContractTests.test_codex_windows_hooks_run_without_a_working_py_launcher plugins.symphony.tests.test_package.PackageContractTests.test_claude_hooks_select_available_python_with_a_quoted_plugin_path -v' `
               -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            if (-not $test.WaitForExit(120000)) {
+              Get-Content $stdout,$stderr -ErrorAction SilentlyContinue
+              Stop-Process -Id $test.Id -Force -ErrorAction SilentlyContinue
+              throw 'Standard user hook test exceeded two minutes'
+            }
             Get-Content $stdout,$stderr
             if ($test.ExitCode -ne 0) { throw "Standard user hooks exited $($test.ExitCode)" }
           } finally {
@@ -142,7 +148,7 @@ jobs:
           model = 'claude-opus-5-5'
           completed = subprocess.run(
               [executable, '--settings', '{"disableAllHooks":true}', '--print', '--no-session-persistence',
-               '--tools', '', '--system-prompt', 'Reply ok.', '--model', model,
+               '--tools', '', '--disallowedTools', 'mcp__*', '--system-prompt', 'Reply ok.', '--model', model,
                '--max-budget-usd', '0.25', '--output-format', 'json', 'Reply ok.'],
               capture_output=True, text=True, timeout=15,
           )

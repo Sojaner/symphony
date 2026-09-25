@@ -3,6 +3,7 @@ import sys
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import replace
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,6 +18,7 @@ from plugins.symphony.symphony.routing import (
 )
 from plugins.symphony.symphony.runtime import handle
 from plugins.symphony.symphony import PLUGIN_VERSION
+from plugins.symphony.symphony.model import RunState
 from plugins.symphony.symphony.store import StateStore
 
 CODEX_FULL_SNAPSHOT = snapshot_for("codex", "full")
@@ -220,17 +222,19 @@ class EntitlementProbeTests(unittest.TestCase):
         store = StateStore(self.state_root)
         store.update(self.project, lambda state: (
             replace(state, activation={"claude": {
-                "session_id": "claude-session", "plugin_version": "1.3.10", "profile": "opus"
+                "session_id": "claude-session", "plugin_version": "1.3.10", "profile": "opus",
+                "claude_probe_attempted": True,
             }}), ()
         ))
         environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
         self.assertFalse(self.heartbeat(environ, "claude", source="resume").get("profile"))
-        with patch("plugins.symphony.symphony.runtime._claude_accepts", return_value=False):
+        with patch("plugins.symphony.symphony.runtime._claude_accepts", return_value=True) as probe:
             handle({
                 "session_id": "claude-session", "cwd": str(self.project),
                 "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:start ship it",
             }, environ)
-        self.assertFalse(store.load(self.project).activation["claude"].get("profile"))
+        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(store.load(self.project).activation["claude"]["profile"], "opus")
 
     def test_a_current_claude_profile_is_reused_within_its_session(self):
         store = StateStore(self.state_root)
@@ -270,6 +274,7 @@ class EntitlementProbeTests(unittest.TestCase):
             model = argv[argv.index("--model") + 1]
             self.assertIn('{"disableAllHooks":true}', argv)
             self.assertIn("--max-budget-usd", argv)
+            self.assertEqual(argv[argv.index("--disallowedTools") + 1], "mcp__*")
             return unittest.mock.Mock(returncode=0, stdout=json.dumps({
                 "modelUsage": {model: {"inputTokens": 1}}, "is_error": False,
             }))
@@ -283,20 +288,22 @@ class EntitlementProbeTests(unittest.TestCase):
             handle(payload, environ)
         self.assertEqual(run.call_count, 2)
 
-    def test_session_model_skips_its_probe(self):
+    def test_session_model_is_not_proof_of_access(self):
         environ = {"SYMPHONY_STATE_DIR": str(self.state_root), "SYMPHONY_PROVIDER": "claude"}
         handle({"session_id": "claude-session", "cwd": str(self.project),
                 "hook_event_name": "SessionStart", "model": "claude-sonnet-5"}, environ)
         payload = {"session_id": "claude-session", "cwd": str(self.project),
                    "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:start fix it"}
-        completed = unittest.mock.Mock(returncode=0, stdout=json.dumps({
-            "modelUsage": {"claude-opus-5-5": {"inputTokens": 1}}, "is_error": False,
-        }))
+        def probe(argv, **_kwargs):
+            model = argv[argv.index("--model") + 1]
+            return unittest.mock.Mock(returncode=0, stdout=json.dumps({
+                "modelUsage": {model: {"inputTokens": 1}}, "is_error": False,
+            }))
+
         with patch("plugins.symphony.symphony.runtime.shutil.which", return_value="claude"), \
-             patch("plugins.symphony.symphony.runtime.subprocess.run", return_value=completed) as run:
+             patch("plugins.symphony.symphony.runtime.subprocess.run", side_effect=probe) as run:
             handle(payload, environ)
-        self.assertEqual(run.call_count, 1)
-        self.assertEqual(run.call_args.args[0][run.call_args.args[0].index("--model") + 1], "claude-opus-5-5")
+        self.assertEqual(run.call_count, 2)
         self.assertEqual(StateStore(self.state_root).load(self.project).activation["claude"]["profile"], "opus")
 
     def test_claude_probe_rejects_a_substituted_model_and_does_not_retry(self):
@@ -336,6 +343,111 @@ class EntitlementProbeTests(unittest.TestCase):
         activation = StateStore(self.state_root).load(self.project).activation["claude"]
         self.assertFalse(activation.get("profile"))
         self.assertTrue(activation["claude_probe_attempted"])
+
+    def test_other_session_does_not_replace_active_owner_profile(self):
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
+        owner = {"session_id": "owner", "cwd": str(self.project)}
+        with patch("plugins.symphony.symphony.runtime._claude_accepts", return_value=True) as probe:
+            handle({**owner, "hook_event_name": "UserPromptSubmit",
+                    "prompt": "/symphony:start fix it"}, environ)
+            store = StateStore(self.state_root)
+            store.update(self.project, lambda state: (
+                replace(state, active_run=RunState(
+                    run_id="run-1", task="fix it", session_id="owner",
+                    owner_seen_at=datetime.now(timezone.utc).isoformat(),
+                )), ()
+            ))
+            handle({"session_id": "other", "cwd": str(self.project),
+                    "hook_event_name": "SessionStart"}, environ)
+            handle({**owner, "hook_event_name": "UserPromptSubmit",
+                    "prompt": "Continue the active run"}, environ)
+        self.assertEqual(probe.call_count, 2)
+        activation = store.load(self.project).activation["claude"]
+        self.assertEqual(activation["profile"], "opus")
+        self.assertEqual({item["session_id"]: item["profile"] for item in activation["session_profiles"]}["owner"], "opus")
+
+    def test_one_shot_owner_reprobe_persists_boolean_attempt(self):
+        store = StateStore(self.state_root)
+        store.update(self.project, lambda state: (
+            replace(state, active_run=RunState(
+                run_id="run-1", task="fix it", session_id="owner",
+                owner_seen_at=datetime.now(timezone.utc).isoformat(),
+            )), ()
+        ))
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
+        with patch("plugins.symphony.symphony.runtime._claude_accepts", return_value=True) as probe:
+            handle({"session_id": "owner", "cwd": str(self.project),
+                    "hook_event_name": "UserPromptSubmit", "prompt": "Continue the active run"}, environ)
+        self.assertEqual(probe.call_count, 2)
+        activation = store.load(self.project).activation["claude"]
+        self.assertIs(activation["claude_probe_attempted"], True)
+        self.assertEqual(activation["profile"], "opus")
+
+    def test_owner_lead_spawn_uses_its_profile_without_another_prompt(self):
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
+        owner = {"session_id": "owner", "cwd": str(self.project)}
+        with patch("plugins.symphony.symphony.runtime._claude_accepts", return_value=True):
+            handle({**owner, "hook_event_name": "UserPromptSubmit",
+                    "prompt": "/symphony:start fix it"}, environ)
+        store = StateStore(self.state_root)
+        store.update(self.project, lambda state: (
+            replace(state, active_run=RunState(
+                run_id="run-1", task="fix it", session_id="owner",
+                owner_seen_at=datetime.now(timezone.utc).isoformat(),
+                assessment={"size": "small", "complexity": "complex", "risk": "normal"},
+            )), ()
+        ))
+        for index in range(6):
+            handle({"session_id": f"other-{index}", "cwd": str(self.project),
+                    "hook_event_name": "SessionStart"}, environ)
+        records = store.load(self.project).activation["claude"]["session_profiles"]
+        self.assertLessEqual(len(records), 5)
+        self.assertIn("owner", {item["session_id"] for item in records})
+        spawn = handle({**owner, "hook_event_name": "PreToolUse", "tool_name": "Agent",
+                        "tool_input": {"subagent_type": "symphony:symphony-lead-claude-sonnet-5-xhigh",
+                                       "prompt": "SYMPHONY_ROLE: lead\nSYMPHONY_ROUTE: "
+                                                 '{"size":"small","complexity":"complex","risk":"normal"}'}},
+                       environ)
+        self.assertEqual(store.load(self.project).activation["claude"]["profile"], "opus")
+        self.assertIn("claude-opus-5-5", spawn.stdout)
+
+    def test_probe_child_cannot_reenter_symphony_when_hook_disabling_is_ignored(self):
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root), "SYMPHONY_CLAUDE_PROBE": "1"}
+        result = handle({"session_id": "child", "cwd": str(self.project),
+                         "hook_event_name": "UserPromptSubmit", "prompt": "Reply ok."}, environ)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(StateStore(self.state_root).load(self.project).activation, {})
+
+    def test_proceed_does_not_transfer_consent_to_another_session(self):
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root), "SYMPHONY_PROVIDER": "claude",
+                   "SYMPHONY_PROFILE": "sonnet"}
+        owner = {"session_id": "owner", "cwd": str(self.project)}
+        handle({**owner, "hook_event_name": "SessionStart"}, environ)
+        handle({**owner, "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:proceed"}, environ)
+        other = {"session_id": "other", "cwd": str(self.project)}
+        handle({**other, "hook_event_name": "PreToolUse", "tool_name": "Agent",
+                "tool_input": {}}, environ)
+        activation = StateStore(self.state_root).load(self.project).activation["claude"]
+        self.assertEqual(set(activation["accepted"]), {"owner"})
+        self.assertEqual(activation["accepted"]["owner"]["profile"], "sonnet")
+        self.assertFalse(activation["accepted_profile"])
+
+    def test_legacy_flat_consent_migrates_to_original_session(self):
+        store = StateStore(self.state_root)
+        store.update(self.project, lambda state: (
+            replace(state, activation={"claude": {
+                "session_id": "owner", "plugin_version": PLUGIN_VERSION,
+                "profile": "sonnet", "accepted_profile": "sonnet",
+                "accepted_route": "small/complex",
+            }}), ()
+        ))
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root), "SYMPHONY_PROVIDER": "claude"}
+        handle({"session_id": "other", "cwd": str(self.project),
+                "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {}}, environ)
+        activation = store.load(self.project).activation["claude"]
+        self.assertEqual(set(activation["accepted"]), {"owner"})
+        self.assertEqual(activation["accepted"]["owner"]["route"], "small/complex")
+        self.assertFalse(activation["accepted_profile"])
 
     def test_an_explicit_claude_profile_pin_is_an_opt_in(self):
         environ = {

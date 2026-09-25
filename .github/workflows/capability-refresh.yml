@@ -87,6 +87,7 @@ jobs:
           done
 
       - name: Keep the generated map for inspection
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: capability-map
