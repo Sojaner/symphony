@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import sys
 from typing import Mapping
 
@@ -76,6 +78,15 @@ def _transition(
     actions: tuple[Action, ...] = ()
 
     if source.kind in {"session_heartbeat", "user_prompt"}:
+        probe_claude = _should_probe_claude(state, source, provider, environ)
+        previous = state.activation.get("claude", {})
+        same_claude_session = provider == "claude" and previous.get("session_id") == payload.get("session_id")
+        active_claude_model = ""
+        if provider == "claude":
+            if source.kind == "session_heartbeat" and payload.get("model"):
+                active_claude_model = str(payload["model"])
+            elif same_claude_session:
+                active_claude_model = str(previous.get("claude_active_model") or "")
         heartbeat = Event(
             source.event_id + ":" + source.observed_at + ":heartbeat",
             "session_heartbeat",
@@ -90,8 +101,13 @@ def _transition(
                 "hook_schema_version": HOOK_SCHEMA_VERSION,
                 "last_fault": _drain_fault(environ),
                 "profile": _entitlement_profile(
-                    state, provider, str(payload.get("session_id") or ""), environ
+                    state, provider, str(payload.get("session_id") or ""), environ,
+                    probe_claude=probe_claude, active_claude_model=active_claude_model,
                 ),
+                "claude_probe_attempted": probe_claude or (
+                    previous.get("claude_probe_attempted", False) if same_claude_session else False
+                ),
+                "claude_active_model": active_claude_model if provider == "claude" else None,
             },
         )
         state, heartbeat_actions = reduce(state, heartbeat)
@@ -175,8 +191,27 @@ def _carried_acceptance(
     return ""
 
 
+def _should_probe_claude(
+    state: ProjectState, source: Event, provider: str, environ: Mapping[str, str]
+) -> bool:
+    if (provider != "claude" or source.kind != "user_prompt" or state.active_run
+            or environ.get("SYMPHONY_CLAUDE_PROBE")):
+        return False
+    if environ.get("SYMPHONY_PROFILE") or environ.get("SYMPHONY_CLAUDE_AVAILABLE_MODELS"):
+        return False
+    recorded = state.activation.get("claude", {})
+    if (recorded.get("session_id") == source.payload.get("session_id")
+            and recorded.get("claude_probe_attempted")):
+        return False
+    control = _parse_control(str(source.payload.get("prompt") or "").strip())
+    return (control is None and state.enabled) or bool(
+        control and control[0] in {"start", "enable"} and control[1]
+    )
+
+
 def _entitlement_profile(
-    state: ProjectState, provider: str, session_id: str, environ: Mapping[str, str]
+    state: ProjectState, provider: str, session_id: str, environ: Mapping[str, str],
+    *, probe_claude: bool = False, active_claude_model: str = "",
 ) -> str:
     """Which shipped profile this account can run, probed once per session/version.
 
@@ -199,7 +234,8 @@ def _entitlement_profile(
             and recorded.get("profile")):
         if not session_id or recorded.get("session_id") == session_id:
             return str(recorded["profile"])
-    entitled = _entitlement(provider, environ)
+    entitled = _entitlement(provider, environ, probe_claude=probe_claude,
+                            active_claude_model=active_claude_model)
     if entitled is None:
         return ""
     for profile in profiles:
@@ -216,11 +252,12 @@ def _entitlement_profile(
     return NO_PROFILE
 
 
-def _entitlement(provider: str, environ: Mapping[str, str]) -> set[str] | None:
+def _entitlement(provider: str, environ: Mapping[str, str], *, probe_claude: bool = False,
+                 active_claude_model: str = "") -> set[str] | None:
     """What the account grants, read without touching any credential file."""
     if provider == "codex":
         return _codex_entitlement(environ)
-    return _claude_entitlement(environ)
+    return _claude_entitlement(environ, probe=probe_claude, active_model=active_claude_model)
 
 
 def _codex_entitlement(environ: Mapping[str, str]) -> set[str] | None:
@@ -236,11 +273,40 @@ def _codex_entitlement(environ: Mapping[str, str]) -> set[str] | None:
     }
 
 
-def _claude_entitlement(environ: Mapping[str, str]) -> set[str] | None:
-    # Claude's plan name does not establish access to restricted models. Until
-    # the CLI exposes usable models, require an explicit model-access opt-in.
+def _claude_entitlement(environ: Mapping[str, str], *, probe: bool = False,
+                        active_model: str = "") -> set[str] | None:
+    # CI's API key and the user's Claude Code login can have different access.
     models = environ.get("SYMPHONY_CLAUDE_AVAILABLE_MODELS", "")
-    return {model.strip() for model in models.split(",") if model.strip()} or None
+    explicit = {model.strip() for model in models.split(",") if model.strip()}
+    if explicit or not probe:
+        return explicit or None
+    targets = ("claude-sonnet-5", "claude-opus-5-5")
+    available = {active_model} if active_model in targets else set()
+    for model in targets:
+        if model not in available and _claude_accepts(model):
+            available.add(model)
+    return available or None
+
+
+def _claude_accepts(model: str) -> bool:
+    """Ask this Claude Code login, then verify the model that actually served."""
+    try:
+        executable = shutil.which("claude")
+        if not executable:
+            return False
+        completed = subprocess.run(
+            [executable, "--settings", '{"disableAllHooks":true}', "--print", "--no-session-persistence",
+             "--tools", "", "--system-prompt", "Reply ok.", "--model", model,
+             "--max-budget-usd", "0.25", "--output-format", "json", "Reply ok."],
+            capture_output=True, text=True, timeout=15,
+            env={**os.environ, "SYMPHONY_CLAUDE_PROBE": "1"},
+        )
+        if completed.returncode:
+            return False
+        result = json.loads(completed.stdout)
+        return isinstance(result, dict) and not result.get("is_error") and set(result.get("modelUsage", {})) == {model}
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return False
 
 
 # ponytail: wall clock, because neither host reports whether another session is
@@ -1559,7 +1625,13 @@ def _claude_guidance(state: ProjectState | None) -> str:
     """
     snapshot = _snapshot(state, "claude") if state else snapshot_for("claude")
     cells = _claude_cells(snapshot, "lead")
+    access = ""
+    if state and state.activation.get("claude", {}).get("claude_probe_attempted"):
+        profile = _applied_profile(state, "claude")
+        access = ("Claude Code model check selected the Opus profile. " if profile == "opus" else
+                  "Claude Code could not verify both Sonnet and Opus; this task uses the Sonnet fallback. ")
     return (
+        access +
         f"On Claude Code, spawn the assessor as `symphony:symphony-assessor-{snapshot.tiers['strongest']}-high` "
         "and the lead by its assessed cell: " + "; ".join(cells) + ". "
         "Agents run in the background: after a spawn, end your turn and Claude Code wakes you with the "
@@ -1660,6 +1732,8 @@ def _status(
         f"Symphony ({scope}): {'enabled' if state.enabled else 'disabled'}",
         f"Hooks: {'guarded' if guarded else 'pending verification'}",
     ]
+    if provider == "claude" and activation.get("claude_probe_attempted"):
+        lines.append(f"Claude model check: {activation.get('profile') or 'unverified (Sonnet fallback)'}")
     if not state.active_run:
         lines.append(f"Run ({scope}): none")
     if session_id and activation_session and activation_session != session_id:

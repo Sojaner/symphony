@@ -61,6 +61,8 @@ def _heartbeat(state: ProjectState, event: Event):
         "last_fault": event.payload.get("last_fault"),
         # Which shipped entitlement profile this session routes through.
         "profile": event.payload.get("profile"),
+        "claude_probe_attempted": event.payload.get("claude_probe_attempted"),
+        "claude_active_model": event.payload.get("claude_active_model"),
         # Consent, keyed by session and preserved rather than replaced. One
         # slot per provider meant a second terminal's heartbeat destroyed what
         # this one had accepted, and `proceed` silently stopped holding.

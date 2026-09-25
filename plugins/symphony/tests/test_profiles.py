@@ -225,10 +225,11 @@ class EntitlementProbeTests(unittest.TestCase):
         ))
         environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
         self.assertFalse(self.heartbeat(environ, "claude", source="resume").get("profile"))
-        handle({
-            "session_id": "claude-session", "cwd": str(self.project),
-            "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:start ship it",
-        }, environ)
+        with patch("plugins.symphony.symphony.runtime._claude_accepts", return_value=False):
+            handle({
+                "session_id": "claude-session", "cwd": str(self.project),
+                "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:start ship it",
+            }, environ)
         self.assertFalse(store.load(self.project).activation["claude"].get("profile"))
 
     def test_a_current_claude_profile_is_reused_within_its_session(self):
@@ -261,6 +262,80 @@ class EntitlementProbeTests(unittest.TestCase):
                     "SYMPHONY_CLAUDE_AVAILABLE_MODELS": models,
                 }
                 self.assertEqual(self.heartbeat(environ, "claude").get("profile"), expected)
+
+    def test_first_claude_task_probes_the_active_login_once_for_an_opus_route(self):
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
+
+        def probe(argv, **_kwargs):
+            model = argv[argv.index("--model") + 1]
+            self.assertIn('{"disableAllHooks":true}', argv)
+            self.assertIn("--max-budget-usd", argv)
+            return unittest.mock.Mock(returncode=0, stdout=json.dumps({
+                "modelUsage": {model: {"inputTokens": 1}}, "is_error": False,
+            }))
+
+        payload = {"session_id": "claude-session", "cwd": str(self.project),
+                   "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:start fix it"}
+        with patch("plugins.symphony.symphony.runtime.shutil.which", return_value="claude"), \
+             patch("plugins.symphony.symphony.runtime.subprocess.run", side_effect=probe) as run:
+            handle(payload, environ)
+            self.assertEqual(StateStore(self.state_root).load(self.project).activation["claude"]["profile"], "opus")
+            handle(payload, environ)
+        self.assertEqual(run.call_count, 2)
+
+    def test_session_model_skips_its_probe(self):
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root), "SYMPHONY_PROVIDER": "claude"}
+        handle({"session_id": "claude-session", "cwd": str(self.project),
+                "hook_event_name": "SessionStart", "model": "claude-sonnet-5"}, environ)
+        payload = {"session_id": "claude-session", "cwd": str(self.project),
+                   "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:start fix it"}
+        completed = unittest.mock.Mock(returncode=0, stdout=json.dumps({
+            "modelUsage": {"claude-opus-5-5": {"inputTokens": 1}}, "is_error": False,
+        }))
+        with patch("plugins.symphony.symphony.runtime.shutil.which", return_value="claude"), \
+             patch("plugins.symphony.symphony.runtime.subprocess.run", return_value=completed) as run:
+            handle(payload, environ)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][run.call_args.args[0].index("--model") + 1], "claude-opus-5-5")
+        self.assertEqual(StateStore(self.state_root).load(self.project).activation["claude"]["profile"], "opus")
+
+    def test_claude_probe_rejects_a_substituted_model_and_does_not_retry(self):
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
+        payload = {"session_id": "claude-session", "cwd": str(self.project),
+                   "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:start fix it"}
+
+        def probe(argv, **_kwargs):
+            model = argv[argv.index("--model") + 1]
+            actual = "claude-sonnet-5"
+            return unittest.mock.Mock(returncode=0, stdout=json.dumps({
+                "modelUsage": {actual: {"inputTokens": 1}}, "is_error": False,
+            }))
+
+        with patch("plugins.symphony.symphony.runtime.shutil.which", return_value="claude"), \
+             patch("plugins.symphony.symphony.runtime.subprocess.run", side_effect=probe) as run:
+            handle(payload, environ)
+            activation = StateStore(self.state_root).load(self.project).activation["claude"]
+            self.assertEqual(activation["profile"], "sonnet")
+            self.assertTrue(activation["claude_probe_attempted"])
+            handle(payload, environ)
+        self.assertEqual(run.call_count, 2)
+
+    def test_claude_probe_timeout_uses_visible_fallback_once(self):
+        import subprocess
+
+        environ = {"SYMPHONY_STATE_DIR": str(self.state_root)}
+        payload = {"session_id": "claude-session", "cwd": str(self.project),
+                   "hook_event_name": "UserPromptSubmit", "prompt": "/symphony:start fix it"}
+        with patch("plugins.symphony.symphony.runtime.shutil.which", return_value="claude"), \
+             patch("plugins.symphony.symphony.runtime.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("claude", 15)) as run:
+            result = handle(payload, environ)
+            handle(payload, environ)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("Sonnet fallback", result.stdout)
+        activation = StateStore(self.state_root).load(self.project).activation["claude"]
+        self.assertFalse(activation.get("profile"))
+        self.assertTrue(activation["claude_probe_attempted"])
 
     def test_an_explicit_claude_profile_pin_is_an_opt_in(self):
         environ = {

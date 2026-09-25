@@ -76,24 +76,33 @@ def _hook_config(root: Path, provider: str) -> dict[str, Any]:
         raise SmokeFailure(f"invalid {provider} hook config: {path}") from exc
 
 
-def _event_command(config: dict[str, Any], event: str) -> str:
+def _event_command(config: dict[str, Any], event: str) -> dict[str, Any]:
     try:
         groups = config["hooks"][event]
         for group in groups:
             for hook in group.get("hooks", []):
                 if hook.get("type") == "command":
-                    return hook["command"]
+                    return hook
     except (KeyError, TypeError):
         pass
     raise SmokeFailure(f"no command hook for {event}")
 
 
-def _command_argv(command: str, root: Path, provider: str) -> list[str]:
+def _command_argv(hook: dict[str, Any], root: Path, provider: str) -> list[str]:
     placeholder = "${PLUGIN_ROOT}" if provider == "codex" else "${CLAUDE_PLUGIN_ROOT}"
+    command = hook["command"]
     if placeholder not in command:
         raise SmokeFailure(f"hook command must use {placeholder} plugin-root placeholder")
-    argv = shlex.split(command.replace(placeholder, str(root)))
-    scripts = [Path(value) for value in argv[1:] if value.endswith(".py")]
+    command = command.replace(placeholder, str(root))
+    if hook.get("shell") == "bash":
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";")
+        lexer.whitespace_split = True
+        parts = list(lexer)
+        argv = ["bash", "-c", command]
+    else:
+        argv = shlex.split(command)
+        parts = argv[1:]
+    scripts = [Path(value) for value in parts if value.endswith(".py")]
     if not scripts or not scripts[0].is_file():
         target = scripts[0] if scripts else root / "<unknown>"
         raise SmokeFailure(f"missing hook executable: {target}")

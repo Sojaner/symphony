@@ -119,6 +119,21 @@ class RosterTests(unittest.TestCase):
                     self.refresh._run_provider_agent("claude", current, entries)
                 run.assert_not_called()
 
+    def test_claude_generation_rejects_a_sonnet_only_opus_profile(self):
+        current = json.loads(self.refresh.PROFILES.read_text())["providers"]["claude"]["profiles"]
+        profiles = [{"id": item["id"], "matrix": json.loads(json.dumps(item["matrix"]))} for item in current]
+        profiles[1]["matrix"] = json.loads(json.dumps(profiles[-1]["matrix"]))
+        models = ("claude-sonnet-5", "claude-opus-5-5", "claude-fable-5-1")
+        decision = {
+            "profiles": profiles,
+            "model_order": list(models),
+            "model_efforts": current[0]["efforts"],
+        }
+        completed = unittest.mock.Mock(returncode=0, stdout=json.dumps(decision))
+        with patch.object(self.refresh.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(SystemExit, "gated profile must improve a model"):
+                self.refresh._run_provider_agent("claude", current, [{"id": model} for model in models])
+
     def test_codex_agent_prefers_newer_sol_at_equal_capability(self):
         current = json.loads(self.refresh.PROFILES.read_text())["providers"]["codex"]["profiles"]
         result = {"profiles": []}

@@ -33,8 +33,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Execute every packaged Codex Windows hook with broken py
-        run: python -m unittest plugins.symphony.tests.test_package.PackageContractTests.test_codex_windows_hooks_run_without_a_working_py_launcher -v
+      - name: Execute Windows hooks under Restricted PowerShell policy
+        run: python -m unittest plugins.symphony.tests.test_package.PackageContractTests.test_codex_windows_hooks_run_without_a_working_py_launcher plugins.symphony.tests.test_package.PackageContractTests.test_claude_hooks_select_available_python_with_a_quoted_plugin_path -v
+
+      - name: Execute Windows hooks as a standard user
+        run: |
+          $user = 'symphony-ci'
+          $secure = ConvertTo-SecureString ([guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force
+          $testRoot = Join-Path $env:PUBLIC 'symphony-ci-tests'
+          New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
+          New-LocalUser -Name $user -Password $secure | Out-Null
+          try {
+            icacls.exe $testRoot /grant "$($env:COMPUTERNAME)\${user}:(OI)(CI)M" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Could not grant standard user test directory access' }
+            $env:PYTHONPATH = $env:GITHUB_WORKSPACE
+            $env:TEMP = $testRoot
+            $env:TMP = $testRoot
+            $env:SYMPHONY_REQUIRE_STANDARD_USER = '1'
+            $credential = [pscredential]::new("$env:COMPUTERNAME\$user", $secure)
+            $python = (Get-Command python.exe -CommandType Application).Source
+            $stdout = Join-Path $testRoot 'stdout.log'
+            $stderr = Join-Path $testRoot 'stderr.log'
+            $test = Start-Process -FilePath $python -WorkingDirectory $env:GITHUB_WORKSPACE `
+              -Credential $credential -LoadUserProfile -Wait -PassThru `
+              -ArgumentList '-m unittest plugins.symphony.tests.test_package.PackageContractTests.test_codex_windows_hooks_run_without_a_working_py_launcher plugins.symphony.tests.test_package.PackageContractTests.test_claude_hooks_select_available_python_with_a_quoted_plugin_path -v' `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            Get-Content $stdout,$stderr
+            if ($test.ExitCode -ne 0) { throw "Standard user hooks exited $($test.ExitCode)" }
+          } finally {
+            Remove-LocalUser -Name $user
+          }
 
       - name: Install Codex CLI
         run: npm install -g @openai/codex
@@ -61,13 +89,78 @@ jobs:
           $env:SYMPHONY_EXPECTED_PLUGIN_ROOT = Join-Path $env:CODEX_HOME "plugins/cache/symphony/symphony/$version"
           $installedManifest = Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'hooks/codex.json'
           if (-not (Test-Path $installedManifest)) { throw "Installed Codex hooks missing: $installedManifest" }
-          if (-not (Test-Path (Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'scripts/codex_hook.ps1'))) { throw 'Installed Windows relay missing' }
+          if (-not (Test-Path (Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'scripts/symphony_hook.py'))) { throw 'Installed hook missing' }
+          $guardedState = $env:SYMPHONY_STATE_DIR
+          $env:SYMPHONY_STATE_DIR = Join-Path $env:RUNNER_TEMP 'symphony-untrusted-state'
+          New-Item -ItemType Directory -Force -Path $env:SYMPHONY_STATE_DIR | Out-Null
+          codex exec --skip-git-repo-check `
+            --output-last-message (Join-Path $env:RUNNER_TEMP 'codex-windows-untrusted.txt') `
+            -C $env:GITHUB_WORKSPACE 'Reply OK.'
+          if ($LASTEXITCODE -ne 0) { throw 'Untrusted Codex control failed' }
+          if (Get-ChildItem $env:SYMPHONY_STATE_DIR -Filter '*.json' -Recurse) { throw 'Untrusted Codex hook wrote state' }
+          $env:SYMPHONY_STATE_DIR = $guardedState
           codex exec --dangerously-bypass-hook-trust --skip-git-repo-check `
             --output-last-message (Join-Path $env:RUNNER_TEMP 'codex-windows-help.txt') `
             -C $env:GITHUB_WORKSPACE '$symphony:symphony help'
           if ($LASTEXITCODE -ne 0) { throw 'Codex control failed' }
           python .github/scripts/assert_heartbeat.py codex
           if ($LASTEXITCODE -ne 0) { throw 'Codex heartbeat missing' }
+
+      - name: Install Claude Code
+        run: npm.cmd install -g @anthropic-ai/claude-code
+
+      - name: Run real Windows Claude control smoke
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if (-not $env:ANTHROPIC_API_KEY) {
+            if ($env:GITHUB_REF -eq 'refs/heads/main') { throw 'ANTHROPIC_API_KEY is required for release verification' }
+            Write-Host '::notice::SKIP real Windows Claude smoke: credential unavailable'
+            exit 0
+          }
+          $env:CLAUDE_CONFIG_DIR = Join-Path $env:RUNNER_TEMP 'Claude Config With Spaces'
+          $env:SYMPHONY_STATE_DIR = Join-Path $env:RUNNER_TEMP 'Claude State With Spaces'
+          $env:CLAUDE_CODE_GIT_BASH_PATH = Join-Path $env:ProgramFiles 'Git/bin/bash.exe'
+          New-Item -ItemType Directory -Force -Path $env:CLAUDE_CONFIG_DIR,$env:SYMPHONY_STATE_DIR | Out-Null
+          if (-not (Test-Path $env:CLAUDE_CODE_GIT_BASH_PATH)) { throw 'Git Bash missing' }
+          claude.cmd plugin marketplace add $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw 'Claude marketplace add failed' }
+          claude.cmd plugin install -y symphony@symphony
+          if ($LASTEXITCODE -ne 0) { throw 'Claude plugin install failed' }
+          $version = (Get-Content 'plugins/symphony/.claude-plugin/plugin.json' -Raw | ConvertFrom-Json).version
+          $env:SYMPHONY_EXPECTED_PLUGIN_ROOT = Join-Path $env:CLAUDE_CONFIG_DIR "plugins/cache/symphony/symphony/$version"
+          if (-not (Test-Path (Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'hooks/hooks.json'))) { throw 'Installed Claude hooks missing' }
+          claude.cmd --print --model haiku --max-budget-usd 0.50 --output-format text '/symphony:help' | Out-File (Join-Path $env:RUNNER_TEMP 'claude-windows-help.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Claude control failed' }
+          python .github/scripts/assert_heartbeat.py claude
+          if ($LASTEXITCODE -ne 0) { throw 'Claude heartbeat missing' }
+          @'
+          import json, shutil, subprocess
+          executable = shutil.which('claude')
+          assert executable, 'Claude executable missing from PATH'
+          model = 'claude-opus-5-5'
+          completed = subprocess.run(
+              [executable, '--settings', '{"disableAllHooks":true}', '--print', '--no-session-persistence',
+               '--tools', '', '--system-prompt', 'Reply ok.', '--model', model,
+               '--max-budget-usd', '0.25', '--output-format', 'json', 'Reply ok.'],
+              capture_output=True, text=True, timeout=15,
+          )
+          assert completed.returncode == 0, f'Claude Opus probe exited {completed.returncode}'
+          result = json.loads(completed.stdout)
+          assert not result.get('is_error') and set(result.get('modelUsage', {})) == {model}, 'Claude Opus probe used another model'
+          print('Claude shell=False Opus probe used:', ', '.join(result['modelUsage']))
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Claude same-login Opus probe failed' }
+          claude.cmd --print --model haiku --max-budget-usd 0.50 --output-format text '/symphony:start CI routing probe' | Out-File (Join-Path $env:RUNNER_TEMP 'claude-windows-start.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Claude start control failed' }
+          @'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ['SYMPHONY_STATE_DIR'])
+          documents = (json.loads(path.read_text()) for path in root.rglob('*.json'))
+          assert any(doc.get('activation', {}).get('claude', {}).get('profile') == 'opus' for doc in documents), 'Claude hook did not select Opus profile'
+          print('Claude installed hook selected Opus profile')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Claude runtime profile check failed' }
 
   verify:
     runs-on: ubuntu-latest

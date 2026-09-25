@@ -176,18 +176,64 @@ class PackageContractTests(unittest.TestCase):
         import base64
 
         prefix = "cmd.exe /c powershell.exe -NoProfile -NonInteractive -EncodedCommand "
-        source = "& (Join-Path $env:PLUGIN_ROOT 'scripts/codex_hook.ps1')"
-        self.assertTrue((PLUGIN / "scripts/codex_hook.ps1").is_file())
         for handler in handlers("hooks/codex.json"):
             command = handler["commandWindows"]
             self.assertTrue(command.startswith(prefix))
-            self.assertEqual(base64.b64decode(command[len(prefix):]).decode("utf-16le"), source)
+            source = base64.b64decode(command[len(prefix):]).decode("utf-16le")
+            self.assertIn("SYMPHONY_PROVIDER", source)
+            self.assertIn("scripts/symphony_hook.py", source)
+            self.assertNotIn(".ps1", source)
             self.assertNotIn('"', command)
+
+    def test_claude_hooks_select_available_python_with_a_quoted_plugin_path(self):
+        for handler in handlers("hooks/hooks.json"):
+            self.assertEqual(handler["shell"], "bash")
+            self.assertIn("python3", handler["command"])
+            self.assertIn("python", handler["command"])
+            self.assertIn('"${CLAUDE_PLUGIN_ROOT}/scripts/symphony_hook.py"', handler["command"])
+
+        from plugins.symphony.symphony.store import StateStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / "Claude Plugin With Spaces"
+            shutil.copytree(PLUGIN, root)
+            project = home / "Project With Spaces"
+            project.mkdir()
+            state_root = home / "state"
+            handler = next(handlers("hooks/hooks.json"))
+            env = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(root),
+                   "SYMPHONY_STATE_DIR": str(state_root)}
+            env.pop("SYMPHONY_PROVIDER", None)
+            if os.name == "nt":
+                bash = str(Path(os.environ["ProgramFiles"]) / "Git/bin/bash.exe")
+            else:
+                bash = shutil.which("bash")
+                bin_dir = home / "python3 only"
+                bin_dir.mkdir()
+                (bin_dir / "python3").symlink_to(sys.executable)
+                env["PATH"] = str(bin_dir)
+                env["OS"] = ""
+            result = subprocess.run(
+                [bash, "-c", handler["command"]],
+                input=json.dumps({"hook_event_name": "SessionStart", "session_id": "claude-session",
+                                  "cwd": str(project), "model": "claude-sonnet"}),
+                capture_output=True, text=True, env=env, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            activation = StateStore(state_root).load(project).activation
+            self.assertEqual(activation["claude"]["state"], "guarded")
+            self.assertEqual(activation["claude"]["session_id"], "claude-session")
+            self.assertNotIn("codex", activation)
 
     @unittest.skipUnless(os.name == "nt", "runs the Windows shell command")
     def test_codex_windows_hooks_run_without_a_working_py_launcher(self):
         from plugins.symphony.symphony import HOOK_SCHEMA_VERSION
         from plugins.symphony.symphony.store import StateStore
+
+        if os.environ.get("SYMPHONY_REQUIRE_STANDARD_USER"):
+            import ctypes
+            self.assertEqual(ctypes.windll.shell32.IsUserAnAdmin(), 0)
 
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -212,8 +258,22 @@ class PackageContractTests(unittest.TestCase):
                                               "WindowsPowerShell" / "v1.0"))),
                 "PLUGIN_ROOT": str(root),
                 "SYMPHONY_STATE_DIR": str(state_root),
+                "PSExecutionPolicyPreference": "Restricted",
                 "PYTHONDONTWRITEBYTECODE": "1",
             })
+            policy = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"],
+                capture_output=True, text=True, env=env, check=False,
+            )
+            self.assertEqual(policy.returncode, 0, policy.stderr)
+            self.assertEqual(policy.stdout.strip(), "Restricted")
+            blocked_script = home / "unsigned.ps1"
+            blocked_script.write_text("exit 79\n")
+            blocked = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(blocked_script)],
+                capture_output=True, text=True, env=env, check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0, "test policy allowed an unsigned script")
             python = subprocess.run(["cmd", "/d", "/s", "/c", "python --version"],
                                     capture_output=True, text=True, env=env, check=False)
             self.assertEqual(python.returncode, 0, python.stderr)

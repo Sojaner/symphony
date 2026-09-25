@@ -421,6 +421,13 @@ def validate_matrix(provider: str, result: dict, current: list[dict], roster: li
             improved |= rank[full[cell]["model"]] > rank[fallback[cell]["model"]] or full[cell]["effort"] != fallback[cell]["effort"]
         if not improved:
             raise SystemExit(f"::error::{provider} full profile must improve at least one cell over the fallback")
+        if provider == "claude":
+            for stronger, weaker in zip(normalized_profiles, normalized_profiles[1:]):
+                upper, lower = stronger["matrix"], weaker["matrix"]
+                if any(rank[upper[cell]["model"]] < rank[lower[cell]["model"]] for cell in CELLS):
+                    raise SystemExit("::error::Claude profile capability must not fall with greater entitlement")
+                if not any(rank[upper[cell]["model"]] > rank[lower[cell]["model"]] for cell in CELLS):
+                    raise SystemExit("::error::Claude gated profile must improve a model over the next profile")
     return {"profiles": normalized_profiles, "model_order": trusted_order, "model_efforts": declared_efforts,
             "rationale": str(result.get("rationale", ""))[:600]}
 
