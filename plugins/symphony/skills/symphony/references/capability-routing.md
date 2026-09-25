@@ -37,7 +37,7 @@ The tables below are generated from `profiles.json` with the runtime resolver. T
 | small / mixed | `gpt-6-sol/medium` | `gpt-6-sol/high` |
 | small / complex | `gpt-6-astra/high` | `gpt-6-astra/high` |
 | medium / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
-| medium / mixed | `gpt-6-sol/medium` | `gpt-6-sol/high` |
+| medium / mixed | `gpt-6-luna/medium` | `gpt-6-luna/high` |
 | medium / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
 | large / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
 | large / mixed | `gpt-6-luna/medium` | `gpt-6-luna/medium` |
@@ -51,7 +51,7 @@ The tables below are generated from `profiles.json` with the runtime resolver. T
 | small / mixed | `gpt-6-sol/medium` | `gpt-6-sol/high` |
 | small / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
 | medium / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
-| medium / mixed | `gpt-6-sol/medium` | `gpt-6-sol/high` |
+| medium / mixed | `gpt-6-luna/medium` | `gpt-6-luna/high` |
 | medium / complex | `gpt-6-sol/high` | `gpt-6-sol/high` |
 | large / simple | `gpt-6-luna/low` | `gpt-6-luna/medium` |
 | large / mixed | `gpt-6-luna/medium` | `gpt-6-luna/medium` |
@@ -90,28 +90,28 @@ The tables below are generated from `profiles.json` with the runtime resolver. T
 | Size / complexity | Normal risk | High risk |
 |---|---|---|
 | small / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
-| small / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/high` |
-| small / complex | `claude-fable-5-1/xhigh` | `claude-fable-5-1/xhigh` |
+| small / mixed | `claude-opus-5-5/medium` | `claude-opus-5-5/high` |
+| small / complex | `claude-fable-5-1/high` | `claude-fable-5-1/high` |
 | medium / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
-| medium / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/high` |
+| medium / mixed | `claude-opus-5-5/medium` | `claude-opus-5-5/high` |
 | medium / complex | `claude-opus-5-5/high` | `claude-opus-5-5/high` |
 | large / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
 | large / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/medium` |
-| large / complex | `claude-opus-5-5/high` | `claude-opus-5-5/high` |
+| large / complex | `claude-opus-5-5/medium` | `claude-opus-5-5/medium` |
 
 ### Claude Code: `opus`
 
 | Size / complexity | Normal risk | High risk |
 |---|---|---|
 | small / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
-| small / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/high` |
-| small / complex | `claude-opus-5-5/xhigh` | `claude-opus-5-5/xhigh` |
+| small / mixed | `claude-opus-5-5/medium` | `claude-opus-5-5/high` |
+| small / complex | `claude-opus-5-5/high` | `claude-opus-5-5/high` |
 | medium / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
-| medium / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/high` |
+| medium / mixed | `claude-opus-5-5/medium` | `claude-opus-5-5/high` |
 | medium / complex | `claude-opus-5-5/high` | `claude-opus-5-5/high` |
 | large / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
 | large / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/medium` |
-| large / complex | `claude-opus-5-5/high` | `claude-opus-5-5/high` |
+| large / complex | `claude-opus-5-5/medium` | `claude-opus-5-5/medium` |
 
 ### Claude Code: `sonnet` (fallback)
 
@@ -119,13 +119,13 @@ The tables below are generated from `profiles.json` with the runtime resolver. T
 |---|---|---|
 | small / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
 | small / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/high` |
-| small / complex | `claude-sonnet-5/xhigh` | `claude-sonnet-5/xhigh` |
+| small / complex | `claude-sonnet-5/high` | `claude-sonnet-5/high` |
 | medium / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
 | medium / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/high` |
 | medium / complex | `claude-sonnet-5/high` | `claude-sonnet-5/high` |
 | large / simple | `claude-sonnet-5/low` | `claude-sonnet-5/medium` |
 | large / mixed | `claude-sonnet-5/medium` | `claude-sonnet-5/medium` |
-| large / complex | `claude-sonnet-5/high` | `claude-sonnet-5/high` |
+| large / complex | `claude-sonnet-5/medium` | `claude-sonnet-5/medium` |
 <!-- generated routes: end -->
 
 ## Entitlement clamps

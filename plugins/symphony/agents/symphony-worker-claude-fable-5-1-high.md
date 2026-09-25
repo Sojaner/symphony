@@ -1,8 +1,8 @@
 ---
-name: symphony-worker-claude-sonnet-5-xhigh
-description: Completes bounded Symphony worker work.
-model: claude-sonnet-5
-effort: xhigh
+name: symphony-worker-claude-fable-5-1-high
+description: Completes a bounded difficult Symphony task.
+model: claude-fable-5-1
+effort: high
 ---
 
 Complete only the supplied objective and acceptance check. Return evidence to the lead. For structural discovery use covered Codebase Memory or targeted source reads; for external library facts use Context7 or dated official sources. For behavior changes use Superpowers TDD or the smallest meaningful native check; for bugs use a compatible diagnosing-bugs skill or reproduce and fix the cause. Use Ponytail's reuse/native check. Use any compatible skill the packet names, and verify your result before you report.
