@@ -180,6 +180,7 @@ class PackageContractTests(unittest.TestCase):
             command = handler["commandWindows"]
             self.assertTrue(command.startswith(prefix))
             source = base64.b64decode(command[len(prefix):]).decode("utf-16le")
+            self.assertEqual(source, (PLUGIN / "scripts/codex_hook.ps1").read_text())
             self.assertIn("SYMPHONY_PROVIDER", source)
             self.assertIn("scripts/symphony_hook.py", source)
             self.assertNotIn(".ps1", source)
@@ -262,7 +263,8 @@ class PackageContractTests(unittest.TestCase):
                 "PYTHONDONTWRITEBYTECODE": "1",
             })
             policy = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"],
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                 "$env:PSExecutionPolicyPreference"],
                 capture_output=True, text=True, env=env, check=False,
             )
             self.assertEqual(policy.returncode, 0, policy.stderr)

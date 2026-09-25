@@ -90,6 +90,7 @@ jobs:
           $installedManifest = Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'hooks/codex.json'
           if (-not (Test-Path $installedManifest)) { throw "Installed Codex hooks missing: $installedManifest" }
           if (-not (Test-Path (Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'scripts/symphony_hook.py'))) { throw 'Installed hook missing' }
+          if (-not (Test-Path (Join-Path $env:SYMPHONY_EXPECTED_PLUGIN_ROOT 'scripts/codex_hook.ps1'))) { throw 'Installed readable relay source missing' }
           $guardedState = $env:SYMPHONY_STATE_DIR
           $env:SYMPHONY_STATE_DIR = Join-Path $env:RUNNER_TEMP 'symphony-untrusted-state'
           New-Item -ItemType Directory -Force -Path $env:SYMPHONY_STATE_DIR | Out-Null
