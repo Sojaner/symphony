@@ -46,8 +46,12 @@ def main() -> int:
             print(f"::error::{provider} heartbeat has an unexpected hook schema")
             return 1
         expected_root = os.environ.get("SYMPHONY_EXPECTED_PLUGIN_ROOT")
-        if expected_root and pathlib.Path(activation.get("plugin_root", "")).resolve() != pathlib.Path(expected_root).resolve():
-            print(f"::error::{provider} heartbeat did not come from the installed plugin root")
+        actual_root = activation.get("plugin_root", "")
+        if expected_root and pathlib.Path(actual_root).resolve() != pathlib.Path(expected_root).resolve():
+            print(
+                f"::error::{provider} heartbeat plugin root mismatch: "
+                f"actual={actual_root!r}, expected={expected_root!r}"
+            )
             return 1
         print(f"{provider}: installed hook executed and recorded a guarded heartbeat")
         return 0
