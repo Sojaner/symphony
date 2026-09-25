@@ -275,7 +275,8 @@ class PackageContractTests(unittest.TestCase):
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(blocked_script)],
                 capture_output=True, text=True, env=env, check=False,
             )
-            self.assertNotEqual(blocked.returncode, 0, "test policy allowed an unsigned script")
+            self.assertNotEqual(blocked.returncode, 79, "test policy allowed an unsigned script")
+            self.assertTrue(blocked.stderr.strip(), "script block had no policy error")
             python = subprocess.run(["cmd", "/d", "/s", "/c", "python --version"],
                                     capture_output=True, text=True, env=env, check=False)
             self.assertEqual(python.returncode, 0, python.stderr)

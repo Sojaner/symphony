@@ -51,7 +51,7 @@ jobs:
             $env:TMP = $testRoot
             $env:SYMPHONY_REQUIRE_STANDARD_USER = '1'
             $credential = [pscredential]::new("$env:COMPUTERNAME\$user", $secure)
-            $python = (Get-Command python.exe -CommandType Application).Source
+            $python = (Get-Command python.exe -CommandType Application | Select-Object -First 1).Source
             $stdout = Join-Path $testRoot 'stdout.log'
             $stderr = Join-Path $testRoot 'stderr.log'
             $test = Start-Process -FilePath $python -WorkingDirectory $env:GITHUB_WORKSPACE `
